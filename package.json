@@ -1,0 +1,37 @@
+{
+  "name": "comic-vault",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "漫画库 · 本地存储、分话管理、在线阅读与分享",
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node server/index.js",
+    "dev:web": "vite",
+    "build": "tsc --noEmit && vite build",
+    "start": "node server/index.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@zip.js/zip.js": "^2.7.62",
+    "archiver": "^7.0.1",
+    "express": "^4.21.2",
+    "image-size": "^1.2.1",
+    "multer": "^2.0.1",
+    "nanoid": "^5.0.9",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.5",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
