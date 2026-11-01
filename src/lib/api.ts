@@ -1,5 +1,29 @@
 import type { Chapter, Comic, ComicSummary, Settings, ShareLog, Stats } from '../types';
-import { withShareCode } from './util';
+import { getShareCode, withShareCode } from './util';
+
+/**
+ * 托管环境下，接口返回的资源地址（封面、页面图、缩略图）会直接用于 <img src>，
+ * 浏览器不会自动带上凭据。这里在前端统一补上，确保图片一定加载得出来。
+ */
+function injectCode<T>(value: T, code: string | null, depth = 0): T {
+  if (!code || depth > 12 || value == null) return value;
+  if (typeof value === 'string') {
+    if (!value.startsWith('/api/') || value.includes('sharecode=')) return value;
+    return `${value}${value.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(code)}` as unknown as T;
+  }
+  if (Array.isArray(value)) return value.map((v) => injectCode(v, code, depth + 1)) as unknown as T;
+  if (typeof value === 'object') {
+    for (const k of Object.keys(value as Record<string, unknown>)) {
+      (value as Record<string, unknown>)[k] = injectCode(
+        (value as Record<string, unknown>)[k],
+        code,
+        depth + 1,
+      );
+    }
+    return value;
+  }
+  return value;
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -14,7 +38,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const message = (data as { error?: string })?.error || res.statusText || '请求失败';
     throw new Error(message);
   }
-  return data as T;
+  return injectCode(data as T, getShareCode());
 }
 
 export const api = {

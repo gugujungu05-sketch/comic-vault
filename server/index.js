@@ -34,6 +34,35 @@ const ALLOW_FS_IMPORT = process.env.CV_ALLOW_FS_IMPORT !== '0';
 
 app.use(express.json({ limit: '20mb' }));
 
+/**
+ * 托管环境（如 *.app.workbuddy.host）要求每个请求都带 ?sharecode= 凭据，
+ * 而浏览器加载 <img src="/api/files/..."> 时不会自动带上地址栏里的凭据。
+ * 这里统一把凭据注入到响应体里所有 /api/ 开头的资源地址上，
+ * 使图片、缩略图、导出链接等在托管环境下也始终携带凭据。
+ * 本地运行（无 sharecode）时完全不生效。
+ */
+function injectShareCode(value, code, depth = 0) {
+  if (depth > 12 || value == null) return value;
+  if (typeof value === 'string') {
+    if (!value.startsWith('/api/') || value.includes('sharecode=')) return value;
+    return `${value}${value.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(code)}`;
+  }
+  if (Array.isArray(value)) return value.map((v) => injectShareCode(v, code, depth + 1));
+  if (typeof value === 'object') {
+    for (const k of Object.keys(value)) value[k] = injectShareCode(value[k], code, depth + 1);
+    return value;
+  }
+  return value;
+}
+
+app.use((req, res, next) => {
+  const code = req.query?.sharecode;
+  if (typeof code !== 'string' || !code) return next();
+  const origin = res.json.bind(res);
+  res.json = (body) => origin(injectShareCode(body, code));
+  next();
+});
+
 const upload = multer({
   dest: TMP_DIR,
   limits: { fileSize: 300 * 1024 * 1024, files: 300 },
