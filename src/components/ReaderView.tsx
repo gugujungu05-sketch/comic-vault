@@ -80,6 +80,7 @@ export function ReaderView({
   const [contrast, setContrast] = useState(prefs.contrast);
   const [smartDouble, setSmartDouble] = useState(prefs.smartDouble);
   const [editing, setEditing] = useState(false);
+  const [swipeHint, setSwipeHint] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -129,6 +130,28 @@ export function ReaderView({
     const t = setTimeout(() => onProgress(chapter.id, pageIndex), 400);
     return () => clearTimeout(t);
   }, [chapter, pageIndex, onProgress]);
+
+  /* 手机端首次进入时，提示可以左右滑动翻页 */
+  useEffect(() => {
+    const isTouch =
+      'ontouchstart' in window || window.matchMedia('(max-width: 720px)').matches;
+    if (!isTouch) return;
+    try {
+      if (localStorage.getItem('cv-swipe-hint')) return;
+    } catch {
+      /* 隐私模式下忽略 */
+    }
+    setSwipeHint(true);
+    const t = setTimeout(() => {
+      setSwipeHint(false);
+      try {
+        localStorage.setItem('cv-swipe-hint', '1');
+      } catch {
+        /* 忽略 */
+      }
+    }, 3200);
+    return () => clearTimeout(t);
+  }, []);
 
   /* 预加载后续页面 */
   useEffect(() => {
@@ -244,6 +267,34 @@ export function ReaderView({
     else leftSide ? goPrev() : goNext();
   }
 
+  /* 手机端：左右滑动翻页 */
+  const touchStart = useRef<{ x: number; y: number; t: number } | null>(null);
+
+  function onTouchBegin(e: React.TouchEvent) {
+    poke();
+    const t = e.touches[0];
+    if (!t) return;
+    touchStart.current = { x: t.clientX, y: t.clientY, t: Date.now() };
+  }
+
+  function onTouchFinish(e: React.TouchEvent) {
+    poke();
+    const start = touchStart.current;
+    touchStart.current = null;
+    // 连续滚动模式交给系统滚动，不拦截
+    if (!start || mode === 'continuous') return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    // 横向位移够大、且明显是横向手势、且动作够快，才算翻页
+    if (Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.4) return;
+    if (Date.now() - start.t > 900) return;
+    // 内容流向：LTR 向右流（左滑前进），RTL 向左流（左滑同样是前进）
+    if (dx < 0) rtl ? goNext() : goPrev();
+    else rtl ? goPrev() : goNext();
+  }
+
   function onContinuousScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
     if (!total) return;
@@ -270,7 +321,15 @@ export function ReaderView({
   const editingPage = currentPages[rtl ? currentPages.length - 1 : 0];
 
   return (
-    <div className="reader" onMouseMove={poke} onTouchStart={poke}>
+    <div
+      className="reader"
+      onMouseMove={poke}
+      onTouchStart={onTouchBegin}
+      onTouchEnd={onTouchFinish}
+      onTouchCancel={() => {
+        touchStart.current = null;
+      }}
+    >
       <div className={`reader-top ${uiVisible ? '' : 'hidden'}`}>
         <button className="btn sm ghost" onClick={onExit} title="返回">
           <Icon name="left" size={16} />
@@ -352,6 +411,12 @@ export function ReaderView({
           {headerExtra}
         </div>
       </div>
+
+      {swipeHint && (
+        <div className="swipe-hint">
+          <span className="arrow">‹</span> 左右滑动翻页 <span className="arrow">›</span>
+        </div>
+      )}
 
       <div
         ref={stageRef}
