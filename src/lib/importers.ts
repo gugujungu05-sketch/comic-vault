@@ -8,6 +8,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 export const IMAGE_RE = /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)$/i;
 export const ARCHIVE_RE = /\.(zip|cbz)$/i;
 export const PDF_RE = /\.pdf$/i;
+/** 浏览器端解不了的压缩包，交给服务端 7-Zip 引擎 */
+export const SEVENZ_ONLY_RE = /\.(7z|rar|cbr|cb7|r\d{2}|ace|arj|lzh|lha|cab|iso)$/i;
 
 export interface RawItem {
   name: string;
@@ -23,10 +25,27 @@ export interface ImportGroup {
 export interface ArchiveMeta {
   title?: string;
   author?: string;
+  artist?: string;
   tags?: string[];
   description?: string;
   direction?: 'ltr' | 'rtl';
+  publisher?: string;
+  year?: number;
+  rating?: number;
+  ageRating?: string;
+  language?: string;
+  /** 原始字段全量，导出 CBZ 时原样写回 */
+  raw?: Record<string, string>;
 }
+
+/** ComicInfo.xml 中需要读取的字段（ComicRack 标准） */
+const COMIC_INFO_FIELDS = [
+  'Title', 'Series', 'Number', 'Volume', 'Summary', 'Notes', 'Writer', 'Penciller', 'Inker',
+  'Colorist', 'Letterer', 'Editor', 'Publisher', 'Imprint', 'Genre', 'Tags', 'Web',
+  'Characters', 'Teams', 'Locations', 'ScanInformation', 'AgeRating', 'Rating',
+  'CommunityRating', 'LanguageISO', 'Format', 'BlackAndWhite', 'Manga', 'Year', 'Month',
+  'Day', 'PageCount', 'StoryArc', 'SeriesGroup', 'AlternateSeries', 'AlternateNumber',
+];
 
 /** 从 DataTransfer 中递归收集文件（支持拖拽文件夹） */
 export async function filesFromDataTransfer(dt: DataTransfer): Promise<{ name: string; blob: Blob; path: string }[]> {
@@ -110,17 +129,31 @@ function parseComicInfo(xml: string): ArchiveMeta {
     const m = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i'));
     return m ? decodeXml(m[1].trim()) : undefined;
   };
-  const tags = pick('Tags') || pick('Genre') || '';
-  const manga = pick('Manga') || '';
+  const raw: Record<string, string> = {};
+  for (const tag of COMIC_INFO_FIELDS) {
+    const v = pick(tag);
+    if (v) raw[tag] = v;
+  }
+  const tags = (raw.Tags || raw.Genre || '')
+    .split(/[,;]/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const manga = raw.Manga || '';
+  const year = Number(raw.Year) || undefined;
+  const rating = Number(raw.CommunityRating || raw.Rating) || undefined;
   return {
-    title: pick('Series') || pick('Title'),
-    author: pick('Writer') || pick('Penciller'),
-    tags: tags
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean),
-    description: pick('Summary'),
+    title: raw.Series || raw.Title,
+    author: raw.Writer || '',
+    artist: raw.Penciller || raw.Inker || raw.Colorist || '',
+    tags,
+    description: raw.Summary || raw.Notes || '',
     direction: /right|yes/i.test(manga) ? 'rtl' : 'ltr',
+    publisher: raw.Publisher || '',
+    year,
+    rating,
+    ageRating: raw.AgeRating || '',
+    language: (raw.LanguageISO || '').toLowerCase() || '',
+    raw: Object.keys(raw).length ? raw : undefined,
   };
 }
 

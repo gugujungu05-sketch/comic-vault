@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { Chapter, Comic } from '../types';
+import type { Chapter, Comic, Page } from '../types';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { ImportDialog } from '../components/ImportDialog';
 import { ExportDialog } from '../components/ExportDialog';
 import { ShareDialog } from '../components/ShareDialog';
+import { PageEditor } from '../components/PageEditor';
 import { useErrorToast, useToast } from '../components/Toasts';
 import { copyText, formatDate } from '../lib/util';
 
@@ -25,6 +26,8 @@ export function ComicPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editingPage, setEditingPage] = useState<{ chapter: Chapter; page: Page } | null>(null);
+  const [fixing, setFixing] = useState(false);
 
   async function load() {
     if (!id) return;
@@ -150,6 +153,47 @@ export function ComicPage() {
     }
   }
 
+  async function splitWidePages(ch: Chapter) {
+    if (!comic) return;
+    const wide = ch.pages.filter((p) => p.wide);
+    if (!wide.length) {
+      toast(`《${ch.title}》里没有检测到跨页（宽 > 高）的页面`);
+      return;
+    }
+    if (!confirm(`识别到 ${wide.length} 张跨页大图，将把它们各自拆成左右两页。继续？`)) return;
+    setFixing(true);
+    try {
+      const res = await api.splitPages(comic.id, ch.id, { rtl: comic.direction === 'rtl' });
+      await load();
+      toast(`已拆分 ${res.split} 张跨页`);
+    } catch (err) {
+      errorToast(err, '拆分失败');
+    } finally {
+      setFixing(false);
+    }
+  }
+
+  async function mergePickedPages(ch: Chapter) {
+    if (!comic) return;
+    const ids = Object.keys(picked).filter((k) => picked[k]);
+    if (ids.length < 2) {
+      toast('请先选择至少 2 页（按顺序两两合并）');
+      return;
+    }
+    if (!confirm(`将按顺序把选中的 ${ids.length} 页两两合并成跨页图。继续？`)) return;
+    setFixing(true);
+    try {
+      const res = await api.mergePages(comic.id, ch.id, { pageIds: ids, rtl: comic.direction === 'rtl' });
+      setPicked({});
+      await load();
+      toast(`已合并出 ${res.merged} 张跨页`);
+    } catch (err) {
+      errorToast(err, '合并失败');
+    } finally {
+      setFixing(false);
+    }
+  }
+
   async function movePickedPages(fromChapterId: string) {
     if (!comic) return;
     const ids = Object.keys(picked).filter((k) => picked[k]);
@@ -217,6 +261,11 @@ export function ComicPage() {
 
           <div className="card-meta" style={{ marginTop: 6 }}>
             <span>{comic.author || '未知作者'}</span>
+            {comic.artist && <span>绘者 {comic.artist}</span>}
+            {comic.publisher && <span>{comic.publisher}</span>}
+            {comic.year ? <span>{comic.year} 年</span> : null}
+            {comic.rating ? <span>评分 {comic.rating}</span> : null}
+            {comic.ageRating && <span>分级 {comic.ageRating}</span>}
             <span>{comic.chapterCount} 话</span>
             <span>{comic.pageCount} 页</span>
             <span>{comic.direction === 'rtl' ? '日漫顺序 RTL' : '左起 LTR'}</span>
@@ -348,7 +397,7 @@ export function ComicPage() {
                     <div style={{ color: 'var(--muted)', fontSize: 13 }}>该章节还没有页面，点击「导入图片」添加。</div>
                   ) : (
                     <>
-                      <div className="row" style={{ marginBottom: 8 }}>
+                      <div className="row" style={{ marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
                         <span style={{ fontSize: 12, color: 'var(--muted)' }}>
                           已选 {Object.values(picked).filter(Boolean).length} 页
                         </span>
@@ -357,6 +406,9 @@ export function ComicPage() {
                         </button>
                         <button className="btn sm" onClick={() => movePickedPages(ch.id)}>
                           <Icon name="right" size={13} /> 移动到其它话
+                        </button>
+                        <button className="btn sm" onClick={() => mergePickedPages(ch)} disabled={fixing}>
+                          <Icon name="image" size={13} /> 合并选中为跨页
                         </button>
                         <button
                           className="btn sm ghost"
@@ -367,7 +419,29 @@ export function ComicPage() {
                         <button className="btn sm ghost" onClick={() => setPicked({})}>
                           取消选择
                         </button>
+                        <span style={{ width: 8 }} />
+                        <button className="btn sm primary" onClick={() => splitWidePages(ch)} disabled={fixing}>
+                          <Icon name="grid" size={13} /> 拆分跨页
+                          {ch.pages.filter((p) => p.wide).length ? `（${ch.pages.filter((p) => p.wide).length}）` : ''}
+                        </button>
+                        {Object.keys(picked).filter((k) => picked[k]).length === 1 && (
+                          <button
+                            className="btn sm"
+                            onClick={() => {
+                              const pid = Object.keys(picked).find((k) => picked[k])!;
+                              const pg = ch.pages.find((p) => p.id === pid);
+                              if (pg) setEditingPage({ chapter: ch, page: pg });
+                            }}
+                          >
+                            <Icon name="edit" size={13} /> 编辑该页
+                          </button>
+                        )}
                       </div>
+                      {ch.pages.some((p) => p.wide) && (
+                        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>
+                          带「跨页」标记的页面是宽幅大图，双页阅读时会独占一屏；也可以用「拆分跨页」切成两张。
+                        </div>
+                      )}
                       <div className="thumb-grid">
                         {ch.pages.map((p, idx) => (
                           <button
@@ -379,6 +453,7 @@ export function ComicPage() {
                           >
                             <img src={p.thumbUrl || p.url} alt="" loading="lazy" />
                             <span className="n">{idx + 1}</span>
+                            {p.wide && <span className="wide-tag">跨页</span>}
                           </button>
                         ))}
                       </div>
@@ -430,6 +505,7 @@ export function ComicPage() {
       {sharing && (
         <ShareDialog
           comic={comic}
+          chapters={comic.chapters}
           onClose={() => setSharing(false)}
           onChanged={(share) => setComic({ ...comic, share })}
         />
@@ -442,6 +518,20 @@ export function ComicPage() {
             setFolderImport(false);
             load();
             toast('导入完成');
+          }}
+        />
+      )}
+      {editingPage && (
+        <PageEditor
+          comicId={comic.id}
+          chapter={editingPage.chapter}
+          page={editingPage.page}
+          direction={comic.direction}
+          onClose={() => setEditingPage(null)}
+          onDone={() => {
+            setEditingPage(null);
+            setPicked({});
+            load();
           }}
         />
       )}
@@ -493,6 +583,10 @@ function EditMetaDialog({
     status: comic.status,
     direction: comic.direction,
     language: comic.language,
+    publisher: comic.publisher || '',
+    year: comic.year ? String(comic.year) : '',
+    rating: comic.rating ? String(comic.rating) : '',
+    ageRating: comic.ageRating || '',
   });
   const [busy, setBusy] = useState(false);
   const errorToast = useErrorToast();
@@ -509,6 +603,10 @@ function EditMetaDialog({
         status: form.status,
         direction: form.direction,
         language: form.language,
+        publisher: form.publisher.trim(),
+        year: Number(form.year) || null,
+        rating: Number(form.rating) || null,
+        ageRating: form.ageRating.trim(),
       });
       onSaved(updated);
     } catch (err) {
@@ -571,6 +669,24 @@ function EditMetaDialog({
       <div className="field">
         <label>标签（逗号分隔）</label>
         <input className="input" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} />
+      </div>
+      <div className="grid-2">
+        <div className="field">
+          <label>出版社</label>
+          <input className="input" value={form.publisher} onChange={(e) => setForm({ ...form, publisher: e.target.value })} />
+        </div>
+        <div className="field">
+          <label>发行年份</label>
+          <input className="input" type="number" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} />
+        </div>
+        <div className="field">
+          <label>评分（0-5）</label>
+          <input className="input" type="number" step="0.5" value={form.rating} onChange={(e) => setForm({ ...form, rating: e.target.value })} />
+        </div>
+        <div className="field">
+          <label>年龄分级</label>
+          <input className="input" placeholder="如 Teen / Mature" value={form.ageRating} onChange={(e) => setForm({ ...form, ageRating: e.target.value })} />
+        </div>
       </div>
       <div className="field">
         <label>简介</label>

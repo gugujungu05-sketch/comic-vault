@@ -6,6 +6,7 @@ import {
   ARCHIVE_RE,
   IMAGE_RE,
   PDF_RE,
+  SEVENZ_ONLY_RE,
   extractArchive,
   filesFromFileList,
   filesFromDataTransfer,
@@ -19,6 +20,8 @@ interface Pick {
   name: string;
   blob: Blob;
   path: string;
+  /** 来自服务端解压的压缩包（RAR/7z 等），落盘时走 commit 接口而不是重新上传 */
+  remote?: boolean;
 }
 
 export function ImportDialog({
@@ -45,10 +48,17 @@ export function ImportDialog({
   const [meta, setMeta] = useState({
     title: '',
     author: '',
+    artist: '',
     tags: '',
     description: '',
     direction: 'ltr' as 'ltr' | 'rtl',
+    publisher: '',
+    year: '' as string | number,
+    rating: '' as string | number,
+    ageRating: '',
   });
+  const [comicInfo, setComicInfo] = useState<Record<string, string> | null>(null);
+  const [remote, setRemote] = useState<{ sessionId: string } | null>(null);
 
   const imgRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
@@ -61,7 +71,13 @@ export function ImportDialog({
     }
   }, []);
 
-  const groups = useMemo(() => groupItems(items, mode, per), [items, mode, per]);
+  const { groups, remoteGroupCount } = useMemo(() => {
+    const remoteItems = items.filter((i) => i.remote);
+    const localItems = items.filter((i) => !i.remote);
+    const rg = groupItems(remoteItems, mode, per);
+    const lg = groupItems(localItems, mode, per);
+    return { groups: [...rg, ...lg], remoteGroupCount: rg.length };
+  }, [items, mode, per]);
 
   async function ingest(picks: Pick[]) {
     setParsing(true);
@@ -80,10 +96,16 @@ export function ImportDialog({
             setMeta((m) => ({
               title: m.title || meta.title || '',
               author: m.author || meta.author || '',
+              artist: m.artist || meta.artist || '',
               tags: m.tags || (meta.tags || []).join(', '),
               description: m.description || meta.description || '',
               direction: meta.direction || m.direction,
+              publisher: m.publisher || meta.publisher || '',
+              year: m.year || meta.year || '',
+              rating: m.rating || meta.rating || '',
+              ageRating: m.ageRating || meta.ageRating || '',
             }));
+            if (meta.raw) setComicInfo(meta.raw);
           }
           if (!got.length) msgs.push(`${p.name} 中没有找到图片`);
         } catch (err) {
@@ -97,8 +119,32 @@ export function ImportDialog({
         } catch (err) {
           msgs.push(`${p.name} 解析失败：${(err as Error).message}`);
         }
-      } else if (/\.(rar|cbr|7z)$/i.test(p.name)) {
-        msgs.push(`${p.name}：RAR/7z 暂不支持，请转成 ZIP/CBZ 后再导入`);
+      } else if (SEVENZ_ONLY_RE.test(p.name)) {
+        try {
+          const file = p.blob instanceof File ? p.blob : new File([p.blob], p.name);
+          const res = await api.importArchive(file);
+          for (const f of res.files) {
+            next.push({ name: f.name, blob: new Blob(), path: f.path, remote: true });
+          }
+          setRemote((prev) => prev || { sessionId: res.sessionId });
+          const f = res.fields || {};
+          setMeta((m) => ({
+            title: m.title || f.title || '',
+            author: m.author || f.author || '',
+            artist: m.artist || f.artist || '',
+            tags: m.tags || (f.tags || []).join(', '),
+            description: m.description || f.description || '',
+            direction: f.direction || m.direction,
+            publisher: m.publisher || f.publisher || '',
+            year: m.year || f.year || '',
+            rating: m.rating || f.rating || '',
+            ageRating: m.ageRating || f.ageRating || '',
+          }));
+          if (res.meta) setComicInfo(res.meta);
+          msgs.push(`${p.name}：服务端已解压，共 ${res.files.length} 张图片`);
+        } catch (err) {
+          msgs.push(`${p.name} 解压失败：${(err as Error).message}`);
+        }
       }
     }
     setNotes(msgs);
@@ -133,36 +179,78 @@ export function ImportDialog({
     setProgress({ done: 0, total });
     try {
       let cid = comicId;
-      if (!cid) {
-        const comic = await api.create({
+      const remoteGroups = groups.slice(0, remoteGroupCount);
+      const localGroups = groups.slice(remoteGroupCount);
+
+      // 1) 服务端解压出来的压缩包内容：直接让服务端落盘，不用回传浏览器
+      if (remote && remoteGroups.length) {
+        const res = await api.commitArchive(remote.sessionId, {
+          groups: remoteGroups.map((g, i) => ({
+            title: titles[i] || g.title || `第 ${i + 1} 话`,
+            paths: g.items.map((it) => it.path),
+          })),
+          comicId: cid,
           title: meta.title.trim() || '未命名漫画',
           author: meta.author.trim(),
+          artist: meta.artist.trim(),
           description: meta.description.trim(),
           tags: meta.tags
             .split(/[,，]/)
             .map((t) => t.trim())
             .filter(Boolean),
           direction: meta.direction,
+          publisher: meta.publisher.trim(),
+          year: Number(meta.year) || null,
+          rating: Number(meta.rating) || null,
+          ageRating: meta.ageRating.trim(),
+          comicInfo,
         });
-        cid = comic.id;
+        cid = res.comic.id;
+        setRemote(null);
+        setProgress({ done: remoteGroups.reduce((n, g) => n + g.items.length, 0), total });
       }
-      for (let i = 0; i < groups.length; i++) {
-        const g = groups[i];
-        const chapters = await api.addChapter(cid!, {
-          title: titles[i] || g.title || `第 ${i + 1} 话`,
-          number: i + 1,
-        });
-        const chapter = chapters[chapters.length - 1];
-        await api.uploadPages(
-          cid!,
-          chapter.id,
-          g.items.map((it) => ({ name: it.name, blob: it.blob })),
-          undefined,
-          (done) => {
-            const before = groups.slice(0, i).reduce((n, x) => n + x.items.length, 0);
-            setProgress({ done: before + done, total });
-          },
-        );
+
+      // 2) 浏览器本地的图片 / ZIP / PDF：按原流程上传
+      if (localGroups.length) {
+        if (!cid) {
+          const comic = await api.create({
+            title: meta.title.trim() || '未命名漫画',
+            author: meta.author.trim(),
+            artist: meta.artist.trim(),
+            description: meta.description.trim(),
+            tags: meta.tags
+              .split(/[,，]/)
+              .map((t) => t.trim())
+              .filter(Boolean),
+            direction: meta.direction,
+            publisher: meta.publisher.trim(),
+            year: Number(meta.year) || null,
+            rating: Number(meta.rating) || null,
+            ageRating: meta.ageRating.trim(),
+            comicInfo,
+          });
+          cid = comic.id;
+        }
+        const remoteDone = groups.slice(0, remoteGroupCount).reduce((n, g) => n + g.items.length, 0);
+        for (let i = 0; i < localGroups.length; i++) {
+          const g = localGroups[i];
+          const gi = remoteGroupCount + i;
+          const chapters = await api.addChapter(cid, {
+            title: titles[gi] || g.title || `第 ${gi + 1} 话`,
+            number: gi + 1,
+          });
+          const chapter = chapters[chapters.length - 1];
+          await api.uploadPages(
+            cid,
+            chapter.id,
+            g.items.map((it) => ({ name: it.name, blob: it.blob })),
+            undefined,
+            (done) => {
+              const before = localGroups.slice(0, i).reduce((n, x) => n + x.items.length, 0);
+              setProgress({ done: remoteDone + before + done, total });
+            },
+          );
+        }
       }
       toast(`导入完成，共 ${total} 页`);
       onDone(cid!);
@@ -202,8 +290,8 @@ export function ImportDialog({
         onDrop={onDrop}
         onClick={() => imgRef.current?.click()}
       >
-        <div className="big">拖拽图片 / 文件夹 / ZIP·CBZ / PDF 到此处</div>
-        <div>或点击选择文件 —— 也支持下方按钮按类型选择</div>
+        <div className="big">拖拽图片 / 文件夹 / ZIP·CBZ·RAR·7Z / PDF 到此处</div>
+        <div>或点击选择文件 —— RAR、7Z、CBR、CB7 会由服务端解压，不占用浏览器内存</div>
       </div>
 
       <div className="row">
@@ -214,7 +302,7 @@ export function ImportDialog({
           <Icon name="folder" size={15} /> 选择文件夹
         </button>
         <button className="btn sm" onClick={() => arcRef.current?.click()}>
-          <Icon name="file" size={15} /> ZIP / CBZ / PDF
+          <Icon name="file" size={15} /> ZIP / CBZ / RAR / 7Z / PDF
         </button>
         {items.length > 0 && (
           <button className="btn sm ghost" onClick={() => { setItems([]); setTitles({}); }}>
@@ -254,7 +342,7 @@ export function ImportDialog({
         ref={arcRef}
         type="file"
         multiple
-        accept=".zip,.cbz,.pdf"
+        accept=".zip,.cbz,.pdf,.rar,.cbr,.7z,.cb7,.ace,.arj,.lzh,.cab,.iso"
         hidden
         onChange={(e) => {
           if (e.target.files) ingest(filesFromFileList(e.target.files));
@@ -300,6 +388,32 @@ export function ImportDialog({
               <option value="rtl">从右往左（日漫 RTL）</option>
             </select>
           </div>
+          <div className="field">
+            <label>出版社</label>
+            <input
+              className="input"
+              value={meta.publisher}
+              onChange={(e) => setMeta({ ...meta, publisher: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>发行年份</label>
+            <input
+              className="input"
+              type="number"
+              value={meta.year}
+              onChange={(e) => setMeta({ ...meta, year: e.target.value })}
+            />
+          </div>
+        </div>
+      )}
+
+      {comicInfo && (
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+          已从 ComicInfo.xml 读取 {Object.keys(comicInfo).length} 个字段：
+          {[comicInfo.Publisher, comicInfo.Year, comicInfo.AgeRating, comicInfo.Rating]
+            .filter(Boolean)
+            .join(' · ') || Object.keys(comicInfo).slice(0, 6).join(' · ')}
         </div>
       )}
 
@@ -391,8 +505,9 @@ export function ImportDialog({
 
       {items.length === 0 && (
         <div style={{ color: 'var(--muted)', fontSize: 12 }}>
-          提示：ZIP/CBZ 中的目录结构会自动识别为「话」；PDF 会按页渲染成图片；压缩包内的
-          ComicInfo.xml 会自动填充标题、作者、标签与阅读方向。
+          提示：压缩包里的目录结构会自动识别为「话」；PDF 会按页渲染成图片；RAR/7Z/CBR/CB7
+          由服务端用 7-Zip 引擎解压；包内的 ComicInfo.xml 会自动填充标题、作者、出版社、年份、
+          评分、分级与阅读方向，导出 CBZ 时这些字段会原样写回。
         </div>
       )}
     </Modal>

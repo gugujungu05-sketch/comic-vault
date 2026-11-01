@@ -14,19 +14,23 @@
   },
   "dependencies": {
     "@zip.js/zip.js": "^2.7.62",
+    "7z-wasm": "^1.2.0",
     "archiver": "^7.0.1",
     "express": "^4.21.2",
     "image-size": "^1.2.1",
     "multer": "^2.0.1",
     "nanoid": "^5.0.9",
+    "node-unrar-js": "^2.0.2",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.18.5",
     "sharp": "^0.35.5"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

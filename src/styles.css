@@ -855,3 +855,48 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------- v2：页面编辑器 ---------- */
+.crop-stage {
+  position: relative;
+  width: 100%;
+  max-height: 46vh;
+  min-height: 220px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: repeating-conic-gradient(#2a2d35 0% 25%, #23262d 0% 50%) 50% / 18px 18px;
+  display: grid;
+  place-items: center;
+  cursor: crosshair;
+  user-select: none;
+  border: 1px solid var(--border);
+}
+
+.crop-stage img {
+  max-width: 100%;
+  max-height: 46vh;
+  display: block;
+  pointer-events: none;
+}
+
+.crop-box {
+  position: absolute;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 0 0 9999px color-mix(in srgb, #000 45%, transparent);
+  pointer-events: none;
+}
+
+/* 缩略图上的「跨页」标记 */
+.wide-tag {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  color: #fff;
+  letter-spacing: 0.4px;
+}

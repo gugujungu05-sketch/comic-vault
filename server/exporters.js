@@ -5,6 +5,7 @@ import archiver from 'archiver';
 import { PDFDocument } from 'pdf-lib';
 import { chapterDir } from './store.js';
 import { pdfSafe } from './media.js';
+import { comicInfoXml } from './comicinfo.js';
 
 const MIME = {
   jpg: 'image/jpeg',
@@ -52,31 +53,6 @@ function xmlEscape(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
-}
-
-/** ComicInfo.xml —— ComicRack / YACReader / Panels / Tachiyomi 等阅读器通用的元数据标准 */
-export function comicInfoXml(comic, chapter, pageCount, index = 0) {
-  const manga = comic.direction === 'rtl' ? 'YesAndRightToLeft' : 'No';
-  const num = chapter.number != null && chapter.number !== '' ? chapter.number : index + 1;
-  const lines = [
-    '<?xml version="1.0" encoding="utf-8"?>',
-    '<ComicInfo xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
-    `  <Title>${xmlEscape(chapter.title || `第 ${num} 话`)}</Title>`,
-    `  <Series>${xmlEscape(comic.title)}</Series>`,
-    `  <Number>${xmlEscape(num)}</Number>`,
-    `  <Writer>${xmlEscape(comic.author || '')}</Writer>`,
-    `  <Penciller>${xmlEscape(comic.artist || '')}</Penciller>`,
-    `  <Summary>${xmlEscape(comic.description || '')}</Summary>`,
-    `  <Genre>${xmlEscape((comic.tags || []).join(', '))}</Genre>`,
-    `  <Tags>${xmlEscape((comic.tags || []).join(', '))}</Tags>`,
-    `  <LanguageISO>${xmlEscape(comic.language || 'zh')}</LanguageISO>`,
-    `  <Manga>${manga}</Manga>`,
-    `  <PageCount>${pageCount}</PageCount>`,
-    `  <ScanInformation>ComicVault</ScanInformation>`,
-    `  <Notes>由 ComicVault 导出</Notes>`,
-    '</ComicInfo>',
-  ];
-  return lines.join('\n');
 }
 
 /** 打包为 CBZ / ZIP（CBZ 额外附带 ComicInfo.xml） */

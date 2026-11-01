@@ -1,4 +1,4 @@
-import type { Chapter, Comic, ComicSummary, Settings, Stats } from '../types';
+import type { Chapter, Comic, ComicSummary, Settings, ShareLog, Stats } from '../types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -133,13 +133,106 @@ export const api = {
 
   setShare: (
     comicId: string,
-    body: { enabled?: boolean; password?: string; expiresInDays?: number; allowDownload?: boolean },
+    body: {
+      enabled?: boolean;
+      password?: string;
+      expiresInDays?: number;
+      allowDownload?: boolean;
+      chapterIds?: string[];
+    },
   ) =>
     request<ComicSummary['share']>(`/api/comics/${comicId}/share`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+
+  /** 吊销：换一个新 token，旧链接立即失效 */
+  rotateShare: (comicId: string) =>
+    request<ComicSummary['share']>(`/api/comics/${comicId}/share/rotate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+
+  shareLogs: (comicId: string) => request<{ logs: ShareLog[] }>(`/api/comics/${comicId}/share/logs`),
+
+  clearShareLogs: (comicId: string) =>
+    request<{ ok: boolean }>(`/api/comics/${comicId}/share/logs`, { method: 'DELETE' }),
+
+  /* ---------- 页面编辑 ---------- */
+
+  editPage: (
+    comicId: string,
+    chapterId: string,
+    pageId: string,
+    body: { rotate?: number; crop?: { x: number; y: number; w: number; h: number } | null; scope?: 'page' | 'chapter' | 'comic' },
+  ) =>
+    request<{ ok: boolean; updated: number; chapter: Chapter }>(
+      `/api/comics/${comicId}/chapters/${chapterId}/pages/${pageId}/edit`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    ),
+
+  splitPages: (comicId: string, chapterId: string, body: { pageIds?: string[]; rtl?: boolean; minRatio?: number }) =>
+    request<{ ok: boolean; split: number; chapter: Chapter }>(
+      `/api/comics/${comicId}/chapters/${chapterId}/pages/split`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    ),
+
+  mergePages: (comicId: string, chapterId: string, body: { pageIds: string[]; rtl?: boolean }) =>
+    request<{ ok: boolean; merged: number; chapter: Chapter }>(
+      `/api/comics/${comicId}/chapters/${chapterId}/pages/merge`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    ),
+
+  /* ---------- RAR / 7z 压缩包导入（服务端解压） ---------- */
+
+  importArchive: (file: File) => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return request<{
+      sessionId: string;
+      files: { path: string; name: string; size: number }[];
+      meta: Record<string, string> | null;
+      fields: {
+        title?: string;
+        author?: string;
+        artist?: string;
+        description?: string;
+        tags?: string[];
+        language?: string;
+        direction?: 'ltr' | 'rtl';
+        publisher?: string;
+        year?: number;
+        rating?: number;
+        ageRating?: string;
+      };
+    }>('/api/import/archive', { method: 'POST', body: form });
+  },
+
+  commitArchive: (
+    sessionId: string,
+    body: {
+      groups: { title: string; paths: string[] }[];
+      comicId?: string;
+      title?: string;
+      author?: string;
+      artist?: string;
+      description?: string;
+      tags?: string[];
+      direction?: 'ltr' | 'rtl';
+      language?: string;
+      publisher?: string;
+      year?: number | null;
+      rating?: number | null;
+      ageRating?: string;
+      comicInfo?: Record<string, string> | null;
+    },
+  ) =>
+    request<{ comic: ComicSummary; chapters: { id: string; title: string; pageCount: number }[] }>(
+      `/api/import/archive/${sessionId}/commit`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    ),
 
   getShared: (token: string, password?: string) =>
     request<PublicComic>(`/api/share/${token}`, {
@@ -186,7 +279,13 @@ export interface PublicComic {
   coverUrl: string | null;
   pageCount: number;
   chapters: Chapter[];
-  share: { allowDownload: boolean; expiresAt: number | null; hasPassword: boolean };
+  share: {
+    allowDownload: boolean;
+    expiresAt: number | null;
+    hasPassword: boolean;
+    chapterIds?: string[];
+    partial?: boolean;
+  };
 }
 
 export function exportUrl(comicId: string, format: string, chapterIds?: string[]) {

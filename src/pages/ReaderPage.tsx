@@ -47,6 +47,14 @@ export function ReaderPage() {
         direction={comic.direction}
         initialChapterId={startChapter}
         initialPageIndex={startPage}
+        comicId={comic.id}
+        onPagesChanged={(updated) =>
+          setComic((prev) =>
+            prev
+              ? { ...prev, chapters: prev.chapters.map((c) => (c.id === updated.id ? updated : c)) }
+              : prev,
+          )
+        }
         onProgress={(chapterId, pageIndex) => {
           api.setProgress(comic.id, chapterId, pageIndex).catch(() => {});
         }}
