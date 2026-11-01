@@ -93,3 +93,43 @@ export function debounce<F extends (...args: never[]) => void>(fn: F, wait = 300
     t = setTimeout(() => fn(...args), wait);
   };
 }
+
+/**
+ * 托管环境下（如 workbuddy.host），访问需要 ?sharecode= 凭据。
+ * 该函数把凭据附加到要对外打开的链接（分享链接、二维码、下载地址）上，
+ * 并在会话内记忆，避免 SPA 内部跳转后刷新丢失。
+ */
+export function withShareCode(url: string): string {
+  if (!url) return url;
+  let code: string | null = null;
+  try {
+    code = new URLSearchParams(window.location.search).get('sharecode');
+  } catch {
+    /* 忽略 */
+  }
+  if (!code) {
+    try {
+      code = sessionStorage.getItem('cv-sharecode');
+    } catch {
+      /* 隐私模式忽略 */
+    }
+  }
+  if (!code) return url;
+  try {
+    const u = new URL(url, window.location.origin);
+    if (!u.searchParams.get('sharecode')) u.searchParams.set('sharecode', code);
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/** 记住当前地址里的 sharecode，供后续跳转/刷新时补回 */
+export function rememberShareCode(): void {
+  try {
+    const code = new URLSearchParams(window.location.search).get('sharecode');
+    if (code) sessionStorage.setItem('cv-sharecode', code);
+  } catch {
+    /* 忽略 */
+  }
+}

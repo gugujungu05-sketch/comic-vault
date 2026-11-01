@@ -4,7 +4,7 @@ import { Icon } from './Icon';
 import { QrCode } from './QrCode';
 import { api } from '../lib/api';
 import type { Chapter, ComicSummary, ShareLog } from '../types';
-import { copyText, formatDate } from '../lib/util';
+import { copyText, formatDate, withShareCode } from '../lib/util';
 import { useErrorToast, useToast } from './Toasts';
 
 export function ShareDialog({
@@ -44,7 +44,7 @@ export function ShareDialog({
     }
   }, [comic.share]);
 
-  const link = share?.token ? `${window.location.origin}/s/${share.token}` : '';
+  const link = share?.token ? withShareCode(`${window.location.origin}/s/${share.token}`) : '';
 
   async function loadLogs() {
     try {

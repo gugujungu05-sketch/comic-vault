@@ -40,7 +40,14 @@ export function loadDb() {
       db = defaultDb();
     }
   } catch (err) {
-    console.error('[store] 数据库读取失败，使用空库:', err.message);
+    // 数据库损坏：把坏文件留档，避免下次启动继续用坏数据覆盖
+    const backup = `${DB_FILE}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(DB_FILE, backup);
+      console.error(`[store] 数据库损坏（${err.message}），已备份到 ${backup}，使用空库启动`);
+    } catch {
+      console.error('[store] 数据库读取失败:', err.message);
+    }
     db = defaultDb();
   }
   return db;
@@ -48,7 +55,10 @@ export function loadDb() {
 
 export function saveDb() {
   const snapshot = JSON.stringify(db, null, 2);
-  fs.writeFileSync(DB_FILE, snapshot, 'utf8');
+  // 原子写入：先写临时文件再改名，任何时刻磁盘上都是一个完整可解析的 JSON
+  const tmp = `${DB_FILE}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, snapshot, 'utf8');
+  fs.renameSync(tmp, DB_FILE);
 }
 
 export function saveDbSoon() {

@@ -1,4 +1,5 @@
 import type { Chapter, Comic, ComicSummary, Settings, ShareLog, Stats } from '../types';
+import { withShareCode } from './util';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -291,12 +292,12 @@ export interface PublicComic {
 export function exportUrl(comicId: string, format: string, chapterIds?: string[]) {
   const params = new URLSearchParams({ format });
   if (chapterIds?.length) params.set('chapters', chapterIds.join(','));
-  return `/api/export/${comicId}?${params.toString()}`;
+  return withShareCode(`/api/export/${comicId}?${params.toString()}`);
 }
 
 export function shareExportUrl(token: string, format: string, chapterIds?: string[], password?: string) {
   const params = new URLSearchParams({ format });
   if (chapterIds?.length) params.set('chapters', chapterIds.join(','));
   if (password) params.set('password', password);
-  return `/api/share/${token}/export?${params.toString()}`;
+  return withShareCode(`/api/share/${token}/export?${params.toString()}`);
 }

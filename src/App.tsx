@@ -7,6 +7,7 @@ import { ComicPage } from './pages/ComicPage';
 import { ReaderPage } from './pages/ReaderPage';
 import { SharePage } from './pages/SharePage';
 import { SettingsPage } from './pages/SettingsPage';
+import { rememberShareCode, withShareCode } from './lib/util';
 
 function useTheme() {
   const [theme, setTheme] = useState<'dark' | 'light'>(
@@ -49,6 +50,20 @@ function Shell() {
   const { theme, setTheme } = useTheme();
   const location = useLocation();
   const immersive = location.pathname.startsWith('/read/') || location.pathname.startsWith('/s/');
+
+  /* 托管环境访问凭据：记住 sharecode，SPA 跳转/刷新后补回地址栏 */
+  useEffect(() => {
+    rememberShareCode();
+    let code: string | null = null;
+    try {
+      code = sessionStorage.getItem('cv-sharecode');
+    } catch {
+      /* 忽略 */
+    }
+    if (code && !window.location.search.includes('sharecode')) {
+      window.history.replaceState(null, '', withShareCode(window.location.pathname + window.location.search));
+    }
+  }, [location]);
 
   return (
     <div className="app">
