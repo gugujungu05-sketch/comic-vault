@@ -310,6 +310,9 @@ function NewComicDialog({ onClose, onCreated }: { onClose: () => void; onCreated
   const [author, setAuthor] = useState('');
   const [direction, setDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [tags, setTags] = useState('');
+  const [scope, setScope] = useState<'personal' | 'community'>('personal');
+  const [visibility, setVisibility] = useState<'private' | 'public'>('private');
+  const [allowDownload, setAllowDownload] = useState(true);
   const [busy, setBusy] = useState(false);
   const errorToast = useErrorToast();
 
@@ -325,6 +328,9 @@ function NewComicDialog({ onClose, onCreated }: { onClose: () => void; onCreated
         author: author.trim(),
         direction,
         tags: tags.split(/[,，]/).map((t) => t.trim()).filter(Boolean),
+        scope,
+        visibility: scope === 'community' ? 'public' : visibility,
+        allowDownload,
       });
       if (afterImport) onClose();
       onCreated(comic.id);
@@ -373,6 +379,31 @@ function NewComicDialog({ onClose, onCreated }: { onClose: () => void; onCreated
         <label>标签（逗号分隔）</label>
         <input className="input" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="热血, 科幻, 完结" />
       </div>
+      <div className="grid-2">
+        <div className="field">
+          <label>存放位置</label>
+          <select className="select" value={scope} onChange={(e) => setScope(e.target.value as 'personal' | 'community')}>
+            <option value="personal">我的私人书架</option>
+            <option value="community">公共书库（所有人可见）</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>可见性</label>
+          <select
+            className="select"
+            value={scope === 'community' ? 'public' : visibility}
+            disabled={scope === 'community'}
+            onChange={(e) => setVisibility(e.target.value as 'private' | 'public')}
+          >
+            <option value="private">私密（仅自己 + 分享链接）</option>
+            <option value="public">公开（别人可看）</option>
+          </select>
+        </div>
+      </div>
+      <label className="check-row">
+        <input type="checkbox" checked={allowDownload} onChange={(e) => setAllowDownload(e.target.checked)} />
+        允许别人下载（公开 / 分享时生效）
+      </label>
     </Modal>
   );
 }

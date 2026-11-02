@@ -1,4 +1,7 @@
-import type { Chapter, Comic, ComicSummary, Settings, ShareLog, Stats } from '../types';
+import type {
+  Chapter, Comic, ComicSummary, CommunityComic, MetaEntry,
+  PlazaPost, Settings, ShareLog, Stats, User,
+} from '../types';
 import { getShareCode, withShareCode } from './util';
 
 /**
@@ -289,6 +292,103 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+};
+
+/** 账号 / 社区 / 广场接口 */
+export const social = {
+  status: () =>
+    request<{
+      user: User | null;
+      needsSetup: boolean;
+      hasUsers: number;
+      codeLogin: { emailEnabled: boolean; devMode: boolean };
+    }>('/api/auth/status'),
+
+  register: (body: { email: string; password: string; name?: string }) =>
+    request<{ user: User; first: boolean }>('/api/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+
+  login: (body: { email: string; password: string }) =>
+    request<{ user: User }>('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+
+  sendCode: (email: string) =>
+    request<{ ok: boolean; sent: boolean; devCode: string | null; hint: string }>('/api/auth/send-code', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+    }),
+
+  loginCode: (email: string, code: string) =>
+    request<{ user: User; created: boolean }>('/api/auth/login-code', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, code }),
+    }),
+
+  logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  me: () => request<{ user: User; comics: ComicSummary[]; postCount: number }>('/api/me'),
+
+  updateMe: (body: { name?: string; bio?: string; avatar?: string; password?: string }) =>
+    request<{ user: User }>('/api/me', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+
+  userPage: (id: string) =>
+    request<{ user: User; comics: ComicSummary[]; posts: PlazaPost[] }>(`/api/users/${id}`),
+
+  community: () => request<{ comics: CommunityComic[] }>('/api/community/comics'),
+
+  addAlias: (id: string, value: string) =>
+    request<{ entries: MetaEntry[]; id: string }>(`/api/comics/${id}/aliases`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value }),
+    }),
+
+  addTag: (id: string, value: string) =>
+    request<{ entries: MetaEntry[]; id: string }>(`/api/comics/${id}/tags`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value }),
+    }),
+
+  addCoverPage: (id: string, chapterId: string, pageId: string) =>
+    request<{ entries: MetaEntry[]; id: string }>(`/api/comics/${id}/covers/page`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chapterId, pageId }),
+    }),
+
+  addCoverFile: (id: string, file: Blob, name = 'cover.jpg') => {
+    const form = new FormData();
+    form.append('file', file, name);
+    return request<{ entries: MetaEntry[]; id: string }>(`/api/comics/${id}/covers/upload`, {
+      method: 'POST', body: form,
+    });
+  },
+
+  activateCover: (id: string, coverId: string) =>
+    request<{ ok: boolean }>(`/api/comics/${id}/covers/${coverId}/activate`, { method: 'POST' }),
+
+  activateAlias: (id: string, aliasId: string) =>
+    request<{ ok: boolean }>(`/api/comics/${id}/aliases/${aliasId}/activate`, { method: 'POST' }),
+
+  deleteEntry: (id: string, kind: 'aliases' | 'tags' | 'covers', entryId: string) =>
+    request<{ entries: MetaEntry[] }>(`/api/comics/${id}/${kind}/${entryId}`, { method: 'DELETE' }),
+
+  posts: () => request<{ posts: PlazaPost[] }>('/api/plaza/posts'),
+
+  createPost: (body: { content: string; comicId?: string; shareUrl?: string }) =>
+    request<{ post: PlazaPost }>('/api/plaza/posts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+
+  likePost: (id: string) => request<{ post: PlazaPost }>(`/api/plaza/posts/${id}/like`, { method: 'POST' }),
+
+  comment: (id: string, content: string) =>
+    request<{ post: PlazaPost }>(`/api/plaza/posts/${id}/comments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
+    }),
+
+  deleteComment: (postId: string, commentId: string) =>
+    request<{ post: PlazaPost }>(`/api/plaza/posts/${postId}/comments/${commentId}`, { method: 'DELETE' }),
+
+  deletePost: (id: string) => request<{ ok: boolean }>(`/api/plaza/posts/${id}`, { method: 'DELETE' }),
 };
 
 export interface PublicComic {

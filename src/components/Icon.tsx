@@ -32,7 +32,13 @@ type IconName =
   | 'spinner'
   | 'eye'
   | 'refresh'
-  | 'tag';
+  | 'tag'
+  | 'users'
+  | 'message'
+  | 'heart'
+  | 'globe'
+  | 'logout'
+  | 'user';
 
 const paths: Record<IconName, string> = {
   book: 'M4 5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v14H6a2 2 0 0 1-2-2V5Zm4 0v14',
@@ -68,6 +74,12 @@ const paths: Record<IconName, string> = {
   eye: 'M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6Zm10 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z',
   refresh: 'M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5',
   tag: 'M4 4h9l7 7-9 9-7-7V4Zm4 4h.01',
+  users: 'M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.9M16 2.1a4 4 0 0 1 0 7.8',
+  message: 'M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8Z',
+  heart: 'M12 20s-7-4.4-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.6-7 9-7 9Z',
+  globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0c2.5 2.5 3.5 6 3.5 9s-1 6.5-3.5 9m0-18c-2.5 2.5-3.5 6-3.5 9s1 6.5 3.5 9M3.5 9h17M3.5 15h17',
+  logout: 'M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M14 8l4 4-4 4M18 12H9',
+  user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 8v-1a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v1',
 };
 
 export function Icon({

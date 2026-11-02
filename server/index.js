@@ -27,12 +27,14 @@ import { exportArchive, exportPdf, exportEpub, safeName, extOf } from './exporte
 import { metadata, thumbnail, hasSharp, transformImage, splitSpread, mergeSpread, isSpread } from './media.js';
 import { extractWith7z, warmup, engineStatus, SEVENZ_RE } from './archive.js';
 import { parseComicInfo, comicFieldsFromInfo } from './comicinfo.js';
+import { attachUser, requireUser, comicGuard, assetGuard, registerSocial } from './social.js';
 
 const app = express();
 const PORT = Number(process.env.PORT || 8787);
 const ALLOW_FS_IMPORT = process.env.CV_ALLOW_FS_IMPORT !== '0';
 
 app.use(express.json({ limit: '20mb' }));
+app.use(attachUser);
 
 /**
  * 托管环境（如 *.app.workbuddy.host）要求每个请求都带 ?sharecode= 凭据，
@@ -83,6 +85,22 @@ const MIME_EXT = {
 
 const now = () => Date.now();
 
+/** 新建漫画的归属与社区字段（导入 / 创建共用） */
+function ownershipFields(req, body = {}) {
+  return {
+    ownerId: req.user?.id || null,
+    createdBy: req.user?.id || null,
+    scope: body.scope === 'community' ? 'community' : 'personal',
+    visibility: body.visibility === 'public' ? 'public' : 'private',
+    allowDownload: body.allowDownload !== false,
+    aliases: [],
+    tagEntries: [],
+    covers: [],
+    activeCoverId: null,
+    activeAliasId: null,
+  };
+}
+
 function isSafeSegment(s) {
   return typeof s === 'string' && /^[A-Za-z0-9._-]+$/.test(s) && !s.includes('..');
 }
@@ -98,12 +116,20 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(ba, bb);
 }
 
+/** 当前显示名：优先用户选中的别名，否则原始标题 */
+function displayName(comic) {
+  const a = (comic.aliases || []).find((x) => x.id === comic.activeAliasId);
+  return a ? a.value : comic.title;
+}
+
 function summarize(comic) {
   const cover = coverOf(comic);
   const pageCount = (comic.chapters || []).reduce((n, c) => n + (c.pages?.length || 0), 0);
+  const db = loadDb();
   return {
     id: comic.id,
-    title: comic.title,
+    title: displayName(comic),
+    baseTitle: comic.title,
     author: comic.author || '',
     artist: comic.artist || '',
     description: comic.description || '',
@@ -123,6 +149,17 @@ function summarize(comic) {
     ageRating: comic.ageRating || '',
     comicInfo: comic.comicInfo || null,
     progress: comic.progress || null,
+    scope: comic.scope || 'personal',
+    visibility: comic.visibility || 'private',
+    allowDownload: comic.allowDownload !== false,
+    ownerId: comic.ownerId || null,
+    ownerName: db.users.find((u) => u.id === comic.ownerId)?.name || '',
+    createdBy: comic.createdBy || null,
+    aliases: comic.aliases || [],
+    tagEntries: comic.tagEntries || [],
+    covers: comic.covers || [],
+    activeCoverId: comic.activeCoverId || null,
+    activeAliasId: comic.activeAliasId || null,
     share: comic.share
       ? {
           enabled: !!comic.share.enabled,
@@ -177,34 +214,39 @@ function logVisit(comic, req, event = 'view') {
 function publicComic(comic) {
   const cover = coverOf(comic);
   const chapters = sharedChapters(comic);
+  const token = comic.share?.token;
+  const withShare = (u) => (token ? `${u}${u.includes('?') ? '&' : '?'}share=${encodeURIComponent(token)}` : u);
   return {
     id: comic.id,
-    title: comic.title,
+    title: displayName(comic),
     author: comic.author || '',
     artist: comic.artist || '',
     description: comic.description || '',
-    tags: comic.tags || [],
+    tags: [...(comic.tags || []), ...(comic.tagEntries || []).map((t) => t.value)],
     status: comic.status,
     direction: comic.direction || 'ltr',
     language: comic.language || 'zh',
-    coverUrl: cover?.url || null,
+    coverUrl: cover?.url ? withShare(cover.url) : null,
     pageCount: chapters.reduce((n, c) => n + (c.pages?.length || 0), 0),
     chapters: chapters.map((c) => ({
       id: c.id,
       title: c.title,
       number: c.number ?? null,
       pageCount: c.pages?.length || 0,
+      uploadedByName: c.uploadedBy
+        ? loadDb().users.find((u) => u.id === c.uploadedBy)?.name || ''
+        : '',
       pages: (c.pages || []).map((p) => ({
         id: p.id,
         file: p.file,
         width: p.width,
         height: p.height,
-        url: `/api/files/${comic.id}/${c.id}/${p.file}`,
-        thumbUrl: p.hasThumb ? `/api/thumbs/${comic.id}/${c.id}/${p.id}.webp` : null,
+        url: withShare(`/api/files/${comic.id}/${c.id}/${p.file}`),
+        thumbUrl: p.hasThumb ? withShare(`/api/thumbs/${comic.id}/${c.id}/${p.id}.webp`) : null,
       })),
     })),
     share: {
-      allowDownload: !!comic.share?.allowDownload,
+      allowDownload: !!comic.share?.allowDownload && comic.allowDownload !== false,
       expiresAt: comic.share?.expiresAt || null,
       hasPassword: !!comic.share?.passwordHash,
       chapterIds: comic.share?.chapterIds || [],
@@ -363,12 +405,18 @@ async function cleanupTmp(file) {
 
 /* ------------------------------ 漫画 CRUD ------------------------------ */
 
+// 统一鉴权与逐条归属校验（对所有 /api/comics/:id* 生效）
+app.use('/api/comics/:id', comicGuard);
+
 app.get('/api/comics', (req, res) => {
   const db = loadDb();
-  res.json({ comics: db.comics.map(summarize), settings: db.settings });
+  const comics = req.user
+    ? db.comics.filter((c) => c.ownerId === req.user.id).map(summarize)
+    : [];
+  res.json({ comics, settings: db.settings, needLogin: !req.user });
 });
 
-app.post('/api/comics', (req, res) => {
+app.post('/api/comics', requireUser, (req, res) => {
   const db = loadDb();
   const body = req.body || {};
   const t = now();
@@ -392,12 +440,22 @@ app.post('/api/comics', (req, res) => {
     rating: body.rating || null,
     ageRating: body.ageRating || '',
     comicInfo: body.comicInfo || null,
+    ownerId: req.user.id,
+    createdBy: req.user.id,
+    scope: body.scope === 'community' ? 'community' : 'personal',
+    visibility: body.visibility === 'public' ? 'public' : 'private',
+    allowDownload: body.allowDownload !== false,
+    aliases: [],
+    tagEntries: [],
+    covers: [],
+    activeCoverId: null,
+    activeAliasId: null,
     createdAt: t,
     updatedAt: t,
   };
   db.comics.unshift(comic);
   saveDbSoon();
-  res.json(comic);
+  res.json({ ...summarize(comic), chapters: [] });
 });
 
 app.get('/api/comics/:id', (req, res) => {
@@ -407,6 +465,10 @@ app.get('/api/comics/:id', (req, res) => {
     ...summarize(comic),
     chapters: comic.chapters.map((c) => ({
       ...c,
+      uploadedBy: c.uploadedBy || comic.createdBy || null,
+      uploadedByName: c.uploadedBy
+        ? loadDb().users.find((u) => u.id === c.uploadedBy)?.name || ''
+        : '',
       pages: c.pages.map((p) => ({
         ...p,
         url: `/api/files/${comic.id}/${c.id}/${p.file}`,
@@ -420,7 +482,7 @@ app.patch('/api/comics/:id', (req, res) => {
   const comic = getComic(req.params.id);
   if (!comic) return res.status(404).json({ error: '漫画不存在' });
   const body = req.body || {};
-  const fields = ['title', 'author', 'artist', 'description', 'tags', 'status', 'direction', 'language', 'favorite', 'cover', 'publisher', 'year', 'rating', 'ageRating', 'comicInfo'];
+  const fields = ['title', 'author', 'artist', 'description', 'tags', 'status', 'direction', 'language', 'favorite', 'cover', 'publisher', 'year', 'rating', 'ageRating', 'comicInfo', 'visibility', 'allowDownload', 'scope'];
   for (const f of fields) {
     if (body[f] !== undefined) comic[f] = body[f];
   }
@@ -450,6 +512,12 @@ app.post('/api/comics/:id/duplicate', async (req, res) => {
     title: `${comic.title}（副本）`,
     share: null,
     progress: null,
+    ownerId: req.user.id,
+    createdBy: req.user.id,
+    scope: 'personal',
+    visibility: 'private',
+    activeCoverId: null,
+    activeAliasId: null,
     createdAt: t,
     updatedAt: t,
     chapters: [],
@@ -464,7 +532,7 @@ app.post('/api/comics/:id/duplicate', async (req, res) => {
       await fsp.copyFile(src, dst).catch(() => {});
       pages.push({ ...p });
     }
-    copy.chapters.push({ ...ch, id: newChapterId, pages });
+    copy.chapters.push({ ...ch, id: newChapterId, uploadedBy: req.user.id, pages });
   }
   db.comics.unshift(copy);
   saveDbSoon();
@@ -482,6 +550,7 @@ app.post('/api/comics/:id/chapters', (req, res) => {
     title: (body.title || `第 ${comic.chapters.length + 1} 话`).trim(),
     number: body.number ?? comic.chapters.length + 1,
     pages: [],
+    uploadedBy: req.user?.id || comic.createdBy || null,
     createdAt: now(),
   };
   if (body.index != null && body.index >= 0 && body.index < comic.chapters.length) {
@@ -899,9 +968,12 @@ function exportFilename(comic, chapters, all) {
   return comic.title;
 }
 
-app.get('/api/export/:comicId', async (req, res) => {
+app.get('/api/export/:comicId', assetGuard, async (req, res) => {
   const comic = getComic(req.params.comicId);
   if (!comic) return res.status(404).json({ error: '漫画不存在' });
+  if (comic.allowDownload === false && !req.isOwner) {
+    return res.status(403).json({ error: '作者已关闭这本漫画的下载' });
+  }
   const format = (req.query.format || 'cbz').toLowerCase();
   const chaptersRaw = req.query.chapters ? String(req.query.chapters) : null;
   const chapters = pickChapters(comic, chaptersRaw);
@@ -998,7 +1070,7 @@ async function addImageToChapter(comic, chapter, src, originalName) {
 }
 
 /** 第一步：上传压缩包 → 服务端解压 → 返回文件清单与元数据，供前端预览分话 */
-app.post('/api/import/archive', upload.single('file'), async (req, res) => {
+app.post('/api/import/archive', requireUser, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: '没有收到文件' });
   const original = file.originalname || 'archive.bin';
@@ -1052,7 +1124,7 @@ app.post('/api/import/archive', upload.single('file'), async (req, res) => {
 });
 
 /** 第二步：按前端确认好的分组落盘成章节 */
-app.post('/api/import/archive/:sessionId/commit', async (req, res) => {
+app.post('/api/import/archive/:sessionId/commit', requireUser, async (req, res) => {
   const dir = sessionDir(req.params.sessionId);
   if (!isSafeSegment(req.params.sessionId) || !fs.existsSync(dir)) {
     return res.status(404).json({ error: '导入会话已失效，请重新选择文件' });
@@ -1085,6 +1157,7 @@ app.post('/api/import/archive/:sessionId/commit', async (req, res) => {
       rating: body.rating || null,
       ageRating: body.ageRating || '',
       comicInfo: body.comicInfo || null,
+      ...ownershipFields(req, body),
       createdAt: t,
       updatedAt: t,
     };
@@ -1099,6 +1172,7 @@ app.post('/api/import/archive/:sessionId/commit', async (req, res) => {
       title: (g.title || `第 ${index + 1} 话`).trim(),
       number: index + 1,
       pages: [],
+      uploadedBy: req.user?.id || comic.createdBy || null,
       createdAt: now(),
     };
     await ensureDir(chapterDir(comic.id, chapter.id));
@@ -1125,7 +1199,7 @@ app.post('/api/import/archive/:sessionId/commit', async (req, res) => {
 
 /* ------------------------------ 从本地目录导入 ------------------------------ */
 
-app.post('/api/import/folder', async (req, res) => {
+app.post('/api/import/folder', requireUser, async (req, res) => {
   if (!ALLOW_FS_IMPORT) return res.status(403).json({ error: '服务端目录导入已禁用' });
   const { dir, mode = 'folder', pagesPerChapter = 30, comicId, title } = req.body || {};
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: '缺少目录路径' });
@@ -1150,6 +1224,7 @@ app.post('/api/import/folder', async (req, res) => {
       chapters: [],
       progress: null,
       share: null,
+      ...ownershipFields(req, req.body || {}),
       createdAt: t,
       updatedAt: t,
     };
@@ -1195,6 +1270,7 @@ app.post('/api/import/folder', async (req, res) => {
       title: g.title || `第 ${index + 1} 话`,
       number: index + 1,
       pages: [],
+      uploadedBy: req.user?.id || comic.createdBy || null,
       createdAt: now(),
     };
     await ensureDir(chapterDir(comic.id, chapter.id));
@@ -1247,7 +1323,7 @@ app.post('/api/import/folder', async (req, res) => {
 
 /* ------------------------------ 文件服务 ------------------------------ */
 
-app.get('/api/files/:comicId/:chapterId/:file', (req, res) => {
+app.get('/api/files/:comicId/:chapterId/:file', assetGuard, (req, res) => {
   const { comicId, chapterId, file } = req.params;
   if (!isSafeSegment(comicId) || !isSafeSegment(chapterId) || !isSafeSegment(file)) {
     return res.status(400).json({ error: '非法路径' });
@@ -1258,7 +1334,7 @@ app.get('/api/files/:comicId/:chapterId/:file', (req, res) => {
   res.sendFile(full);
 });
 
-app.get('/api/thumbs/:comicId/:chapterId/:file', (req, res) => {
+app.get('/api/thumbs/:comicId/:chapterId/:file', assetGuard, (req, res) => {
   const { comicId, chapterId, file } = req.params;
   if (!isSafeSegment(comicId) || !isSafeSegment(chapterId) || !isSafeSegment(file)) {
     return res.status(400).json({ error: '非法路径' });
@@ -1294,6 +1370,15 @@ app.put('/api/settings', (req, res) => {
   db.settings = { ...db.settings, ...(req.body || {}) };
   saveDbSoon();
   res.json(db.settings);
+});
+
+/* ------------------------------ 账号 / 社区 / 广场 ------------------------------ */
+
+registerSocial(app, {
+  summarize,
+  uploadSingle: upload.single('file'),
+  extOf,
+  nanoid,
 });
 
 /* ------------------------------ 静态资源 & SPA ------------------------------ */

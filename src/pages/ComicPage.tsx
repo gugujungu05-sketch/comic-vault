@@ -10,6 +10,7 @@ import { ShareDialog } from '../components/ShareDialog';
 import { PageEditor } from '../components/PageEditor';
 import { useErrorToast, useToast } from '../components/Toasts';
 import { copyText, formatDate } from '../lib/util';
+import { useSession } from '../lib/session';
 
 export function ComicPage() {
   const { id } = useParams();
@@ -28,6 +29,9 @@ export function ComicPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editingPage, setEditingPage] = useState<{ chapter: Chapter; page: Page } | null>(null);
   const [fixing, setFixing] = useState(false);
+  const { user } = useSession();
+  const isOwner = !!user && (comic?.ownerId === user.id || comic?.createdBy === user.id);
+  const canWrite = !!user && (isOwner || comic?.scope === 'community');
 
   async function load() {
     if (!id) return;
@@ -226,25 +230,29 @@ export function ComicPage() {
       <div className="detail-hero anim-fade-up">
         <div className="hero-cover">
           {comic.coverUrl ? <img src={comic.coverUrl} alt={comic.title} /> : <div className="cover-empty"><Icon name="book" size={30} /></div>}
-          <div className="row" style={{ marginTop: 8 }}>
-            <label className="btn sm" style={{ cursor: 'pointer' }}>
-              <Icon name="image" size={14} /> 换封面
-              <input
-                type="file"
-                accept="image/*"
-                hidden
-                onChange={(e) => e.target.files?.[0] && uploadCover(e.target.files[0])}
-              />
-            </label>
-          </div>
+          {canWrite && (
+            <div className="row" style={{ marginTop: 8 }}>
+              <label className="btn sm" style={{ cursor: 'pointer' }}>
+                <Icon name="image" size={14} /> 换封面
+                <input
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  onChange={(e) => e.target.files?.[0] && uploadCover(e.target.files[0])}
+                />
+              </label>
+            </div>
+          )}
         </div>
 
         <div>
           <div className="row">
             <h1 className="page-title" style={{ marginRight: 8 }}>{comic.title}</h1>
-            <button className="btn icon ghost" onClick={() => setEditing(true)} title="编辑信息">
-              <Icon name="edit" />
-            </button>
+            {canWrite && (
+              <button className="btn icon ghost" onClick={() => setEditing(true)} title="编辑信息">
+                <Icon name="edit" />
+              </button>
+            )}
             <button
               className={`btn icon ghost ${comic.favorite ? 'on' : ''}`}
               onClick={async () => {
@@ -299,48 +307,60 @@ export function ComicPage() {
             <button className="btn primary" onClick={() => navigate(`/read/${comic.id}`)}>
               <Icon name="play" size={16} /> {progressChapter ? '继续阅读' : '开始阅读'}
             </button>
-            <button className="btn" onClick={() => setImporting(true)}>
-              <Icon name="upload" size={16} /> 导入并分话
-            </button>
-            <button className="btn" onClick={() => setExporting([])}>
-              <Icon name="download" size={16} /> 保存到本地
-            </button>
-            <button className="btn" onClick={() => setSharing(true)}>
-              <Icon name="share" size={16} /> 分享
-            </button>
-            <button className="btn ghost" onClick={() => setFolderImport(true)}>
-              <Icon name="folder" size={16} /> 从服务器目录导入
-            </button>
-            <button
-              className="btn ghost"
-              onClick={async () => {
-                try {
-                  const copy = await api.duplicate(comic.id);
-                  toast('已创建副本');
-                  navigate(`/comic/${copy.id}`);
-                } catch (err) {
-                  errorToast(err, '创建副本失败');
-                }
-              }}
-            >
-              <Icon name="copy" size={16} /> 创建副本
-            </button>
-            <button className="btn danger ghost" onClick={() => setConfirmDelete(true)}>
-              <Icon name="trash" size={16} /> 删除
-            </button>
+            {canWrite && (
+              <>
+                <button className="btn" onClick={() => setImporting(true)}>
+                  <Icon name="upload" size={16} /> 导入并分话
+                </button>
+                <button className="btn" onClick={() => setExporting([])}>
+                  <Icon name="download" size={16} /> 保存到本地
+                </button>
+                <button className="btn" onClick={() => setSharing(true)}>
+                  <Icon name="share" size={16} /> 分享
+                </button>
+                <button className="btn ghost" onClick={() => setFolderImport(true)}>
+                  <Icon name="folder" size={16} /> 从服务器目录导入
+                </button>
+                <button
+                  className="btn ghost"
+                  onClick={async () => {
+                    try {
+                      const copy = await api.duplicate(comic.id);
+                      toast('已创建副本');
+                      navigate(`/comic/${copy.id}`);
+                    } catch (err) {
+                      errorToast(err, '创建副本失败');
+                    }
+                  }}
+                >
+                  <Icon name="copy" size={16} /> 创建副本
+                </button>
+              </>
+            )}
+            {isOwner && (
+              <button className="btn danger ghost" onClick={() => setConfirmDelete(true)}>
+                <Icon name="trash" size={16} /> 删除
+              </button>
+            )}
           </div>
         </div>
       </div>
 
+      {comic && <AccessPanel comic={comic} isOwner={isOwner} onChanged={load} />}
+
       <div className="row" style={{ margin: '18px 0 10px' }}>
         <h2 style={{ fontSize: 17, margin: 0 }}>章节（{comic.chapters.length}）</h2>
         <div className="row" style={{ marginLeft: 'auto' }}>
-          <button className="btn sm" onClick={addChapter}>
-            <Icon name="plus" size={14} /> 新建空章节
-          </button>
-          <button className="btn sm" onClick={() => setImporting(true)}>
-            <Icon name="upload" size={14} /> 导入图片
-          </button>
+          {canWrite && (
+            <>
+              <button className="btn sm" onClick={addChapter}>
+                <Icon name="plus" size={14} /> 新建空章节
+              </button>
+              <button className="btn sm" onClick={() => setImporting(true)}>
+                <Icon name="upload" size={14} /> 导入图片
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -359,7 +379,9 @@ export function ComicPage() {
                     {ch.title}
                     {comic.progress?.chapterId === ch.id && <span className="badge accent">在读</span>}
                   </div>
-                  <div className="chapter-sub">{ch.pages.length} 页</div>
+                  <div className="chapter-sub">
+                    {ch.pages.length} 页{ch.uploadedByName ? ` · 由 ${ch.uploadedByName} 上传` : ''}
+                  </div>
                 </div>
                 <div className="row">
                   <button className="btn sm" onClick={() => navigate(`/read/${comic.id}?chapter=${ch.id}`)}>
@@ -368,26 +390,32 @@ export function ComicPage() {
                   <button className="btn sm ghost" onClick={() => setExpanded(open ? null : ch.id)} title="管理页面">
                     <Icon name={open ? 'up' : 'down'} size={14} />
                   </button>
-                  <button className="btn sm ghost" onClick={() => renameChapter(ch)} title="重命名">
-                    <Icon name="edit" size={14} />
-                  </button>
-                  <button className="btn sm ghost" onClick={() => moveChapter(i, -1)} disabled={i === 0} title="上移">
-                    <Icon name="up" size={14} />
-                  </button>
-                  <button
-                    className="btn sm ghost"
-                    onClick={() => moveChapter(i, 1)}
-                    disabled={i === comic.chapters.length - 1}
-                    title="下移"
-                  >
-                    <Icon name="down" size={14} />
-                  </button>
-                  <button className="btn sm ghost" onClick={() => setExporting([ch.id])} title="导出该话">
-                    <Icon name="download" size={14} />
-                  </button>
-                  <button className="btn sm ghost" onClick={() => removeChapter(ch.id)} title="删除">
-                    <Icon name="trash" size={14} />
-                  </button>
+                  {canWrite && (
+                    <>
+                      <button className="btn sm ghost" onClick={() => renameChapter(ch)} title="重命名">
+                        <Icon name="edit" size={14} />
+                      </button>
+                      <button className="btn sm ghost" onClick={() => moveChapter(i, -1)} disabled={i === 0} title="上移">
+                        <Icon name="up" size={14} />
+                      </button>
+                      <button
+                        className="btn sm ghost"
+                        onClick={() => moveChapter(i, 1)}
+                        disabled={i === comic.chapters.length - 1}
+                        title="下移"
+                      >
+                        <Icon name="down" size={14} />
+                      </button>
+                      <button className="btn sm ghost" onClick={() => setExporting([ch.id])} title="导出该话">
+                        <Icon name="download" size={14} />
+                      </button>
+                      {(!ch.uploadedBy || ch.uploadedBy === user?.id) && (
+                        <button className="btn sm ghost" onClick={() => removeChapter(ch.id)} title="删除自己上传的这一话">
+                          <Icon name="trash" size={14} />
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -774,5 +802,80 @@ function FolderImportDialog({
         <Icon name="copy" size={14} /> 复制当前路径
       </button>
     </Modal>
+  );
+}
+
+/** 可见性、下载权限、发布到公共书库（仅创建者可改） */
+function AccessPanel({ comic, isOwner, onChanged }: {
+  comic: Comic;
+  isOwner: boolean;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const errorToast = useErrorToast();
+  const navigate = useNavigate();
+  const community = comic.scope === 'community';
+
+  async function patch(body: Record<string, unknown>) {
+    try {
+      await api.update(comic.id, body as never);
+      toast('已更新');
+      onChanged();
+    } catch (err) {
+      errorToast(err, '更新失败');
+    }
+  }
+
+  if (!isOwner) {
+    return (
+      <div className="access-panel">
+        <Icon name="globe" size={17} />
+        <div>
+          <b>{comic.ownerName || '某位用户'}</b> 创建 · {community ? '公共书库（大家可协作补全）' : '公开漫画'}
+          <div className="muted sm-text">只有上传者本人能删除自己添加的话、名字、标签与封面</div>
+        </div>
+        {community && (
+          <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => navigate('/community')}>
+            去公共书库协作
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="access-panel owner">
+      <div className="row wrap" style={{ gap: 12 }}>
+        <b className="row" style={{ gap: 6 }}><Icon name="lock" size={15} /> 可见性与权限</b>
+        <label className="row" style={{ gap: 6 }}>
+          <span className="muted sm-text">可见性</span>
+          <select
+            className="select" style={{ width: 170 }}
+            disabled={community}
+            value={community ? 'public' : comic.visibility || 'private'}
+            onChange={(e) => patch({ visibility: e.target.value })}
+          >
+            <option value="private">私密（仅自己 + 分享链接）</option>
+            <option value="public">公开（所有人可见）</option>
+          </select>
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={comic.allowDownload !== false} onChange={(e) => patch({ allowDownload: e.target.checked })} />
+          允许下载
+        </label>
+        <button
+          className="btn sm"
+          onClick={() => patch(community
+            ? { scope: 'personal' }
+            : { scope: 'community', visibility: 'public' })}
+        >
+          {community ? '从公共书库撤回' : '发布到公共书库'}
+        </button>
+        {community && <button className="btn sm ghost" onClick={() => navigate('/community')}>协作编辑</button>}
+      </div>
+      <div className="muted sm-text" style={{ marginTop: 8 }}>
+        私密漫画通过分享链接也能直接打开；关闭下载后，公开访问与分享访问都不能下载。
+      </div>
+    </div>
   );
 }

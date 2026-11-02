@@ -19,6 +19,8 @@ export interface Chapter {
   number: number | null;
   pages: Page[];
   createdAt?: number;
+  uploadedBy?: string | null;
+  uploadedByName?: string;
 }
 
 export interface ShareInfo {
@@ -38,6 +40,64 @@ export interface ShareLog {
   event: string;
   ip: string;
   ua: string;
+}
+
+/** 协作条目：别名 / 标签 / 封面，都记录添加者，只有本人能删 */
+export interface MetaEntry {
+  id: string;
+  value?: string;
+  url?: string;
+  type?: 'page' | 'file';
+  by: string;
+  byName: string;
+  at: number;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  bio: string;
+  avatar: string;
+  isAdmin: boolean;
+  createdAt: number;
+}
+
+export interface PlazaComment {
+  id: string;
+  by: string;
+  byName: string;
+  content: string;
+  at: number;
+}
+
+export interface PlazaPost {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  comic: { id: string; title: string; coverUrl: string | null; chapterCount: number } | null;
+  shareUrl: string | null;
+  likes: string[];
+  comments: PlazaComment[];
+  createdAt: number;
+}
+
+export interface CommunityComic extends ComicSummary {
+  ownerName: string;
+  aliases: MetaEntry[];
+  tagEntries: MetaEntry[];
+  covers: MetaEntry[];
+  activeCoverId: string | null;
+  activeAliasId: string | null;
+  chapters: {
+    id: string;
+    title: string;
+    number: number | null;
+    pageCount: number;
+    uploadedBy: string | null;
+    uploadedByName: string;
+  }[];
 }
 
 export interface ComicSummary {
@@ -66,6 +126,19 @@ export interface ComicSummary {
   rating?: number | null;
   ageRating?: string;
   comicInfo?: Record<string, string> | null;
+  /* ---- 多用户 / 社区字段 ---- */
+  baseTitle?: string;
+  scope?: 'personal' | 'community';
+  visibility?: 'private' | 'public';
+  allowDownload?: boolean;
+  ownerId?: string | null;
+  ownerName?: string;
+  createdBy?: string | null;
+  aliases?: MetaEntry[];
+  tagEntries?: MetaEntry[];
+  covers?: MetaEntry[];
+  activeCoverId?: string | null;
+  activeAliasId?: string | null;
 }
 
 export interface Comic extends ComicSummary {

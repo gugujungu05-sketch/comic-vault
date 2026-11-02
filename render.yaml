@@ -1,0 +1,24 @@
+# Render Blueprint：连接 GitHub 仓库后自动读取本文件创建服务
+# 文档：https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: comic-vault
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/auth/status
+    envVars:
+      - key: CV_DATA_DIR
+        value: /data
+      - key: NODE_ENV
+        value: production
+      - key: CV_ALLOW_FS_IMPORT
+        value: "0"
+      # 邮箱验证码：不填则自动使用「开发模式验证码」（页面直接显示）
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+    disk:
+      name: comic-vault-data
+      mountPath: /data
+      sizeGB: 1
