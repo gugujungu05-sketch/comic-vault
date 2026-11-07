@@ -9,9 +9,15 @@ import react from '@vitejs/plugin-react';
  * 从而在运行时把凭据拼到每个资源地址上。
  */
 function credentialBootstrap(): Plugin {
+  let base = '/';
   return {
     name: 'cv-credential-bootstrap',
     apply: 'build',
+    configResolved(cfg) {
+      // 去掉尾部斜杠得到前缀，例如 '/comic-vault'；根部署时为 ''
+      const b = (cfg.base || '/').replace(/\/+$/, '');
+      base = b;
+    },
     transformIndexHtml: {
       order: 'post',
       handler(html) {
@@ -39,13 +45,15 @@ function credentialBootstrap(): Plugin {
           'function wc(u){return code?u+(u.indexOf("?")>=0?"&":"?")+"sharecode="+encodeURIComponent(code):u;}',
           // 可安装应用清单：把凭据带进 manifest，服务端据此生成带凭据的启动地址与图标
           // 凭据同时放进路径：托管网关会消费 ?sharecode=，服务端只能从路径取到
+          'var BASE=' + JSON.stringify(base) + ';',
+          'function bp(p){return BASE+"/"+p.replace(/^\\/+/,"");}',
           'var mf=document.getElementById("cv-manifest");',
-          'if(mf){mf.href=code?"/pwa/"+encodeURIComponent(code)+"/manifest.webmanifest?sharecode="+encodeURIComponent(code):"/manifest.webmanifest";}',
-          'var ai=document.createElement("link");ai.rel="apple-touch-icon";ai.href=wc("/icons/apple-touch-icon.png");document.head.appendChild(ai);',
+          'if(mf){mf.href=code?bp("pwa/"+encodeURIComponent(code)+"/manifest.webmanifest?sharecode="+encodeURIComponent(code)):bp("manifest.webmanifest");}',
+          'var ai=document.createElement("link");ai.rel="apple-touch-icon";ai.href=wc(bp("icons/apple-touch-icon.png"));document.head.appendChild(ai);',
           'var CSS=' + JSON.stringify([...css]) + ',JS=' + JSON.stringify([...js]) + ';',
           'CSS.forEach(function(h){var l=document.createElement("link");l.rel="stylesheet";l.href=wc(h);document.head.appendChild(l);});',
           'JS.forEach(function(s){var el=document.createElement("script");el.type="module";el.src=wc(s);document.head.appendChild(el);});',
-          'if(code&&"serviceWorker" in navigator){navigator.serviceWorker.register(wc("/sw.js"),{scope:"/"}).catch(function(){});}',
+          'if(code&&"serviceWorker" in navigator){navigator.serviceWorker.register(wc(bp("sw.js")),{scope:BASE+"/"}).catch(function(){});}',
           '})();',
           '</script>',
         ].join('');
