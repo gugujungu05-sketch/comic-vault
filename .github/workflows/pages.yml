@@ -1,0 +1,47 @@
+name: Deploy ComicVault entry
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'docs/**'
+      - 'version.json'
+      - 'scripts/publish-release.cjs'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # 部署前根据 version.json 重新生成公开清单（不含本地成品，纯 JSON）
+      # 这样 version.json 一变，Pages 上的 docs/release.json 自动跟着变
+      - name: 生成安装包公开清单
+        run: node scripts/publish-release.cjs --manifest-only
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload docs
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-pages
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

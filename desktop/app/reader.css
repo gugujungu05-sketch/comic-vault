@@ -1,0 +1,77 @@
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: #07090c; color: #e6ecf3; overflow: hidden;
+  font: 13px/1.5 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', sans-serif;
+}
+.r-top, .r-bottom {
+  position: fixed; left: 0; right: 0; z-index: 10;
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: rgba(12, 17, 23, .93); border-color: #222c38;
+  backdrop-filter: blur(10px);
+  transition: transform .3s ease, opacity .3s ease;
+}
+.r-top { top: 0; border-bottom: 1px solid #222c38; }
+.r-bottom { bottom: 0; border-top: 1px solid #222c38; }
+/* 无操作 2.6 秒后自动隐藏上下工具栏，阅读更沉浸 */
+body.idle { cursor: none; }
+body.idle .r-top { transform: translateY(-100%); opacity: 0; }
+body.idle .r-bottom { transform: translateY(100%); opacity: 0; }
+body.idle .r-hint { opacity: 0; }
+.r-title { font-weight: 700; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r-select {
+  margin-left: auto; max-width: 210px; padding: 5px 8px; border-radius: 6px;
+  background: #1c2530; border: 1px solid #27313d; color: inherit;
+}
+.r-btn {
+  min-width: 32px; min-height: 32px; padding: 5px 9px; border-radius: 6px;
+  border: 1px solid #27313d; background: #1c2530; color: inherit; cursor: pointer;
+}
+.r-btn:hover { border-color: #45c8a0; }
+.r-zoom { font-size: 11px; color: #8b98a9; min-width: 38px; text-align: center; }
+.r-stage {
+  position: absolute; inset: 49px 0 49px 0; display: flex; align-items: center;
+  justify-content: center; gap: 4px; overflow: auto; padding: 12px;
+}
+.r-stage img {
+  max-height: 100%; max-width: 100%; object-fit: contain;
+  box-shadow: 0 6px 30px rgba(0,0,0,.6);
+  animation: r-page-in .28s ease;
+}
+@keyframes r-page-in {
+  from { opacity: 0; transform: scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+.r-stage.spread img { max-width: 50%; }
+/* 条漫：宽度撑满、零间隙、上下连续滚动，长图不被切断 */
+.r-stage.webtoon { display: block; padding: 0; overflow-y: auto; overflow-x: hidden; background: #000; }
+.r-stage.webtoon img {
+  display: block; width: 100%; height: auto; max-width: none; max-height: none;
+  object-fit: initial; box-shadow: none; margin: 0;
+}
+.r-webtoon-edge {
+  display: block; width: 100%; padding: 20px 14px; border: 0; cursor: pointer;
+  background: #12161e; color: #45c8a0; font-size: 14px; font-weight: 700;
+  text-align: center; border-top: 1px solid #222c38;
+}
+.r-webtoon-edge:hover { background: #1a222c; }
+.r-webtoon-edge.done { color: #67748d; font-weight: 500; cursor: default; }
+.r-loading, .r-empty { color: #8b98a9; }
+.r-hint {
+  position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: #677483; pointer-events: none; opacity: .8;
+}
+#slider { flex: 1; accent-color: #45c8a0; min-width: 80px; }
+#pageInfo { font-size: 12px; color: #8b98a9; white-space: nowrap; min-width: 74px; text-align: center; }
+body.mobile .r-hint { display: none; }
+body.mobile .r-title { max-width: 26vw; }
+body.mobile .r-select { max-width: 110px; }
+body.mobile .r-btn { min-height: 40px; min-width: 40px; }
+/* 手机端顶栏只保留返回 / 标题 / 上一话 / 章节 / 下一话 / 条漫，避免挤压 */
+body.mobile .r-top { gap: 3px; padding: 0 6px; }
+body.mobile #btnZoomIn, body.mobile #btnZoomOut, body.mobile #zoomLabel,
+body.mobile #btnFull, body.mobile #btnSpread { display: none; }
+body.mobile .r-select { max-width: 92px; }
+body.mobile .r-title { max-width: 20vw; }
+body.mobile .r-bottom { gap: 5px; padding: 6px 8px; }
+body.mobile #slider { display: none; }

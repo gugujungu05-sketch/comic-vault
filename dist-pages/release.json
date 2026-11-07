@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "version": "3.4.0.0",
+  "webVersion": "2.7.0.0",
+  "versions": {
+    "web": "2.7.0.0",
+    "desktop": "3.4.0.0",
+    "android": "3.4.0.0"
+  },
+  "buildVersion": "3.4.0",
+  "build": 7,
+  "releasedAt": 1794398400000,
+  "generatedAt": 1794042627276,
+  "driveUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
+  "versionRule": {
+    "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
+    "minor": "第 2 段：成体系的新功能（如多选导入、条漫模式）",
+    "patch": "第 3 段：一次完整发版里的一组修复",
+    "build": "第 4 段：文案、样式、脚本、文档等小改动，默认只加这一段"
+  },
+  "packages": [
+    {
+      "id": "windows-portable",
+      "file": "ComicVault-3.4.0-portable.exe",
+      "sizeBytes": 114717493,
+      "sha256": "8a16dc210ac888981049f379a57aa99e821de04aed7bdeac659e6abfad70b726",
+      "local": false,
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0-portable.exe",
+      "updatedAt": 1794042627290
+    },
+    {
+      "id": "windows-green",
+      "file": "ComicVault-3.4.0-win.zip",
+      "sizeBytes": 158211822,
+      "sha256": "96bda747c1ae91f72e32ac52637adc83e0ceac99dcc61ef1a4492580180a3401",
+      "local": false,
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0-win.zip",
+      "updatedAt": 1794042627309
+    },
+    {
+      "id": "linux-appimage",
+      "file": "ComicVault-3.4.0.AppImage",
+      "sizeBytes": 138254643,
+      "sha256": "d1759f729ed7fbbc33f8aea7ce4ffce04cd962a3fc75eb0678b9f0c30105f86e",
+      "local": false,
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0.AppImage",
+      "updatedAt": 1794042627326
+    },
+    {
+      "id": "android-apk",
+      "file": "ComicVault-3.4.0.apk",
+      "sizeBytes": 75030,
+      "sha256": "02a124d15e42528db10201bc2e967165eeb38c3e1215afae8f66bf4f8bf3e304",
+      "local": false,
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0.apk",
+      "updatedAt": 1794042627326
+    },
+    {
+      "id": "zip-bundle",
+      "file": "ComicVault-3.4.0-all-installers.zip",
+      "sizeBytes": 383969715,
+      "sha256": "e34b25f895124afb9d6e4c6241d197f8f1685785b0d179746a8ea849f7fa91dc",
+      "local": false,
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0-all-installers.zip",
+      "updatedAt": 1794042635682
+    }
+  ],
+  "mirror": true,
+  "note": "公开镜像，安装包直链指向 GitHub Releases"
+}

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob: http: https:; connect-src 'self' http: https:;" />
+  <title>漫画库 · 桌面客户端</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-icon">📚</span>
+        <span class="brand-text">漫画库<small>DESKTOP 客户端</small></span>
+      </div>
+
+      <div class="server-line" id="serverLine"><i class="dot"></i><span>正在连接…</span></div>
+
+      <nav class="side-nav" id="sideNav">
+        <button class="nav-item active" data-view="library"><b>▤</b><span>我的书架</span></button>
+        <button class="nav-item" data-view="sources"><b>⇩</b><span>在线来源</span></button>
+        <button class="nav-item" data-view="updates"><b>⟳</b><span>追更</span></button>
+        <button class="nav-item" data-view="community"><b>◎</b><span>公共书库</span></button>
+        <button class="nav-item" data-view="plaza"><b>◈</b><span>广场</span></button>
+        <button class="nav-item" data-view="settings"><b>⚙</b><span>设置</span></button>
+      </nav>
+
+      <div class="side-hint">
+        <b>拖拽导入</b>
+        <span>把图片 / 文件夹直接拖到窗口里，自动建话</span>
+      </div>
+
+      <div class="side-foot">
+        <div id="userBox" class="user-box"></div>
+        <div class="build" id="buildInfo">v3.0.0</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="viewTitle">我的书架</h1>
+          <p id="viewSub">本地客户端 · 与网站共用同一份数据</p>
+        </div>
+        <div class="topbar-actions" id="topActions"></div>
+      </header>
+      <section class="content" id="content"></section>
+    </main>
+  </div>
+
+  <div class="drop-overlay" id="dropOverlay">
+    <div class="drop-card">
+      <div class="drop-icon">⇩</div>
+      <h2>松手即可导入</h2>
+      <p>图片、压缩包或整个文件夹 · 自动按名称排序分话</p>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="modalMask"><div class="modal" id="modal"></div></div>
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

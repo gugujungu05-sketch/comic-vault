@@ -1,0 +1,69 @@
+{
+  "name": "comic-vault-desktop",
+  "version": "3.4.0",
+  "private": true,
+  "description": "漫画库 ComicVault 独立桌面客户端 · 本地界面 + 原生能力，与网站/手机共用同一份数据",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win --x64",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux --x64",
+    "dist": "electron-builder --win --mac --linux --x64"
+  },
+  "devDependencies": {
+    "electron": "^45.2.2",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "cn.comicvault.desktop",
+    "productName": "漫画库 ComicVault",
+    "copyright": "ComicVault",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "app/**/*",
+      "build/**/*",
+      "host/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "host/**/*"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "漫画库"
+    },
+    "portable": {
+      "artifactName": "漫画库-便携版.exe"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.entertainment"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage"
+      ],
+      "category": "Graphics"
+    }
+  }
+}

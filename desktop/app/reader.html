@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:;" />
+  <title>阅读器 · 漫画库</title>
+  <link rel="stylesheet" href="reader.css" />
+</head>
+<body>
+  <header class="r-top">
+    <button class="r-btn" id="btnBack" title="返回">←</button>
+    <div class="r-title" id="rTitle">载入中…</div>
+    <button class="r-btn" id="btnPrevChapter" title="上一话 [">«</button>
+    <select class="r-select" id="chapterSel"></select>
+    <button class="r-btn" id="btnNextChapter" title="下一话 ]">»</button>
+    <button class="r-btn" id="btnWebtoon" title="条漫：宽度撑满、上下连续滚动">条漫</button>
+    <button class="r-btn" id="btnSpread" title="单页 / 双页">单页</button>
+    <button class="r-btn" id="btnZoomOut" title="缩小">−</button>
+    <span class="r-zoom" id="zoomLabel">100%</span>
+    <button class="r-btn" id="btnZoomIn" title="放大">＋</button>
+    <button class="r-btn" id="btnFull" title="全屏">⛶</button>
+  </header>
+  <div class="r-stage" id="stage"><div class="r-loading">正在载入页面…</div></div>
+  <div class="r-hint" id="hint">← / → 翻页 · 空格下一页 · +/- 缩放 · Esc 退出全屏</div>
+  <footer class="r-bottom">
+    <button class="r-btn" id="btnPrev">‹ 上一页</button>
+    <span id="pageInfo">— / —</span>
+    <input type="range" id="slider" min="0" max="0" value="0" />
+    <button class="r-btn" id="btnNext">下一页 ›</button>
+  </footer>
+  <script src="reader.js"></script>
+</body>
+</html>

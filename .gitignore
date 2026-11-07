@@ -1,0 +1,19 @@
+node_modules
+desktop/node_modules
+desktop/release
+desktop/config.json
+mobile/build
+mobile/*.keystore
+mobile/*.apk
+dist
+data
+bin
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+.env*
+!.env.example
+scripts/api-push.py
+# Pages 官网（构建生成，不进源码库）
+/dist-pages/

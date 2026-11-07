@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>漫画库 ComicVault · 入口</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 32px 18px 60px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(1200px 600px at 50% -10%, #242044 0%, #0e1015 62%);
+      color: #e9edf6; display: flex; align-items: flex-start; justify-content: center;
+    }
+    .wrap { width: min(680px, 100%); }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 800; }
+    .logo {
+      width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center;
+      background: #7c6cff; color: #fff; font-size: 20px;
+    }
+    .sub { color: #97a1b6; font-size: 13px; margin: 10px 0 26px; line-height: 1.7; }
+    h2 { font-size: 15px; margin: 26px 0 12px; }
+    .card {
+      display: block; width: 100%; text-align: left; text-decoration: none; color: inherit;
+      border: 1px solid #272e3d; border-radius: 14px; padding: 16px 18px; margin-bottom: 12px;
+      background: #171c26; cursor: pointer; transition: .15s;
+    }
+    .card:hover { border-color: #7c6cff; transform: translateY(-2px); }
+    .card.primary { border-color: #7c6cff; background: linear-gradient(135deg, #211d3c, #171c26); }
+    .card-title { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .tag { font-size: 10px; padding: 3px 8px; border-radius: 999px; background: rgba(124,108,255,.2); color: #a99cff; font-weight: 700; }
+    .tag.gray { background: #232a38; color: #97a1b6; }
+    .card-url { font-size: 12px; color: #97a1b6; margin-top: 8px; word-break: break-all; }
+    .card-desc { font-size: 12px; color: #97a1b6; margin-top: 8px; line-height: 1.6; }
+    .countdown { color: #35d0a5; font-weight: 700; }
+    .field { display: flex; gap: 8px; margin-top: 10px; }
+    input {
+      flex: 1; min-width: 0; padding: 11px 12px; font-size: 16px; border-radius: 9px;
+      border: 1px solid #272e3d; background: #12161f; color: #e9edf6;
+    }
+    button {
+      padding: 10px 16px; font-size: 14px; border-radius: 9px; border: 1px solid #7c6cff;
+      background: #7c6cff; color: #fff; cursor: pointer; min-height: 44px;
+    }
+    button.ghost { background: transparent; color: #a99cff; }
+    .note { font-size: 11px; color: #6f7b91; line-height: 1.8; margin-top: 24px; border-top: 1px solid #272e3d; padding-top: 16px; }
+    .status { font-size: 12px; color: #97a1b6; margin-top: 14px; min-height: 18px; }
+    @media (max-width: 560px) { body { padding: 22px 14px 40px; } .field { flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand"><span class="logo">漫</span> 漫画库 ComicVault</div>
+    <p class="sub">
+      这是永久固定的入口网址，记这一个就行。它会自动带你到当前的漫画库服务——
+      网页、PWA、桌面软件、手机 App 都用同一台服务器、同一个账号、同一份数据。
+    </p>
+
+    <h2>选择入口</h2>
+    <a class="card primary" id="primaryCard" href="#">
+      <div class="card-title">稳定入口 <span class="tag">推荐</span></div>
+      <div class="card-url" id="primaryUrl">读取中…</div>
+      <div class="card-desc">平台托管地址，最稳定；网址里带一段访问凭据，属正常现象。</div>
+    </a>
+    <a class="card" id="tunnelCard" href="#">
+      <div class="card-title">干净网址 <span class="tag gray">临时</span></div>
+      <div class="card-url" id="tunnelUrl">读取中…</div>
+      <div class="card-desc">不带任何凭据的公网域名，适合临时发给朋友。隧道重启后会更换，由脚本自动更新。</div>
+    </a>
+
+    <div class="status" id="status"></div>
+
+    <h2>手动指定服务器地址</h2>
+    <div class="field">
+      <input id="manual" type="url" placeholder="https://你的域名/" autocomplete="off" />
+      <button id="go">打开</button>
+      <button class="ghost" id="reset">清除</button>
+    </div>
+    <div class="note" id="note">
+      手动地址只保存在本机浏览器，不会上传。桌面 / 手机软件里也可在「设置」填同一个服务器地址。<br />
+      本页由 GitHub Pages 托管，只负责跳转；漫画库本身是带后端与数据库的应用，静态托管跑不起来，所以需要一台常驻服务器。
+      项目里的 <code>docs/backend.json</code> 由 <code>npm run public-url -- --push</code> 自动更新。
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var $ = function (id) { return document.getElementById(id); };
+      var cfg = null, timer = null, left = 6;
+      var KEY = 'cv-server-override';
+
+      function normalize(u) {
+        if (!u) return '';
+        u = String(u).trim();
+        if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+        return u.replace(/\/$/, '');
+      }
+      function override() { try { return normalize(localStorage.getItem(KEY)); } catch (e) { return ''; } }
+      function go(u) { if (u) location.href = normalize(u); }
+
+      function tick() {
+        if (left <= 0) { clearInterval(timer); return; }
+        left--;
+        if (left === 0) {
+          clearInterval(timer);
+          $('status').textContent = '正在打开稳定入口…';
+          if (cfg && cfg.primary) go(cfg.primary);
+          return;
+        }
+        $('status').innerHTML = '将在 <span class="countdown">' + left + '</span> 秒后自动打开稳定入口 · <a href="#" id="cancel" style="color:#a99cff">取消</a>';
+        var c = $('cancel');
+        if (c) c.onclick = function (e) { e.preventDefault(); clearInterval(timer); $('status').textContent = '已取消自动跳转，请点上面的卡片进入。'; };
+      }
+      function armAuto() {
+        var ov = override();
+        if (ov) { go(ov); return; }
+        var q = new URLSearchParams(location.search).get('server');
+        if (q) { go(q); return; }
+        timer = setInterval(tick, 1000);
+        tick();
+      }
+
+      $('primaryCard').onclick = function (e) { e.preventDefault(); clearInterval(timer); go(cfg && cfg.primary); };
+      $('tunnelCard').onclick = function (e) { e.preventDefault(); clearInterval(timer); go(cfg && cfg.tunnel); };
+      $('go').onclick = function () {
+        var u = normalize($('manual').value);
+        if (!u) return;
+        try { localStorage.setItem(KEY, u); } catch (e) {}
+        go(u);
+      };
+      $('manual').onkeydown = function (e) { if (e.key === 'Enter') $('go').click(); };
+      $('reset').onclick = function () {
+        try { localStorage.removeItem(KEY); } catch (e) {}
+        $('manual').value = '';
+        $('status').textContent = '已清除手动地址，将使用默认稳定入口。';
+      };
+
+      fetch('./backend.json?t=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          cfg = d;
+          $('primaryUrl').textContent = d.primary || '未配置';
+          $('tunnelUrl').textContent = d.tunnel || '当前没有临时隧道';
+          if (!d.tunnel) $('tunnelCard').style.opacity = '.5';
+          var ov = override();
+          if (ov) { $('status').textContent = '正在打开你手动指定的服务器…'; }
+          else if (d.updatedAt) { $('status').textContent = '地址配置更新于 ' + new Date(d.updatedAt).toLocaleString('zh-CN'); }
+          armAuto();
+        })
+        .catch(function () {
+          $('primaryUrl').textContent = 'backend.json 读取失败';
+          $('tunnelUrl').textContent = '请在下方手动填写服务器地址';
+          $('status').textContent = '无法读取配置，请在下面手动输入。';
+        });
+    })();
+  </script>
+</body>
+</html>
