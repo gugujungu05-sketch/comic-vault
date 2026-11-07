@@ -15,5 +15,5 @@ __pycache__/
 .env*
 !.env.example
 scripts/api-push.py
-# Pages 官网（构建生成，不进源码库）
-/dist-pages/
+# Pages 官网（完整 SPA，从 dist 构建拷入；必须进仓库供 Pages 部署）
+!/dist-pages/**

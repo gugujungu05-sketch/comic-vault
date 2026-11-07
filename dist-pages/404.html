@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>漫画库</title>
+<script>
+/* GitHub Pages SPA 兜底：把任意深链转回应用入口 */
+(function () {
+  var base = '/comic-vault/';
+  var path = location.pathname.replace(base, '');
+  var search = location.search || '';
+  location.replace(base + '?cvroute=' + encodeURIComponent(path) + search);
+})();
+</script></head>
+<body style="background:#0f1115"></body>
+</html>
