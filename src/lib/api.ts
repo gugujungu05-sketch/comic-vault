@@ -43,7 +43,7 @@ export async function detectApiBase(candidates: string[] = ['']): Promise<string
   for (const base of list) {
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 2500);
+      const timer = setTimeout(() => ctrl.abort(), 8000);
       const res = await fetch(`${base}/api/runtime`, { cache: 'no-store', signal: ctrl.signal });
       clearTimeout(timer);
       if (!res.ok) continue;

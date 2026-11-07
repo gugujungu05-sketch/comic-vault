@@ -10,7 +10,7 @@
   "buildVersion": "3.4.0",
   "build": 7,
   "releasedAt": 1794398400000,
-  "generatedAt": 1794042627276,
+  "generatedAt": 1794043076261,
   "driveUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
     "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
@@ -23,10 +23,10 @@
       "id": "windows-portable",
       "file": "ComicVault-3.4.0-portable.exe",
       "sizeBytes": 114717493,
-      "sha256": "8a16dc210ac888981049f379a57aa99e821de04aed7bdeac659e6abfad70b726",
+      "sha256": "87941cebc045f5f09c3bc0f00708eb53f20275fd2509c827b202f0c1d5719bdc",
       "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0-portable.exe",
-      "updatedAt": 1794042627290
+      "updatedAt": 1794043076262
     },
     {
       "id": "windows-green",
@@ -35,16 +35,16 @@
       "sha256": "96bda747c1ae91f72e32ac52637adc83e0ceac99dcc61ef1a4492580180a3401",
       "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0-win.zip",
-      "updatedAt": 1794042627309
+      "updatedAt": 1794043076265
     },
     {
       "id": "linux-appimage",
       "file": "ComicVault-3.4.0.AppImage",
       "sizeBytes": 138254643,
-      "sha256": "d1759f729ed7fbbc33f8aea7ce4ffce04cd962a3fc75eb0678b9f0c30105f86e",
+      "sha256": "fe177a3ed4827298f219630ec836bc551c89de577d0c49ffe05366f5f8330700",
       "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0.AppImage",
-      "updatedAt": 1794042627326
+      "updatedAt": 1794043076265
     },
     {
       "id": "android-apk",
@@ -53,16 +53,16 @@
       "sha256": "02a124d15e42528db10201bc2e967165eeb38c3e1215afae8f66bf4f8bf3e304",
       "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0.apk",
-      "updatedAt": 1794042627326
+      "updatedAt": 1794043076265
     },
     {
       "id": "zip-bundle",
       "file": "ComicVault-3.4.0-all-installers.zip",
       "sizeBytes": 383969715,
-      "sha256": "e34b25f895124afb9d6e4c6241d197f8f1685785b0d179746a8ea849f7fa91dc",
+      "sha256": "8e503ddf2a8ca938747807521d2783d2f2dcd57f9241161c2cc2a968b9ded779",
       "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.0/ComicVault-3.4.0-all-installers.zip",
-      "updatedAt": 1794042635682
+      "updatedAt": 1794043085340
     }
   ],
   "mirror": true,

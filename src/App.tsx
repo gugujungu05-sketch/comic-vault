@@ -182,6 +182,28 @@ function Shell() {
     return () => { alive = false; };
   }, [refresh]);
 
+  /* 离线自动重连：探测失败（后端临时不可用）时，每隔一段时间自动重试，
+     后端一旦恢复即自动连接，无需用户手动刷新页面。 */
+  useEffect(() => {
+    if (!offline) return;
+    let alive = true;
+    const timer = setInterval(async () => {
+      const sameOrigin = await fetch(`${import.meta.env.BASE_URL}backend.json`, { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const remote: string[] = Array.isArray(sameOrigin?.candidates) ? sameOrigin.candidates : [];
+      const found = await detectApiBase([
+        typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',
+        ...remote,
+        'http://127.0.0.1:8787',
+      ]);
+      if (alive && found) {
+        setOffline(false);
+        refresh();
+      }
+    }, 10000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [offline, refresh]);
+
   /* 托管环境访问凭据：记住 sharecode，SPA 跳转/刷新后补回地址栏 */
   useEffect(() => {
     rememberShareCode();
@@ -235,6 +257,12 @@ function Shell() {
 
   return (
     <div className="app">
+      {offline && (
+        <div className="offline-bar">
+          <Icon name="wifi" size={14} />
+          正在连接漫画库服务器…（后台自动重试，无需刷新）
+        </div>
+      )}
       {!immersive && <Header theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />}
       <Routes>
         <Route path="/" element={<LibraryPage />} />
