@@ -230,7 +230,7 @@
       return;
     }
     $('#authForm').innerHTML = `<label class="field"><span>邮箱</span><input class="input" id="authEmail" type="email" placeholder="you@example.com" /></label>
-      <label class="field"><span>密码（至少 6 位）</span><input class="input" id="authPwd" type="password" placeholder="••••••" /></label>
+      <label class="field"><span>密码（至少 6 位）</span><span class="pwd-wrap"><input class="input" id="authPwd" type="password" placeholder="••••••" /><button type="button" class="pwd-toggle" data-action="auth-toggle-pwd">显示</button></span></label>
       ${mode === 'register' ? '<label class="field"><span>昵称（可选）</span><input class="input" id="authName" /></label>' : ''}
       <button class="btn primary block" data-action="auth-submit" data-mode="${mode}">${mode === 'register' ? '注册并登录' : '登录'}</button>`;
   }
@@ -699,10 +699,7 @@
   async function startImportFrom(rawPaths) {
     if (!rawPaths || !rawPaths.length) return;
     let paths = rawPaths.filter((p) => typeof p === 'string');
-    const epubs = paths.filter((p) => /\.epub$/i.test(p));
-    if (epubs.length) toast(`桌面端暂不支持 EPUB 导入，请在网页端导入：${epubs.map(base).join('、')}`, true);
-    paths = paths.filter((p) => !/\.epub$/i.test(p));
-    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|7z|cb7|tar|tgz|gz)$/i.test(p));
+    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|7z|cb7|tar|tgz|gz|epub)$/i.test(p));
     const images = paths.filter((p) => !archives.includes(p));
     if (images.length) await startImport(images);
     if (archives.length) await importArchives(archives);
@@ -986,6 +983,13 @@
       else if (a === 'auth-tab') renderAuthForm(el.dataset.mode);
       else if (a === 'auth-submit') await authSubmit(el.dataset.mode);
       else if (a === 'auth-send-code') await sendCode();
+      else if (a === 'auth-toggle-pwd') {
+        const pwd = $('#authPwd'), btn = el;
+        if (pwd) {
+          pwd.type = pwd.type === 'password' ? 'text' : 'password';
+          btn.textContent = pwd.type === 'password' ? '显示' : '隐藏';
+        }
+      }
       else if (a === 'auth-code-login') await authCodeLogin();
       else if (a === 'logout') { await api('POST', '/api/auth/logout'); await refreshStatus(); render(); }
       else if (a === 'new-comic') {

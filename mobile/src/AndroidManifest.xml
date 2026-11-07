@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="cn.comicvault.app"
     android:versionCode="10"
-    android:versionName="3.4.0.0">
+    android:versionName="3.4.0.1">
 
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="35" />
 

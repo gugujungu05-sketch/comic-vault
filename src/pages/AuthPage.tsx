@@ -21,6 +21,8 @@ export function AuthPage() {
   const [forgotSent, setForgotSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [codeLeft, setCodeLeft] = useState(0);
+  const [showPwd, setShowPwd] = useState(false);
+  const [showNewPwd, setShowNewPwd] = useState(false);
 
   useEffect(() => {
     if (codeLeft <= 0) return;
@@ -178,7 +180,23 @@ export function AuthPage() {
               )}
               <div className="field">
                 <label>密码（至少 6 位）</label>
-                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••" />
+                <div className="pwd-wrap">
+                  <input
+                    className="input"
+                    type={showPwd ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••"
+                  />
+                  <button
+                    type="button"
+                    className="pwd-toggle"
+                    onClick={() => setShowPwd((v) => !v)}
+                    title={showPwd ? '隐藏密码' : '显示密码（防止输错）'}
+                  >
+                    {showPwd ? '隐藏' : '显示'}
+                  </button>
+                </div>
               </div>
               {register && (
                 <div className="auth-hint">
@@ -253,7 +271,23 @@ export function AuthPage() {
               </div>
               <div className="field" style={{ marginTop: 12 }}>
                 <label>新密码（至少 6 位）</label>
-                <input className="input" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="••••••" />
+                <div className="pwd-wrap">
+                  <input
+                    className="input"
+                    type={showNewPwd ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="••••••"
+                  />
+                  <button
+                    type="button"
+                    className="pwd-toggle"
+                    onClick={() => setShowNewPwd((v) => !v)}
+                    title={showNewPwd ? '隐藏密码' : '显示密码（防止输错）'}
+                  >
+                    {showNewPwd ? '隐藏' : '显示'}
+                  </button>
+                </div>
               </div>
               <div className="auth-hint">
                 只有<strong>已验证过邮箱</strong>的账号能收到重置验证码。还没验证的话，请先登录后在「设置 → 邮箱验证」完成验证。

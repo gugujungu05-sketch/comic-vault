@@ -65,7 +65,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.0";
+    private static final String APP_VERSION = "3.4.0.1";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";
@@ -549,7 +549,8 @@ public class MainActivity extends Activity {
                     i.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
                     i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
                             "image/*", "application/zip", "application/x-cbz",
-                            "application/pdf", "application/octet-stream"});
+                            "application/pdf", "application/epub+zip",
+                            "application/octet-stream"});
                     startActivityForResult(i, REQ_PICK_IMPORT);
                 } catch (Exception e) {
                     notifyFilesPicked("[]");

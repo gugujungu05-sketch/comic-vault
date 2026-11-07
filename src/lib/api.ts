@@ -10,28 +10,84 @@ import { getShareCode, withShareCode } from './util';
  * 托管环境下，接口返回的资源地址（封面、页面图、缩略图）会直接用于 <img src>，
  * 浏览器不会自动带上凭据。这里在前端统一补上，确保图片一定加载得出来。
  */
+/**
+ * API 基址（域名直达方案的核心）：
+ * - 网站从任何域名打开（GitHub Pages / 自有域名 / 直连本机），前端都是同一份；
+ * - 页面加载时异步探测可用后端（本机服务 127.0.0.1:8787 → 用户在设置里填的地址 → 同源），
+ *   探测成功前请求先按同源发（本机部署时立即成功）；
+ * - 跨域后端（如 Pages 域名连本机服务）由服务端 CORS 放行。
+ * 媒体地址（封面 / 页面 / 附件）同样通过 absoluteUrl() 补全成绝对地址。
+ */
+const LS_API_BASE = 'cv-api-base';
+
+let apiBase = '';
+try {
+  apiBase = localStorage.getItem(LS_API_BASE) || '';
+} catch { /* 忽略 */ }
+
+export function getApiBase(): string {
+  return apiBase;
+}
+
+export function setApiBase(url: string): void {
+  apiBase = String(url || '').replace(/\/+$/, '');
+  try {
+    if (apiBase) localStorage.setItem(LS_API_BASE, apiBase);
+    else localStorage.removeItem(LS_API_BASE);
+  } catch { /* 忽略 */ }
+}
+
+/** 探测可用后端：依次尝试候选地址，成功（/api/runtime 200 且应用名正确）即锁定 */
+export async function detectApiBase(candidates: string[] = ['']): Promise<string | null> {
+  const list = candidates.filter((c, i) => candidates.indexOf(c) === i);
+  for (const base of list) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2500);
+      const res = await fetch(`${base}/api/runtime`, { cache: 'no-store', signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data && typeof data === 'object' && 'app' in data) {
+        apiBase = base;
+        try { localStorage.setItem(LS_API_BASE, apiBase); } catch { /* 忽略 */ }
+        return apiBase;
+      }
+    } catch { /* 下一个候选 */ }
+  }
+  return null;
+}
+
+/** 把服务端返回的相对媒体地址补全成可访问的绝对地址（跨域后端时必须） */
+export function absoluteUrl(url: string | null | undefined): string {
+  if (!url) return '';
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+  if (!apiBase) return url;
+  return `${apiBase}${url}`;
+}
+
 function injectCode<T>(value: T, code: string | null, depth = 0): T {
   if (!code || depth > 12 || value == null) return value;
   if (typeof value === 'string') {
-    if (!value.startsWith('/api/') || value.includes('sharecode=')) return value;
-    return `${value}${value.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(code)}` as unknown as T;
+    if (!value.startsWith('/api/')) return value;
+    let v: string = value;
+    if (code && !v.includes('sharecode=')) {
+      v = `${v}${v.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(code)}`;
+    }
+    // 跨域后端（apiBase 非空）时把相对地址补成绝对地址，否则 <img> 会打到当前域名
+    return (apiBase ? absoluteUrl(v) : v) as unknown as T;
   }
   if (Array.isArray(value)) return value.map((v) => injectCode(v, code, depth + 1)) as unknown as T;
   if (typeof value === 'object') {
-    for (const k of Object.keys(value as Record<string, unknown>)) {
-      (value as Record<string, unknown>)[k] = injectCode(
-        (value as Record<string, unknown>)[k],
-        code,
-        depth + 1,
-      );
-    }
+    const rec = value as Record<string, unknown>;
+    for (const k of Object.keys(rec)) rec[k] = injectCode(rec[k], code, depth + 1);
     return value;
   }
   return value;
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await fetch(`${getApiBase()}${url}`, init);
   const text = await res.text();
   let data: unknown = null;
   try {

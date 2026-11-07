@@ -28,6 +28,7 @@ import {
 import { exportArchive, exportPdf, exportEpub, safeName, extOf } from './exporters.js';
 import { metadata, thumbnail, hasSharp, transformImage, splitSpread, mergeSpread, isSpread } from './media.js';
 import { extractWith7z, warmup, engineStatus, SEVENZ_RE } from './archive.js';
+const EPUB_OK = /\.epub$/i;
 import { parseComicInfo, comicFieldsFromInfo } from './comicinfo.js';
 import { attachUser, requireUser, comicGuard, assetGuard, registerSocial } from './social.js';
 import { registerSources } from './sources.js';
@@ -41,6 +42,23 @@ const PORT = Number(process.env.PORT || 8787);
 const ALLOW_FS_IMPORT = process.env.CV_ALLOW_FS_IMPORT !== '0';
 
 app.use(express.json({ limit: '20mb' }));
+/**
+ * CORS（域名直达）：网站前端可以部署在任意域名（GitHub Pages / 自有域名），
+ * 通过「设置 → 服务器地址」或自动探测指向本服务，跨域请求必须放行；
+ * 同时响应 Chrome 的 Private Network Access 预检（公网页面 → 本机服务）。
+ */
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type,Authorization,X-Share-Password');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+  if (req.headers['access-control-request-private-network']) {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
 app.use(attachUser);
 
 /**
@@ -330,6 +348,160 @@ function withPageUrls(comic, chapter) {
 /** 归档导入会话目录 */
 function sessionDir(sessionId) {
   return path.join(TMP_DIR, sessionId);
+}
+
+/**
+ * EPUB 按阅读顺序重排：
+ * 解析 META-INF/container.xml → OPF（manifest+spine），把 spine 引用的页面
+ * 里出现的图片按顺序整理到 out/epub_pages/ 下并命名 0001.jpg、0002.jpg…，
+ * 这样随后的自然排序 / 按目录分话逻辑无需感知 EPUB。
+ * 解析失败时保持原样（兜底仍按文件名排序导入）。
+ */
+async function reorderEpubBySpine(outDir) {
+  const attr = (tag, name) => {
+    const m = tag.match(new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`, 'i'));
+    return m ? m[1] : '';
+  };
+  const resolveHref = (baseDir, href) => {
+    let h = href.split('#')[0];
+    try { h = decodeURIComponent(h); } catch { /* 保留原样 */ }
+    const stack = baseDir ? baseDir.split('/').filter(Boolean) : [];
+    for (const seg of h.split('/')) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') stack.pop();
+      else stack.push(seg);
+    }
+    return stack.join('/');
+  };
+  const readText = async (rel) => {
+    try { return await fsp.readFile(path.join(outDir, rel), 'utf8'); } catch { return ''; }
+  };
+  try {
+    const containerXml = await readText('META-INF/container.xml');
+    let opfRel = (containerXml.match(/full-path\s*=\s*["']([^"']+)["']/i) || [])[1] || '';
+    if (!opfRel) {
+      const findOpf = async (d, depth = 0) => {
+        if (depth > 4) return '';
+        for (const e of await fsp.readdir(d, { withFileTypes: true }).catch(() => [])) {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) {
+            const r = await findOpf(p, depth + 1);
+            if (r) return r;
+          } else if (/\.opf$/i.test(e.name)) return p;
+        }
+        return '';
+      };
+      const found = await findOpf(outDir);
+      if (found) opfRel = path.relative(outDir, found).split(path.sep).join('/');
+    }
+    if (!opfRel) return;
+    const opf = await readText(opfRel);
+    if (!opf) return;
+    const opfDir = opfRel.includes('/') ? opfRel.slice(0, opfRel.lastIndexOf('/')) : '';
+
+    const manifest = new Map();
+    for (const m of opf.matchAll(/<item\b[^>]*>/gi)) {
+      const id = attr(m[0], 'id');
+      const href = attr(m[0], 'href');
+      if (id && href) manifest.set(id, { href, type: attr(m[0], 'media-type').toLowerCase() });
+    }
+
+    // spine 顺序 → 图片相对路径列表（xhtml 页内 <img src> / <image xlink:href>）
+    const ordered = [];
+    const seen = new Set();
+    const pushImg = async (zipPath) => {
+      const baseName = zipPath.split('/').pop() || zipPath;
+      if (!IMAGE_RE.test(baseName) || /\.svg$/i.test(baseName) || seen.has(zipPath)) return;
+      try {
+        await fsp.access(path.join(outDir, zipPath));
+      } catch { return; }
+      seen.add(zipPath);
+      ordered.push(zipPath);
+    };
+    for (const m of opf.matchAll(/<itemref\b[^>]*>/gi)) {
+      const id = attr(m[0], 'idref');
+      const it = id ? manifest.get(id) : undefined;
+      if (!it) continue;
+      const docPath = resolveHref(opfDir, it.href);
+      if (/image\//i.test(it.type) || /\.(jpe?g|png|webp|gif|bmp)$/i.test(docPath)) {
+        await pushImg(docPath);
+        continue;
+      }
+      const docDir = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
+      const html = /\.(x?html?)$/i.test(docPath) ? await readText(docPath) : '';
+      if (!html) continue;
+      for (const im of html.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi)) await pushImg(resolveHref(docDir, im[1]));
+      for (const im of html.matchAll(/<image\b[^>]*?\b(?:xlink:)?href\s*=\s*["']([^"']+)["']/gi)) {
+        if (!/^data:/i.test(im[1])) await pushImg(resolveHref(docDir, im[1]));
+      }
+    }
+    if (!ordered.length) return;
+
+    const destDir = path.join(outDir, 'epub_pages');
+    await ensureDir(destDir);
+    let i = 0;
+    for (const rel of ordered) {
+      i += 1;
+      const src = path.join(outDir, rel);
+      const extName = path.extname(rel).slice(1).toLowerCase() || 'jpg';
+      await fsp.copyFile(src, path.join(destDir, `${String(i).padStart(4, '0')}.${extName}`)).catch(() => {});
+    }
+    // 只保留排好序的页面，其余散落文件清掉，避免混进导入清单
+    const rawDir = `${outDir}_raw`;
+    await fsp.rename(destDir, path.join(rawDir, 'epub_pages')).catch(async () => {
+      await fsp.mkdir(rawDir, { recursive: true });
+      await fsp.rename(destDir, path.join(rawDir, 'epub_pages')).catch(() => {});
+    });
+    await fsp.rm(outDir, { recursive: true, force: true });
+    await fsp.mkdir(outDir, { recursive: true });
+    await fsp.rename(path.join(rawDir, 'epub_pages'), path.join(outDir, 'epub_pages')).catch(() => {});
+    await fsp.rm(rawDir, { recursive: true, force: true }).catch(() => {});
+  } catch (err) {
+    console.warn('[import] EPUB 顺序解析失败，按文件名排序导入:', err?.message);
+  }
+}
+
+/** 读 EPUB 包内 OPF 的 Dublin Core 元数据 → ComicInfo 风格字段 */
+async function epubMetaFrom(srcPath) {
+  const AdmZip = await (async () => {
+    try { return (await import('7z-wasm')).default; } catch { return null; }
+  })();
+  // 不引入新依赖：直接用 7z 把 OPF 解到内存目录再读
+  const tmp = path.join(TMP_DIR, `epubmeta_${Date.now()}`);
+  await ensureDir(tmp);
+  try {
+    await extractWith7z(srcPath, tmp);
+    const find = async (d, name, depth = 0) => {
+      if (depth > 4) return null;
+      for (const e of await fsp.readdir(d, { withFileTypes: true }).catch(() => [])) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) {
+          const r = await find(p, name, depth + 1);
+          if (r) return r;
+        } else if (name.test(e.name)) return p;
+      }
+      return null;
+    };
+    const opfPath = await find(tmp, /\.opf$/i);
+    if (!opfPath) return null;
+    const opf = await fsp.readFile(opfPath, 'utf8');
+    const dc = (tag) => {
+      const m = opf.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
+      return m ? m[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim() : '';
+    };
+    const yearM = dc('dc:date').match(/\d{4}/);
+    const info = {
+      Title: dc('dc:title'),
+      Writer: dc('dc:creator'),
+      Publisher: dc('dc:publisher'),
+      Summary: dc('dc:description'),
+      Year: yearM ? yearM[0] : '',
+    };
+    Object.keys(info).forEach((k) => { if (!info[k]) delete info[k]; });
+    return Object.keys(info).length ? info : null;
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function scanImages(dir) {
@@ -1123,7 +1295,7 @@ app.post('/api/import/archive', requireUser, upload.single('file'), async (req, 
   if (!file) return res.status(400).json({ error: '没有收到文件' });
   const original = file.originalname || 'archive.bin';
   const ext = extOf(original) || '7z';
-  if (!SEVENZ_RE.test(original)) {
+  if (!SEVENZ_RE.test(original) && !EPUB_OK.test(original)) {
     await cleanupTmp(file);
     return res.status(400).json({ error: `暂不支持的格式：.${ext}` });
   }
@@ -1140,6 +1312,9 @@ app.post('/api/import/archive', requireUser, upload.single('file'), async (req, 
 
   try {
     await extractWith7z(srcPath, outDir);
+    // EPUB 是 zip 但内部有阅读顺序（OPF spine），7z 直接解出来是乱序文件。
+    // 这里按 spine 把图片重命名成 0001- 前缀，让后续自然排序 = 书内阅读顺序。
+    if (/^epub$/i.test(ext)) await reorderEpubBySpine(outDir);
   } catch (err) {
     await fsp.rm(dir, { recursive: true, force: true });
     return res.status(400).json({ error: `解压失败：${err.message || err}` });
@@ -1159,6 +1334,10 @@ app.post('/api/import/archive', requireUser, upload.single('file'), async (req, 
     } catch {
       info = null;
     }
+  }
+  // EPUB：解包后 OPF 已被清理，直接从源文件读元数据
+  if (!info && /^epub$/i.test(ext)) {
+    info = await epubMetaFrom(srcPath).catch(() => null);
   }
   await fsp.rm(srcPath, { force: true });
   await cleanupSessions();

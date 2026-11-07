@@ -2118,3 +2118,14 @@ textarea {
   background: rgba(124, 108, 255, 0.05); color: var(--muted, #97a1b6);
 }
 .post-locked-text { font-size: 13px; }
+
+/* ------------------------------ 密码显示切换（防输错） ------------------------------ */
+.pwd-wrap { position: relative; display: flex; align-items: center; }
+.pwd-wrap .input { padding-right: 64px; }
+.pwd-toggle {
+  position: absolute; right: 8px;
+  background: transparent; border: 0; cursor: pointer;
+  color: var(--accent, #7c6cff); font-size: 12.5px; font-weight: 600;
+  padding: 4px 6px; border-radius: 6px;
+}
+.pwd-toggle:hover { background: rgba(124, 108, 255, 0.12); }

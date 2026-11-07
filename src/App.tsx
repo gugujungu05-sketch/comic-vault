@@ -14,7 +14,7 @@ import { UserPage } from './pages/UserPage';
 import { DownloadsPage } from './pages/DownloadsPage';
 import SourcesPage from './pages/SourcesPage';
 import { SessionProvider, useSession } from './lib/session';
-import { social } from './lib/api';
+import { social, detectApiBase, getApiBase } from './lib/api';
 import { rememberShareCode, withShareCode } from './lib/util';
 import { Avatar } from './components/Avatar';
 
@@ -140,9 +140,47 @@ function MobileTabs() {
 
 function Shell() {
   const { theme, setTheme } = useTheme();
-  const { user, loading, needsSetup } = useSession();
+  const { user, loading, needsSetup, refresh } = useSession();
   const location = useLocation();
   const immersive = location.pathname.startsWith('/read/') || location.pathname.startsWith('/s/');
+  const [offline, setOffline] = useState(false);
+
+  /* GitHub Pages 深链兜底：404.html 把 /comic-vault/s/xxx 转成 ?cvroute=s/xxx，这里还原 */
+  useEffect(() => {
+    try {
+      const r = new URLSearchParams(window.location.search).get('cvroute');
+      if (!r) return;
+      const target = decodeURIComponent(r) + window.location.hash;
+      window.history.replaceState(null, '', import.meta.env.BASE_URL + target);
+    } catch { /* 忽略 */ }
+  }, []);
+
+  /* 域名直达：页面不是从后端域名打开时（如 GitHub Pages），探测可用后端并连接。
+     探测顺序：已保存的地址 → 本机服务（127.0.0.1:8787，桌面软件内置）→ 同源。 */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const sameOrigin = await fetch(`${import.meta.env.BASE_URL}backend.json`, { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const remote: string[] = Array.isArray(sameOrigin?.candidates) ? sameOrigin.candidates : [];
+      const direct = await fetch('/api/runtime', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      if (direct?.app && !getApiBase()) return;
+      const found = await detectApiBase([
+        typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',
+        ...remote,
+        'http://127.0.0.1:8787',
+      ]);
+      if (!alive) return;
+      if (found) {
+        setOffline(false);
+        refresh();
+      } else {
+        setOffline(true);
+      }
+    })();
+    return () => { alive = false; };
+  }, [refresh]);
 
   /* 托管环境访问凭据：记住 sharecode，SPA 跳转/刷新后补回地址栏 */
   useEffect(() => {
@@ -162,6 +200,13 @@ function Shell() {
     return (
       <div className="app-loading">
         <Icon name="spinner" size={26} className="spin" />
+        {offline && (
+          <div style={{ marginTop: 14, color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: '0 24px', lineHeight: 2 }}>
+            正在寻找漫画库服务…
+            <br />
+            电脑上打开<b>漫画库桌面软件</b>后，刷新本页即可自动连接。
+          </div>
+        )}
       </div>
     );
   }
@@ -211,7 +256,7 @@ function Shell() {
 
 export function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <ToastProvider>
         <SessionProvider>
           <Shell />

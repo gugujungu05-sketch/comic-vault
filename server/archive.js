@@ -10,7 +10,7 @@ import { ROOT } from './store.js';
 
 /** 7-Zip 能吃的压缩包格式（含 rar 分卷 r00/r01…、ace、arj、lzh、cab 等） */
 export const SEVENZ_RE =
-  /\.(7z|rar|cbr|cb7|r\d{2}|zip|cbz|tar|tgz|gz|bz2|xz|ace|arj|lzh|lha|cab|iso)$/i;
+  /\.(7z|rar|cbr|cb7|r\d{2}|zip|cbz|epub|tar|tgz|gz|bz2|xz|ace|arj|lzh|lha|cab|iso)$/i;
 /** 只有 7-Zip 能解的（浏览器 zip.js 处理不了，必须交给服务端） */
 export const SEVENZ_ONLY_RE = /\.(7z|rar|cbr|cb7|r\d{2}|ace|arj|lzh|lha|cab|iso)$/i;
 

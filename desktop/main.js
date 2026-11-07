@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
 
-const VERSION = '3.4.0.0';
+const VERSION = '3.4.0.1';
 const OLD_TUNNEL_RE = /workbuddy\.host|a3375579f1d0038dc/i;
 const DRIVE_ZIP_URL = 'https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ';
 const APP_DIR = path.join(__dirname, 'app');
@@ -302,9 +302,9 @@ ipcMain.handle('cv:pick-import', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
     title: '导入漫画（可一次多选）', properties: ['openFile', 'multiSelections'],
     filters: [
-      { name: '漫画文件（图片 / ZIP / CBZ / RAR / 7Z）', extensions: [
+      { name: '漫画文件（图片 / ZIP / CBZ / RAR / 7Z / EPUB / PDF）', extensions: [
         'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'tif', 'tiff',
-        'zip', 'cbz', 'rar', 'cbr', '7z', 'cb7', 'tar', 'tgz', 'gz',
+        'zip', 'cbz', 'rar', 'cbr', '7z', 'cb7', 'tar', 'tgz', 'gz', 'epub', 'pdf',
       ] },
       { name: '全部文件', extensions: ['*'] },
     ],

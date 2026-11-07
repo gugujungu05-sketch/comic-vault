@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "comment": "唯一版本源。四段式 主.次.修.构建；小改动只递增第 4 段，不再跳 3.1 → 3.2。改完运行 npm run version:sync 同步全仓库。",
-  "web": "2.7.0.0",
-  "desktop": "3.4.0.0",
-  "android": "3.4.0.0",
+  "web": "2.7.0.1",
+  "desktop": "3.4.0.1",
+  "android": "3.4.0.1",
   "buildVersion": "3.4.0",
   "androidVersionCode": 10,
-  "build": 7,
-  "releasedAt": 1794398400000,
+  "build": 8,
+  "releasedAt": 1794399600000,
   "driveZipUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
     "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
@@ -17,19 +17,14 @@
   },
   "notes": {
     "web": [
-      "新增 EPUB 漫画导入：按书内阅读顺序自动排页",
-      "广场发帖可选「所有人可见 / 密码可见」，读者输密码解锁",
-      "分享密码可见功能保留并优化界面",
-      "官网直达：GitHub Pages 现在直接是应用官网，不再是指向旧链接的跳转页"
+      "注册 / 登录 / 重置密码的密码框新增「显示」切换，点一下明文显示防止输错"
     ],
     "desktop": [
-      "新增 EPUB 漫画导入",
-      "广场发帖支持密码可见",
-      "与网站功能同版本对齐"
+      "注册 / 登录密码框新增「显示」切换，防止输错",
+      "与官网 3.4.0 功能对齐"
     ],
     "android": [
-      "新增 EPUB 漫画导入",
-      "广场发帖支持密码可见"
+      "密码输入防输错：与网站同步"
     ],
     "webChannel": [
       "网页 / PWA 始终为最新版本，刷新即可"
