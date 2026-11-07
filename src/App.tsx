@@ -259,7 +259,7 @@ function Shell() {
     <div className="app">
       {offline && (
         <div className="offline-bar">
-          <Icon name="wifi" size={14} />
+          <Icon name="globe" size={14} />
           正在连接漫画库服务器…（后台自动重试，无需刷新）
         </div>
       )}

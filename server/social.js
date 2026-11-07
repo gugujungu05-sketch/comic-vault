@@ -115,16 +115,22 @@ function checkPassword(u, password) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function issueSession(res, userId) {
+function issueSession(req, res, userId) {
   const db = loadDb();
   const token = crypto.randomBytes(24).toString('hex');
   db.sessions.push({ token, userId, createdAt: now(), expiresAt: now() + SESSION_MS });
   // 只保留最近 500 个会话
   if (db.sessions.length > 500) db.sessions.splice(0, db.sessions.length - 500);
   saveDbSoon();
+  // 跨站（GitHub Pages 等域名 → 隧道/自有域名）请求需要 sameSite:'none' + secure:true 才能携带会话；
+  // 本地 http 同源（桌面软件直连 127.0.0.1:8787）保持 lax，避免 secure cookie 在 http 下被浏览器丢弃。
+  const fwdProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const isHttps = req.secure || fwdProto === 'https' || (req.headers.origin || '').startsWith('https://');
+  const secure = !!isHttps;
   res.cookie(COOKIE, token, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: secure ? 'none' : 'lax',
+    secure,
     maxAge: SESSION_MS,
     path: '/',
   });
@@ -362,7 +368,7 @@ export function registerSocial(app, ctx) {
       }
     }
     saveDbSoon();
-    issueSession(res, u.id);
+    issueSession(req, res, u.id);
     res.json({ user: publicUser(u), first });
   });
 
@@ -373,7 +379,7 @@ export function registerSocial(app, ctx) {
     if (!u || !checkPassword(u, req.body?.password)) {
       return res.status(401).json({ error: '邮箱或密码不正确' });
     }
-    issueSession(res, u.id);
+    issueSession(req, res, u.id);
     res.json({ user: publicUser(u) });
   });
 
@@ -421,7 +427,7 @@ export function registerSocial(app, ctx) {
       }
     }
     saveDbSoon();
-    issueSession(res, u.id);
+    issueSession(req, res, u.id);
     res.json({ user: publicUser(u), created });
   });
 

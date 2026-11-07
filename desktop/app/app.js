@@ -699,64 +699,86 @@
   async function startImportFrom(rawPaths) {
     if (!rawPaths || !rawPaths.length) return;
     let paths = rawPaths.filter((p) => typeof p === 'string');
-    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|7z|cb7|tar|tgz|gz|epub)$/i.test(p));
+    // 与网站 ImportDialog 完全一致的支持格式（图片 / 各类压缩包 / EPUB / PDF）
+    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|cb7|7z|r\d{2}|tar|tgz|gz|bz2|xz|epub|pdf|ace|arj|lzh|lha|cab|iso)$/i.test(p));
     const images = paths.filter((p) => !archives.includes(p));
     if (images.length) await startImport(images);
     if (archives.length) await importArchives(archives);
   }
-  /** ZIP/CBZ/RAR/7Z：交给服务端解压 → 按目录分话确认 → 一次落盘成章节 */
+  /** ZIP/CBZ/RAR/7Z/EPUB/PDF：交给服务端解压/渲染 → 按目录分话确认 → 落盘成章节。
+   *  每个压缩包用自己独立的 sessionId 提交（旧版多包只保留最后一个 session，前面的会全丢），
+   *  第一个包创建新漫画，后续包追加到同一本漫画的章节里。 */
   async function importArchives(paths) {
     if (!state.user) return toast('请先登录再导入', true);
-    let sessionId = '', comicId = '', meta = {}, allFiles = [];
+    const packs = [];
     for (const p of paths) {
-      busy(true, `解压 ${base(p)}…`);
+      busy(true, `解析 ${base(p)}…`);
       try {
         const r = await api('POST', '/api/import/archive', {
           files: [{ path: p, name: base(p), field: 'file' }],
         });
-        sessionId = r.sessionId;
-        meta = r.fields || {};
-        allFiles = allFiles.concat(r.files || []);
+        if (r.sessionId && (r.files || []).length) {
+          packs.push({ path: p, sessionId: r.sessionId, files: r.files, meta: r.fields || {} });
+        } else if (r.error) {
+          toast(`${base(p)}：${r.error}`, true);
+        }
       } catch (err) { toast(`${base(p)}：${err.message}`, true); }
       finally { busy(false); }
     }
-    if (!sessionId || !allFiles.length) return;
-    // 按压缩包内的一级目录分话；没有目录就整包一话
-    const groupsMap = new Map();
-    for (const f of allFiles) {
-      const parts = String(f.path || f.name).split('/');
-      const g = parts.length > 1 ? parts[0] : '';
-      if (!groupsMap.has(g)) groupsMap.set(g, []);
-      groupsMap.get(g).push(f.path);
-    }
-    let groups = [...groupsMap.entries()].map(([dir, list], i) => ({
-      title: dir || meta.title || base(paths[0]).replace(/\.[^.]+$/, '') || `第 ${i + 1} 话`,
-      paths: list.sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'zh-CN', { numeric: true })),
-    }));
-    openModal(`<h3>压缩包导入 · ${allFiles.length} 页 / ${groups.length} 话</h3>
+    if (!packs.length) return toast('没有解析出可导入的页面', true);
+    const meta = packs[0].meta || {};
+    const totalPages = packs.reduce((n, k) => n + k.files.length, 0);
+    // 每个包一个确认项：包内按一级目录分话，标题默认取包名
+    const plan = packs.map((k) => {
+      const groupsMap = new Map();
+      for (const f of k.files) {
+        const parts = String(f.path || f.name).split('/');
+        const g = parts.length > 1 ? parts[0] : '';
+        if (!groupsMap.has(g)) groupsMap.set(g, []);
+        groupsMap.get(g).push(f.path);
+      }
+      const groups = [...groupsMap.entries()].map(([dir, list], i) => ({
+        title: dir || base(k.path).replace(/\.[^.]+$/, '') || `第 ${i + 1} 话`,
+        paths: list.sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'zh-CN', { numeric: true })),
+      }));
+      return { ...k, groups };
+    });
+    const groupCount = plan.reduce((n, k) => n + k.groups.length, 0);
+    // 扁平化为纯数字索引，避免属性选择器里的特殊字符/CSS.escape 兼容问题
+    const flat = [];
+    plan.forEach((k, pi) => k.groups.forEach((g) => flat.push({ pi, g, pack: k, idx: flat.length })));
+    openModal(`<h3>导入 · ${packs.length} 个文件 / ${totalPages} 页 / ${groupCount} 话</h3>
       <div class="imp-archive-groups" style="max-height:300px;overflow:auto">
-        ${groups.map((g, i) => `<label class="field" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-          <span style="min-width:52px;color:var(--muted)">第 ${i + 1} 话</span>
-          <input class="input" data-arc-title="${i}" value="${esc(g.title)}" />
-          <span class="muted" style="font-size:11px;white-space:nowrap">${g.paths.length} 页</span></label>`).join('')}
+        ${flat.map((row) => `<label class="field" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <span class="muted" style="font-size:11px;min-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(base(row.pack.path))}">${esc(base(row.pack.path))}</span>
+          <input class="input" data-arc-gi="${row.idx}" value="${esc(row.g.title)}" />
+          <span class="muted" style="font-size:11px;white-space:nowrap">${row.g.paths.length} 页</span></label>`).join('')}
       </div>
-      <label class="field"><span>漫画标题</span><input class="input" id="arcTitle" value="${esc(meta.title || base(paths[0]).replace(/\.[^.]+$/, ''))}" /></label>
+      <label class="field"><span>漫画标题</span><input class="input" id="arcTitle" value="${esc(meta.title || base(packs[0].path).replace(/\.[^.]+$/, ''))}" /></label>
       <label class="field"><span>作者（可选）</span><input class="input" id="arcAuthor" value="${esc(meta.author || '')}" /></label>
       <div class="modal-actions">
         <button class="btn" data-action="close-modal">取消</button>
         <button class="btn primary" data-action="arc-commit">导入书库</button>
       </div>`, true);
     $('#modal').querySelector('[data-action="arc-commit"]').onclick = async () => {
-      groups = groups.map((g, i) => ({ ...g, title: $(`[data-arc-title="${i}"]`)?.value.trim() || g.title }));
       busy(true, '正在导入书库…');
+      let comicId = '';
       try {
-        const r = await api('POST', `/api/import/archive/${sessionId}/commit`, { body: {
-          groups,
-          title: $('#arcTitle').value.trim() || '导入的漫画',
-          author: $('#arcAuthor').value.trim(),
-          direction: meta.direction || 'ltr',
-        } });
-        comicId = r.comic?.id || r.comicId;
+        for (let pi = 0; pi < plan.length; pi++) {
+          const k = plan[pi];
+          const groups = flat.filter((r) => r.pi === pi).map((r) => {
+            const el = document.querySelector(`[data-arc-gi="${r.idx}"]`);
+            return { ...r.g, title: el?.value.trim() || r.g.title };
+          });
+          const r = await api('POST', `/api/import/archive/${k.sessionId}/commit`, { body: {
+            groups,
+            comicId: comicId || undefined,
+            title: $('#arcTitle').value.trim() || '导入的漫画',
+            author: $('#arcAuthor').value.trim(),
+            direction: meta.direction || 'ltr',
+          } });
+          if (!comicId) comicId = r.comic?.id || r.comicId || '';
+        }
         closeModal();
         toast('导入完成');
         state.view = 'comic'; state.comic = comicId; render();

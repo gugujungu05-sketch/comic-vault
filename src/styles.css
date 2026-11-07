@@ -2104,11 +2104,12 @@ textarea {
 }
 .auth-code-label { font-size: 12px; color: var(--muted); }
 .auth-code-value {
-  font-size: 40px; font-weight: 800; letter-spacing: 10px;
+  font-size: 52px; font-weight: 800; letter-spacing: 12px;
   color: var(--accent); background: none; border: none; cursor: copy;
-  padding: 2px 8px; user-select: all; line-height: 1.2;
+  padding: 4px 10px; user-select: all; line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
+.auth-code-box .btn { min-width: 96px; justify-content: center; }
 
 /* ------------------------------ 帖子密码可见 ------------------------------ */
 .post-locked {
