@@ -29,6 +29,7 @@ import { exportArchive, exportPdf, exportEpub, safeName, extOf } from './exporte
 import { metadata, thumbnail, hasSharp, transformImage, splitSpread, mergeSpread, isSpread } from './media.js';
 import { extractWith7z, warmup, engineStatus, SEVENZ_RE } from './archive.js';
 const EPUB_OK = /\.epub$/i;
+const PDF_OK = /\.pdf$/i;
 import { parseComicInfo, comicFieldsFromInfo } from './comicinfo.js';
 import { attachUser, requireUser, comicGuard, assetGuard, registerSocial } from './social.js';
 import { registerSources } from './sources.js';
@@ -38,6 +39,8 @@ import { recordActivity, recordUpload } from './activity.js';
 import { registerDiscovery, ensureSamples, APP_VERSION } from './discovery.js';
 
 const app = express();
+// 识别反向代理（Cloudflare Tunnel 等）转发的 https 协议，让会话 cookie 正确置 secure
+app.set('trust proxy', true);
 const PORT = Number(process.env.PORT || 8787);
 const ALLOW_FS_IMPORT = process.env.CV_ALLOW_FS_IMPORT !== '0';
 
@@ -502,6 +505,40 @@ async function epubMetaFrom(srcPath) {
   } finally {
     await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/**
+ * PDF 导入：服务端用 pdf.js + canvas 把每一页渲染成 PNG，落到 outDir。
+ * 与网站端浏览器里 pdf.js 渲染的效果一致，桌面端因此也能导入 PDF。
+ * 文件名为 0001.png / 0002.png…，保证 scanImages 自然排序 = 页序。
+ */
+let pdfjsPromise = null;
+async function getPdfjs() {
+  if (!pdfjsPromise) pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs');
+  return pdfjsPromise;
+}
+async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
+  const { createCanvas } = await import('@napi-rs/canvas');
+  const pdfjs = await getPdfjs();
+  const data = new Uint8Array(await fsp.readFile(srcPath));
+  const doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+  await ensureDir(outDir);
+  const pad = Math.max(4, String(doc.numPages).length);
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(3, Math.max(0.5, targetWidth / base.width));
+    const vp = page.getViewport({ scale });
+    const canvas = createCanvas(Math.max(1, Math.ceil(vp.width)), Math.max(1, Math.ceil(vp.height)));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+    const name = `${String(i).padStart(pad, '0')}.png`;
+    await fsp.writeFile(path.join(outDir, name), canvas.toBuffer('image/png'));
+    page.cleanup();
+  }
+  await doc.destroy();
 }
 
 async function scanImages(dir) {
@@ -1047,7 +1084,12 @@ app.post('/api/me/avatar', requireUser, upload.single('file'), async (req, res) 
     await fsp.copyFile(req.file.path, path.join(dir, name));
     await fsp.rm(req.file.path, { force: true });
   });
-  res.json({ ok: true, url: `/api/u/${req.user.id}/avatar` });
+  // 关键修复：把头像地址写回用户记录并落库，否则前端（尤其桌面端刷新后）
+  // 读到的 user.avatar 仍为旧值，表现为「头像改不了 / 显示错误」。
+  const url = `/api/u/${req.user.id}/avatar`;
+  req.user.avatar = url;
+  saveDbSoon();
+  res.json({ ok: true, url });
 });
 
 /* 头像公开访问，无需凭据（个人资料图本就该可见） */
@@ -1295,7 +1337,7 @@ app.post('/api/import/archive', requireUser, upload.single('file'), async (req, 
   if (!file) return res.status(400).json({ error: '没有收到文件' });
   const original = file.originalname || 'archive.bin';
   const ext = extOf(original) || '7z';
-  if (!SEVENZ_RE.test(original) && !EPUB_OK.test(original)) {
+  if (!SEVENZ_RE.test(original) && !EPUB_OK.test(original) && !PDF_OK.test(original)) {
     await cleanupTmp(file);
     return res.status(400).json({ error: `暂不支持的格式：.${ext}` });
   }
@@ -1311,10 +1353,15 @@ app.post('/api/import/archive', requireUser, upload.single('file'), async (req, 
   });
 
   try {
-    await extractWith7z(srcPath, outDir);
-    // EPUB 是 zip 但内部有阅读顺序（OPF spine），7z 直接解出来是乱序文件。
-    // 这里按 spine 把图片重命名成 0001- 前缀，让后续自然排序 = 书内阅读顺序。
-    if (/^epub$/i.test(ext)) await reorderEpubBySpine(outDir);
+    if (/^pdf$/i.test(ext)) {
+      // PDF 不是压缩包，逐页渲染成图片（与网站端 pdf.js 渲染一致）
+      await renderPdfToImages(srcPath, outDir);
+    } else {
+      await extractWith7z(srcPath, outDir);
+      // EPUB 是 zip 但内部有阅读顺序（OPF spine），7z 直接解出来是乱序文件。
+      // 这里按 spine 把图片重命名成 0001- 前缀，让后续自然排序 = 书内阅读顺序。
+      if (/^epub$/i.test(ext)) await reorderEpubBySpine(outDir);
+    }
   } catch (err) {
     await fsp.rm(dir, { recursive: true, force: true });
     return res.status(400).json({ error: `解压失败：${err.message || err}` });

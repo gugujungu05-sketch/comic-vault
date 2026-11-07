@@ -80,17 +80,21 @@ export function ensureAnnouncer(db) {
   if (configured) {
     const target = db.users.find((u) => String(u.email || '').toLowerCase() === configured);
     if (target) {
+      // 环境变量指定的账号始终为唯一公告账号
       for (const u of db.users) u.canAnnounce = u === target;
       db.meta.announcerInitialized = true;
       return;
     }
+    // 配置了环境变量但对应账号尚未注册：暂不给任何人授权，等该账号注册后自然生效
+    return;
   }
-  if (db.meta.announcerInitialized) return;
-  const first = db.users.find((u) => u.isAdmin) || db.users[0];
-  if (first) {
-    first.canAnnounce = true;
-    db.meta.announcerInitialized = true;
-  }
+  // 未用环境变量指定时，始终保证「站长」（首个管理员 / 首个注册用户）拥有发公告权限。
+  // 不再依赖一次性初始化标记：老库若曾提前置位 announcerInitialized 却没真正授过权，
+  // 会导致站长永久失去权限且无恢复路径。每次加载都重新授予站长，不会误伤普通用户
+  // （只把 owner 置 true，其余账号由 normalize 保持 false）。
+  const owner = db.users.find((u) => u.isAdmin) || db.users[0];
+  if (owner) owner.canAnnounce = true;
+  db.meta.announcerInitialized = true;
 }
 
 /** 补齐旧版本漫画 / 用户缺失的字段，保证新接口读到的数据形状一致 */

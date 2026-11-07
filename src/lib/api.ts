@@ -87,7 +87,11 @@ function injectCode<T>(value: T, code: string | null, depth = 0): T {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${getApiBase()}${url}`, init);
+  const res = await fetch(`${getApiBase()}${url}`, {
+    ...init,
+    // 跨域（GitHub Pages → 隧道）也要带会话 cookie，否则登录态无法保持
+    credentials: 'include',
+  });
   const text = await res.text();
   let data: unknown = null;
   try {
