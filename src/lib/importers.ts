@@ -9,8 +9,13 @@ export const IMAGE_RE = /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)$/i;
 export const ARCHIVE_RE = /\.(zip|cbz)$/i;
 export const PDF_RE = /\.pdf$/i;
 export const EPUB_RE = /\.epub$/i;
-/** 浏览器端解不了的压缩包，交给服务端 7-Zip 引擎 */
-export const SEVENZ_ONLY_RE = /\.(7z|rar|cbr|cb7|r\d{2}|ace|arj|lzh|lha|cab|iso)$/i;
+/** 浏览器端解不了的压缩包，交给服务端 7-Zip 引擎（与 server/archive.js 的 SEVENZ_RE 对齐） */
+export const SEVENZ_ONLY_RE =
+  /\.(7z|rar|cbr|cb7|r\d{2}|ace|arj|lzh|lha|cab|iso|tar|tgz|gz|bz2|xz)$/i;
+
+/** 导入对话框 accept 用的完整格式列表（与 ingest 的识别能力一致，避免选得到却解不了） */
+export const IMPORT_ACCEPT =
+  'image/*,.zip,.cbz,.pdf,.epub,.rar,.cbr,.7z,.cb7,.r00,.r01,.tar,.tgz,.gz,.bz2,.xz,.ace,.arj,.lzh,.lha,.cab,.iso';
 
 export interface RawItem {
   name: string;

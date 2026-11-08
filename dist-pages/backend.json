@@ -1,11 +1,12 @@
 {
   "comment": "当前可用的漫画库服务器地址（本机服务探测失败时使用）。由发版流程自动更新。",
   "candidates": [
-    "https://solar-shannon-still-mercy.trycloudflare.com"
+    "https://inserted-headquarters-keeping-neon.trycloudflare.com"
+    , "https://solar-shannon-still-mercy.trycloudflare.com"
     , "https://revenue-dan-bubble-dental.trycloudflare.com"
     , "https://muze-rocket-enquiries-tackle.trycloudflare.com"
     , "https://pennsylvania-tapes-inflation-photographs.trycloudflare.com"
   ],
   "local": "http://127.0.0.1:8787",
-  "updatedAt": 1794052036000
+  "updatedAt": 1794103216000
 }

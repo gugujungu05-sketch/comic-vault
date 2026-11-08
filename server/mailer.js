@@ -10,7 +10,8 @@
  */
 import './env.js';
 import nodemailer from 'nodemailer';
-import sharp from 'sharp';
+// sharp 是原生模块，桌面端内置的 host 服务未打包它。
+// 这里改为按需动态引入：缺 sharp 时自动降级为纯文本验证码，不影响服务启动与发信。
 
 /** 不同用途的邮件标题与正文；「验证码是 xxxxxx」格式被测试脚本用于取码 */
 const SCENES = {
@@ -84,9 +85,11 @@ async function renderCodeImage(code) {
   <text x="220" y="178" text-anchor="middle" font-family="'DejaVu Sans','Arial',sans-serif" font-size="12" letter-spacing="1" fill="#d7d0ff">VALID FOR 5 MINUTES</text>
 </svg>`;
   try {
+    const sharp = (await import('sharp')).default;
     const buf = await sharp(Buffer.from(svg)).png().toBuffer();
     return `data:image/png;base64,${buf.toString('base64')}`;
   } catch {
+    // 无 sharp（桌面内置服务）→ 无图片，邮件正文仍保留大号可复制的纯文本验证码
     return null;
   }
 }
@@ -130,13 +133,13 @@ async function buildHtml(email, code, scene) {
       ${imgTag || `<div style="background:#4a3fb0;color:#fff;border-radius:14px;padding:24px;text-align:center;font-size:34px;letter-spacing:10px;font-weight:700;">${esc(code)}</div>`}
     </td></tr>
 
-    <!-- 大号可单独复制的纯文本验证码 -->
-    <tr><td style="padding:16px 30px 0;">
-      <div style="font-size:12px;color:#9aa1b3;text-align:center;margin-bottom:8px;">如无法查看图片，可直接复制下方验证码</div>
+    <!-- 大号可单独复制的纯文本验证码：纯色深紫底 + 白字，兼容 QQ/163/Outlook/Gmail -->
+    <tr><td style="padding:18px 30px 0;">
+      <div style="font-size:12.5px;color:#8a90a3;text-align:center;margin-bottom:10px;">👇 如无法查看图片，可直接复制下方验证码</div>
       <div style="text-align:center;">
-        <span style="display:inline-block;font-family:'Courier New',Consolas,monospace;font-size:38px;font-weight:800;letter-spacing:10px;color:#4a3fb0;background:#f2f0ff;border:1px dashed #c9c0ff;padding:12px 22px;border-radius:12px;user-select:all;-webkit-user-select:all;">${esc(code)}</span>
+        <span style="display:inline-block;font-family:'Courier New',Consolas,monospace;font-size:44px;font-weight:800;letter-spacing:12px;color:#ffffff;background:#5a49c9;border:2px solid #6c5ce7;padding:14px 26px;border-radius:14px;user-select:all;-webkit-user-select:all;-webkit-touch-callout:default;white-space:nowrap;word-break:keep-all;">${esc(code)}</span>
       </div>
-      <div style="font-size:12px;color:#9aa1b3;text-align:center;margin-top:8px;">长按或双击即可选中复制</div>
+      <div style="font-size:12.5px;color:#6c5ce7;font-weight:600;text-align:center;margin-top:10px;">长按 / 双击即可一次选中并复制完整验证码</div>
     </td></tr>
 
     <!-- 安全提示 -->

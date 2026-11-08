@@ -518,8 +518,14 @@ async function getPdfjs() {
   return pdfjsPromise;
 }
 async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
-  const { createCanvas } = await import('@napi-rs/canvas');
-  const pdfjs = await getPdfjs();
+  let createCanvas, pdfjs;
+  try {
+    ({ createCanvas } = await import('@napi-rs/canvas'));
+    pdfjs = await getPdfjs();
+  } catch {
+    // 桌面端内置服务未打包原生 PDF 渲染组件：给明确指引，而不是抛英文模块错误
+    throw new Error('当前环境未启用 PDF 渲染，请改用网站导入 PDF，或先把 PDF 转成图片 / ZIP 压缩包');
+  }
   const data = new Uint8Array(await fsp.readFile(srcPath));
   const doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
   await ensureDir(outDir);
