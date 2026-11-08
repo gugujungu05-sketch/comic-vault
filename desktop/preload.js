@@ -2,7 +2,7 @@
 /** 本地界面专用桥：只暴露最小 API，页面拿不到 Node 能力 */
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const VERSION = '3.4.0.1';
+const VERSION = '3.4.0.3';
 
 contextBridge.exposeInMainWorld('cvApp', {
   version: VERSION,
@@ -24,7 +24,10 @@ contextBridge.exposeInMainWorld('cvApp', {
   thumb: (p) => ipcRenderer.invoke('cv:thumb', p),
   /* 头像裁剪 */
   readImageData: (p) => ipcRenderer.invoke('cv:read-image-data', p),
-  saveTempImage: (dataUrl) => ipcRenderer.invoke('cv:save-temp-image', dataUrl),
+  saveTempImage: (dataUrl, nameHint) => ipcRenderer.invoke('cv:save-temp-image', dataUrl, nameHint),
+  /* PDF 导入：渲染进程用 pdf.js 逐页渲染成图片 */
+  readFileBase64: (p) => ipcRenderer.invoke('cv:read-file-base64', p),
+  pdfjsSource: () => ipcRenderer.invoke('cv:pdfjs-source'),
   copyText: (text) => ipcRenderer.invoke('cv:copy-text', text),
 
   /* 配置与更新（更新只在设置页触发） */

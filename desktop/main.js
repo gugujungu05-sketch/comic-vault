@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
 
-const VERSION = '3.4.0.1';
+const VERSION = '3.4.0.3';
 const OLD_TUNNEL_RE = /workbuddy\.host|a3375579f1d0038dc/i;
 const DRIVE_ZIP_URL = 'https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ';
 const APP_DIR = path.join(__dirname, 'app');
@@ -290,10 +290,22 @@ ipcMain.handle('cv:api', async (_e, opts = {}) => {
 });
 ipcMain.on('cv:asset', (e, p) => { e.returnValue = endpoint(String(p || '/')); });
 
+/* 全端统一的导入格式：图片 + 各类压缩包 + PDF + EPUB（与 src/lib/importers.ts、server/archive.js 对齐） */
+const IMPORT_EXT = [
+  'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'tif', 'tiff',
+  'zip', 'cbz', 'rar', 'cbr', '7z', 'cb7', 'r00', 'r01',
+  'tar', 'tgz', 'gz', 'bz2', 'xz', 'epub', 'pdf',
+  'ace', 'arj', 'lzh', 'lha', 'cab', 'iso',
+];
+const IMPORT_FILTERS = [
+  { name: '漫画文件（图片 / ZIP / CBZ / RAR / 7Z / CBR / EPUB / PDF / TAR）', extensions: IMPORT_EXT },
+  { name: '全部文件', extensions: ['*'] },
+];
+/* 任何导入入口都用同一套全格式选择器，避免「点导入却只能选图片」 */
 ipcMain.handle('cv:pick-files', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
-    title: '选择漫画图片', properties: ['openFile', 'multiSelections'],
-    filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'tif', 'tiff'] }],
+    title: '选择漫画文件（图片 / 压缩包 / PDF / EPUB）', properties: ['openFile', 'multiSelections'],
+    filters: IMPORT_FILTERS,
   });
   return r.canceled ? [] : r.filePaths;
 });
@@ -301,13 +313,7 @@ ipcMain.handle('cv:pick-files', async () => {
 ipcMain.handle('cv:pick-import', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
     title: '导入漫画（可一次多选）', properties: ['openFile', 'multiSelections'],
-    filters: [
-      { name: '漫画文件（图片 / ZIP / CBZ / RAR / 7Z / EPUB / PDF）', extensions: [
-        'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'tif', 'tiff',
-        'zip', 'cbz', 'rar', 'cbr', '7z', 'cb7', 'tar', 'tgz', 'gz', 'epub', 'pdf',
-      ] },
-      { name: '全部文件', extensions: ['*'] },
-    ],
+    filters: IMPORT_FILTERS,
   });
   return r.canceled ? [] : r.filePaths;
 });
@@ -320,16 +326,32 @@ ipcMain.handle('cv:read-image-data', (_e, p) => {
     return `data:${mime};base64,${buf.toString('base64')}`;
   } catch { return ''; }
 });
-/* 裁剪结果落成临时 PNG，返回路径供上传 */
-ipcMain.handle('cv:save-temp-image', (_e, dataUrl) => {
+/* 裁剪结果 / PDF 渲染页落成临时 PNG，返回路径供上传。文件名带随机后缀避免多页同毫秒覆盖 */
+ipcMain.handle('cv:save-temp-image', (_e, dataUrl, nameHint) => {
   try {
     const m = String(dataUrl || '').match(/^data:image\/(\w+);base64,(.+)$/);
     if (!m) throw new Error('不是图片数据');
     const dir = app.getPath('temp');
-    const file = path.join(dir, `cv-avatar-${Date.now()}.${m[1] === 'png' ? 'png' : 'jpg'}`);
+    const uniq = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const safe = String(nameHint || '').replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_').slice(0, 60);
+    const file = path.join(dir, `cv-${safe || 'tmp'}-${uniq}.${m[1] === 'png' ? 'png' : 'jpg'}`);
     fs.writeFileSync(file, Buffer.from(m[2], 'base64'));
     return file;
   } catch { return ''; }
+});
+/* 渲染进程用 pdf.js 导入 PDF：把 PDF 读成 base64（webSecurity 下 file:// 无法直接 fetch） */
+ipcMain.handle('cv:read-file-base64', (_e, p) => {
+  try { return fs.readFileSync(String(p || '')).toString('base64'); } catch { return ''; }
+});
+/* pdf.js 的 lib/worker 源码文本，渲染进程用 Blob URL 动态 import（避免 file:// ES module 限制） */
+ipcMain.handle('cv:pdfjs-source', () => {
+  try {
+    const vd = path.join(APP_DIR, 'vendor');
+    return {
+      lib: fs.readFileSync(path.join(vd, 'pdf.min.mjs'), 'utf8'),
+      worker: fs.readFileSync(path.join(vd, 'pdf.worker.min.mjs'), 'utf8'),
+    };
+  } catch { return null; }
 });
 ipcMain.handle('cv:copy-text', (_e, text) => { clipboard.writeText(String(text || '')); return { ok: true }; });
 ipcMain.handle('cv:pick-folder', async () => {

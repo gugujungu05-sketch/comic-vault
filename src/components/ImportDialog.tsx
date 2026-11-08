@@ -8,6 +8,7 @@ import {
   IMAGE_RE,
   PDF_RE,
   SEVENZ_ONLY_RE,
+  IMPORT_ACCEPT,
   extractArchive,
   extractEpub,
   filesFromFileList,
@@ -220,6 +221,8 @@ export function ImportDialog({
         } catch (err) {
           msgs.push(`${p.name} 解压失败：${(err as Error).message}`);
         }
+      } else {
+        msgs.push(`${p.name}：暂不支持的格式（可用图片 / ZIP·CBZ·RAR·7Z·CBR / PDF / EPUB / TAR 等）`);
       }
     }
     setNotes(msgs);
@@ -367,19 +370,19 @@ export function ImportDialog({
         onDrop={onDrop}
         onClick={() => imgRef.current?.click()}
       >
-        <div className="big">拖拽图片 / 文件夹 / ZIP·CBZ·RAR·7Z / PDF / EPUB 到此处</div>
-        <div>可一次多选文件，在下方调整顺序 —— RAR、7Z、CBR、CB7 会由服务端解压，不占用浏览器内存</div>
+        <div className="big">拖拽图片 / 文件夹 / ZIP·CBZ·RAR·7Z·CBR·CB7 / PDF / EPUB / TAR 到此处</div>
+        <div>支持图片、各类压缩包、PDF、EPUB，可一次多选；RAR / 7Z / CBR / TAR 等由服务端解压，不占用浏览器内存</div>
       </div>
 
       <div className="row">
         <button className="btn sm" onClick={() => imgRef.current?.click()}>
-          <Icon name="image" size={15} /> 选择图片
+          <Icon name="image" size={15} /> 选择文件（图片 / 压缩包 / PDF / EPUB）
         </button>
         <button className="btn sm" onClick={() => dirRef.current?.click()}>
           <Icon name="folder" size={15} /> 选择文件夹
         </button>
         <button className="btn sm" onClick={() => arcRef.current?.click()}>
-          <Icon name="file" size={15} /> ZIP / CBZ / RAR / 7Z / PDF / EPUB
+          <Icon name="file" size={15} /> 压缩包 / PDF / EPUB
         </button>
         {items.length > 0 && (
           <button className="btn sm ghost" onClick={() => { setItems([]); setTitles({}); }}>
@@ -396,7 +399,7 @@ export function ImportDialog({
         ref={imgRef}
         type="file"
         multiple
-        accept="image/*"
+        accept={IMPORT_ACCEPT}
         hidden
         onChange={(e) => {
           if (e.target.files) ingest(filesFromFileList(e.target.files));
@@ -419,7 +422,7 @@ export function ImportDialog({
         ref={arcRef}
         type="file"
         multiple
-        accept=".zip,.cbz,.pdf,.epub,.rar,.cbr,.7z,.cb7,.ace,.arj,.lzh,.cab,.iso"
+        accept={IMPORT_ACCEPT}
         hidden
         onChange={(e) => {
           if (e.target.files) ingest(filesFromFileList(e.target.files));

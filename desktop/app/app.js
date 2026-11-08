@@ -695,15 +695,77 @@
       });
     }
   }
-  /** 统一导入入口：压缩包走服务端 7z 解压（和网站一样），图片走本地网格 */
+  /** PDF：在渲染进程用 pdf.js 逐页渲染成 PNG（与网站 ImportDialog 一致）。
+   *  桌面内置服务不带原生 PDF 渲染模块，故 PDF 不走服务端，全部由 Chromium 渲染，
+   *  转出的临时图片路径并入图片网格导入，页序由 0001 前缀保证。 */
+  let pdfjsPromise = null;
+  async function loadPdfjs() {
+    if (!Host.pdfjsSource) return null;
+    if (!pdfjsPromise) {
+      pdfjsPromise = (async () => {
+        const src = await Host.pdfjsSource();
+        if (!src || !src.lib || !src.worker) return null;
+        const libUrl = URL.createObjectURL(new Blob([src.lib], { type: 'text/javascript' }));
+        const wrkUrl = URL.createObjectURL(new Blob([src.worker], { type: 'text/javascript' }));
+        const pdfjs = await import(libUrl);
+        pdfjs.GlobalWorkerOptions.workerSrc = wrkUrl;
+        return pdfjs;
+      })().catch(() => null);
+    }
+    return pdfjsPromise;
+  }
+  async function pdfToImagePaths(pdfPath, onProgress) {
+    const pdfjs = await loadPdfjs();
+    if (!pdfjs || !Host.readFileBase64 || !Host.saveTempImage) return null;
+    const b64 = await Host.readFileBase64(pdfPath);
+    if (!b64) return null;
+    const bin = atob(b64), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const doc = await pdfjs.getDocument({ data: u8, isEvalSupported: false }).promise;
+    const out = [], stem = base(pdfPath).replace(/\.pdf$/i, '');
+    const pad = Math.max(4, String(doc.numPages).length);
+    try {
+      for (let i = 1; i <= doc.numPages; i++) {
+        const page = await doc.getPage(i);
+        const vp = page.getViewport({ scale: 1.5 });
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.ceil(vp.width)); cv.height = Math.max(1, Math.ceil(vp.height));
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cv.width, cv.height);
+        await page.render({ canvasContext: ctx, viewport: vp, canvas: cv }).promise;
+        const hint = `${stem}-${String(i).padStart(pad, '0')}`;
+        const tmp = await Host.saveTempImage(cv.toDataURL('image/png'), hint);
+        if (tmp) out.push(tmp);
+        page.cleanup();
+        if (onProgress) onProgress(i, doc.numPages);
+      }
+    } finally { try { await doc.destroy(); } catch { /* 忽略 */ } }
+    return out;
+  }
+  /** 统一导入入口：压缩包走服务端 7z 解压（和网站一样），PDF 本地渲染，图片走本地网格 */
   async function startImportFrom(rawPaths) {
     if (!rawPaths || !rawPaths.length) return;
     let paths = rawPaths.filter((p) => typeof p === 'string');
     // 与网站 ImportDialog 完全一致的支持格式（图片 / 各类压缩包 / EPUB / PDF）
-    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|cb7|7z|r\d{2}|tar|tgz|gz|bz2|xz|epub|pdf|ace|arj|lzh|lha|cab|iso)$/i.test(p));
-    const images = paths.filter((p) => !archives.includes(p));
+    const PDF_RE = /\.pdf$/i;
+    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|cb7|7z|r\d{2}|tar|tgz|gz|bz2|xz|epub|ace|arj|lzh|lha|cab|iso)$/i.test(p));
+    let images = paths.filter((p) => !archives.includes(p) && !PDF_RE.test(p));
+    const pdfs = paths.filter((p) => PDF_RE.test(p));
+    const failedPdfs = [];
+    for (const p of pdfs) {
+      try {
+        busy(true, `渲染 ${base(p)}…`);
+        const rendered = await pdfToImagePaths(p, (i, n) => busy(true, `渲染 ${base(p)}… ${i}/${n}`));
+        if (rendered && rendered.length) images = images.concat(rendered);
+        else failedPdfs.push(p);
+      } catch (err) {
+        failedPdfs.push(p);
+      } finally { busy(false); }
+    }
+    // 渲染能力不可用（如手机端）或渲染失败的 PDF，回退交给服务端（服务端会给出明确指引）
+    const archivesFinal = archives.concat(failedPdfs);
     if (images.length) await startImport(images);
-    if (archives.length) await importArchives(archives);
+    if (archivesFinal.length) await importArchives(archivesFinal);
   }
   /** ZIP/CBZ/RAR/7Z/EPUB/PDF：交给服务端解压/渲染 → 按目录分话确认 → 落盘成章节。
    *  每个压缩包用自己独立的 sessionId 提交（旧版多包只保留最后一个 session，前面的会全丢），
