@@ -375,9 +375,9 @@ export function ReaderView({
           <button
             className={`btn sm ${mode === 'continuous' ? 'primary' : 'ghost'}`}
             onClick={() => setMode('continuous')}
-            title="连续滚动（分页图上下排列）"
+            title="上下滑动连续阅读（分页图上下排列）"
           >
-            连读
+            上下滚动
           </button>
           <button
             className={`btn sm ${mode === 'webtoon' ? 'primary' : 'ghost'}`}
@@ -535,10 +535,25 @@ export function ReaderView({
               />
             </>
           )}
-          {mode === 'webtoon' && (
-            <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-              条漫 · 上下滚动 {Math.round(scrollRatio * 100)}%
-            </span>
+          {(mode === 'webtoon' || mode === 'continuous') && (
+            <>
+              <input
+                type="range" min={0} max={1000}
+                value={Math.round(scrollRatio * 1000)}
+                onChange={(e) => {
+                  const el = stageRef.current;
+                  if (!el) return;
+                  const r = Number(e.target.value) / 1000;
+                  el.scrollTop = r * Math.max(1, el.scrollHeight - el.clientHeight);
+                  setScrollRatio(r);
+                }}
+                style={{ width: 130 }}
+                title="拖动定位阅读进度"
+              />
+              <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                上下滚动 {Math.round(scrollRatio * 100)}%
+              </span>
+            </>
           )}
           <span className="spacer" style={{ flex: 1 }} />
           <button className="btn sm ghost" onClick={() => goChapter(1)} disabled={chapterIndex === chapters.length - 1} title="下一话 ]">

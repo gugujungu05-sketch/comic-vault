@@ -9,6 +9,7 @@ import {
   PDF_RE,
   SEVENZ_ONLY_RE,
   IMPORT_ACCEPT,
+  NOVEL_RE,
   extractArchive,
   extractEpub,
   filesFromFileList,
@@ -42,7 +43,7 @@ export function ImportDialog({
   const [items, setItems] = useState<Pick[]>([]);
   const [mode, setMode] = useState<GroupMode>('folder');
   const [per, setPer] = useState(25);
-  const [pdfWidth, setPdfWidth] = useState(1600);
+  const [pdfWidth, setPdfWidth] = useState(1200);
   const [busy, setBusy] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -67,6 +68,11 @@ export function ImportDialog({
   const [showFiles, setShowFiles] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  /** 小说 / 文字型 EPUB：一次上传由服务端自动分章，不进入图片页列表 */
+  const [novelFiles, setNovelFiles] = useState<Pick[]>([]);
+  const [phase, setPhase] = useState('');
+  /** 几千张图片时一次性渲染全部行会卡死界面，默认只渲染前 300 行 */
+  const [listLimit, setListLimit] = useState(300);
 
   const imgRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
@@ -132,6 +138,7 @@ export function ImportDialog({
     setParsing(true);
     const next: Pick[] = [];
     const msgs: string[] = [];
+    const novelQueue: Pick[] = [];
     for (const p of picks) {
       if (IMAGE_RE.test(p.name)) {
         next.push(p);
@@ -171,30 +178,39 @@ export function ImportDialog({
       } else if (EPUB_RE.test(p.name)) {
         try {
           const { items: got, meta } = await extractEpub(p.blob);
-          // path 用「4 位序号目录 + 原文件名」：按目录分话时整本一话，
-          // 且自然排序（naturalCompare）也不会打乱书内阅读顺序
-          got.forEach((g, i) => {
-            next.push({ name: g.name, blob: g.blob, path: `${String(i + 1).padStart(4, '0')}/${g.name}` });
-          });
-          if (meta) {
-            setMeta((m) => ({
-              title: m.title || meta.title || '',
-              author: m.author || meta.author || '',
-              artist: m.artist || meta.artist || '',
-              tags: m.tags || (meta.tags || []).join(', '),
-              description: m.description || meta.description || '',
-              direction: meta.direction || m.direction,
-              publisher: m.publisher || meta.publisher || '',
-              year: m.year || meta.year || '',
-              rating: m.rating || meta.rating || '',
-              ageRating: m.ageRating || meta.ageRating || '',
-            }));
+          if (got.length >= 3) {
+            // 图片漫画 EPUB：按书内阅读顺序排好，整本一话
+            got.forEach((g, i) => {
+              next.push({ name: g.name, blob: g.blob, path: `${String(i + 1).padStart(4, '0')}/${g.name}` });
+            });
+            if (meta) {
+              setMeta((m) => ({
+                title: m.title || meta.title || '',
+                author: m.author || meta.author || '',
+                artist: m.artist || meta.artist || '',
+                tags: m.tags || (meta.tags || []).join(', '),
+                description: m.description || meta.description || '',
+                direction: meta.direction || m.direction,
+                publisher: m.publisher || meta.publisher || '',
+                year: m.year || meta.year || '',
+                rating: m.rating || meta.rating || '',
+                ageRating: m.ageRating || meta.ageRating || '',
+              }));
+            }
+            msgs.push(`${p.name}：已按书内阅读顺序排好，默认「按文件夹」分话时整本为一话`);
+          } else {
+            // 只有封面等零星图片 = 文字小说 EPUB。旧逻辑会把这 1 张封面当成唯一一页，
+            // 导致「导入后只有一页、点进去什么都没有」。改交服务端提取正文并自动分章。
+            novelQueue.push(p);
+            msgs.push(`${p.name}：识别为文字书，将自动生成章节目录，不再只导入封面`);
           }
-          if (!got.length) msgs.push(`${p.name} 中没有找到图片`);
-          else msgs.push(`${p.name}：已按书内阅读顺序排好，默认「按文件夹」分话时整本为一话，如需改动请调整排序或分话方式`);
         } catch (err) {
-          msgs.push(`${p.name} 解析失败：${(err as Error).message}`);
+          novelQueue.push(p);
+          msgs.push(`${p.name} 解析失败，尝试按文字书导入：${(err as Error).message}`);
         }
+      } else if (NOVEL_RE.test(p.name)) {
+        novelQueue.push(p);
+        msgs.push(`${p.name}：小说文本，将自动识别章节并生成目录`);
       } else if (SEVENZ_ONLY_RE.test(p.name)) {
         try {
           const file = p.blob instanceof File ? p.blob : new File([p.blob], p.name);
@@ -222,9 +238,10 @@ export function ImportDialog({
           msgs.push(`${p.name} 解压失败：${(err as Error).message}`);
         }
       } else {
-        msgs.push(`${p.name}：暂不支持的格式（可用图片 / ZIP·CBZ·RAR·7Z·CBR / PDF / EPUB / TAR 等）`);
+        msgs.push(`${p.name}：暂不支持的格式（可用图片 / ZIP·CBZ·RAR·7Z·CBR / PDF / EPUB / TXT 小说 / TAR 等）`);
       }
     }
+    if (novelQueue.length) setNovelFiles((prev) => [...prev, ...novelQueue]);
     setNotes(msgs);
     setItems((prev) => {
       const merged = [...prev, ...next];
@@ -253,12 +270,32 @@ export function ImportDialog({
   }
 
   async function start() {
-    if (!groups.length) return;
+    if (!groups.length && !novelFiles.length) return;
     setBusy(true);
     const total = groups.reduce((n, g) => n + g.items.length, 0);
     setProgress({ done: 0, total });
     try {
       let cid = comicId;
+
+      // 0) 小说 / 文字型 EPUB：一次上传，服务端自动分章并生成目录，不逐页上传
+      if (novelFiles.length) {
+        for (const nf of novelFiles) {
+          setPhase(`正在解析并自动分章：${nf.name}`);
+          const file = nf.blob instanceof File ? nf.blob : new File([nf.blob], nf.name);
+          const r = await api.importNovelFile(file);
+          if (r.kind === 'image') {
+            throw new Error(`${nf.name} 是图片漫画，请用「压缩包 / PDF / EPUB」入口重新导入`);
+          }
+          if (r.comic?.id && !cid) cid = r.comic.id;
+        }
+        setPhase('');
+        if (!groups.length) {
+          toast(`导入完成，已自动生成 ${novelFiles.length} 本小说的章节目录`);
+          onDone(cid!);
+          return;
+        }
+      }
+
       const remoteGroups = groups.slice(0, remoteGroupCount);
       const localGroups = groups.slice(remoteGroupCount);
 
@@ -338,6 +375,7 @@ export function ImportDialog({
       errorToast(err, '导入失败');
     } finally {
       setBusy(false);
+      setPhase('');
     }
   }
 
@@ -354,8 +392,12 @@ export function ImportDialog({
           <button className="btn ghost" onClick={onClose} disabled={busy}>
             取消
           </button>
-          <button className="btn primary" onClick={start} disabled={busy || !groups.length}>
-            {busy ? `导入中 ${percent}%` : `开始导入（${groups.length} 话 / ${items.length} 页）`}
+          <button className="btn primary" onClick={start} disabled={busy || (!groups.length && !novelFiles.length)}>
+            {busy
+              ? (phase ? '导入中…' : `导入中 ${percent}%`)
+              : (novelFiles.length && !groups.length
+                ? `开始导入（${novelFiles.length} 本小说 · 自动生成目录）`
+                : `开始导入（${groups.length} 话 / ${items.length} 页）`)}
           </button>
         </>
       }
@@ -370,13 +412,13 @@ export function ImportDialog({
         onDrop={onDrop}
         onClick={() => imgRef.current?.click()}
       >
-        <div className="big">拖拽图片 / 文件夹 / ZIP·CBZ·RAR·7Z·CBR·CB7 / PDF / EPUB / TAR 到此处</div>
-        <div>支持图片、各类压缩包、PDF、EPUB，可一次多选；RAR / 7Z / CBR / TAR 等由服务端解压，不占用浏览器内存</div>
+        <div className="big">拖拽图片 / 压缩包 / PDF / EPUB / TXT 小说 到此处</div>
+        <div>支持图片、各类压缩包、PDF、EPUB、TXT/MD 小说；小说与文字 EPUB 会自动识别章节生成目录，一次导入即可阅读</div>
       </div>
 
       <div className="row">
         <button className="btn sm" onClick={() => imgRef.current?.click()}>
-          <Icon name="image" size={15} /> 选择文件（图片 / 压缩包 / PDF / EPUB）
+          <Icon name="image" size={15} /> 选择文件（图片 / 压缩包 / PDF / EPUB / 小说）
         </button>
         <button className="btn sm" onClick={() => dirRef.current?.click()}>
           <Icon name="folder" size={15} /> 选择文件夹
@@ -384,13 +426,13 @@ export function ImportDialog({
         <button className="btn sm" onClick={() => arcRef.current?.click()}>
           <Icon name="file" size={15} /> 压缩包 / PDF / EPUB
         </button>
-        {items.length > 0 && (
-          <button className="btn sm ghost" onClick={() => { setItems([]); setTitles({}); }}>
+        {(items.length > 0 || novelFiles.length > 0) && (
+          <button className="btn sm ghost" onClick={() => { setItems([]); setNovelFiles([]); setTitles({}); setListLimit(300); }}>
             <Icon name="trash" size={15} /> 清空
           </button>
         )}
         <span style={{ color: 'var(--muted)', fontSize: 12, marginLeft: 'auto' }}>
-          {parsing ? '解析中…' : `已就绪 ${items.length} 页`}
+          {parsing ? '解析中…' : `已就绪 ${items.length} 页${novelFiles.length ? ` · ${novelFiles.length} 本小说` : ''}`}
         </span>
       </div>
 
@@ -518,7 +560,8 @@ export function ImportDialog({
 
             {showFiles && (
               <div className="sort-list">
-                {items.map((it, i) => (
+                {/* 一次渲染几千行会让界面卡死，默认只渲染前 300 行，可继续展开 */}
+                {(items.length > listLimit ? items.slice(0, listLimit) : items).map((it, i) => (
                   <div
                     key={pickKey(it)}
                     className={`sort-item ${dragIndex === i ? 'dragging' : ''}`}
@@ -547,6 +590,12 @@ export function ImportDialog({
                     </div>
                   </div>
                 ))}
+                {items.length > listLimit && (
+                  <button className="btn sm ghost" type="button" style={{ marginTop: 8 }}
+                    onClick={() => setListLimit((v) => v + 300)}>
+                    显示更多（还有 {items.length - listLimit} 个）
+                  </button>
+                )}
               </div>
             )}
             <div className="sort-hint">
@@ -619,11 +668,12 @@ export function ImportDialog({
 
           {busy && (
             <div>
+              {phase && <div style={{ fontSize: 12, marginBottom: 6 }}>{phase}</div>}
               <div className="progress">
-                <i style={{ width: `${percent}%` }} />
+                <i style={{ width: `${phase ? 100 : percent}%` }} />
               </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>
-                正在上传 {progress.done} / {progress.total} 页
+                {phase ? '正在解析文本并生成目录…' : `正在上传 ${Math.floor(progress.done)} / ${progress.total} 页 · ${percent}%`}
               </div>
             </div>
           )}

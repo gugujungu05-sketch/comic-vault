@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { Comic } from '../types';
 import { ReaderView } from '../components/ReaderView';
+import { NovelReader } from '../components/NovelReader';
 import { ExportDialog } from '../components/ExportDialog';
 import { Icon } from '../components/Icon';
 import { useErrorToast } from '../components/Toasts';
@@ -33,6 +34,24 @@ export function ReaderPage() {
           <Icon name="spinner" size={26} className="spin" />
         </div>
       </div>
+    );
+  }
+
+  // 小说走独立阅读器：上下滑动、目录跳转、进度定位、字体/背景调节
+  if (comic.kind === 'novel') {
+    const nChapter = params.get('chapter') || comic.progress?.chapterId || comic.chapters[0]?.id;
+    const nRatio = nChapter === comic.progress?.chapterId
+      ? Math.min(1, (comic.progress?.pageIndex ?? 0) / 1000) : 0;
+    return (
+      <NovelReader
+        comic={comic}
+        initialChapterId={nChapter}
+        initialRatio={nRatio}
+        onProgress={(chapterId, pageIndex) => {
+          api.setProgress(comic.id, chapterId, pageIndex).catch(() => {});
+        }}
+        onExit={() => navigate(`/comic/${comic.id}`)}
+      />
     );
   }
 

@@ -9,13 +9,15 @@ export const IMAGE_RE = /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)$/i;
 export const ARCHIVE_RE = /\.(zip|cbz)$/i;
 export const PDF_RE = /\.pdf$/i;
 export const EPUB_RE = /\.epub$/i;
+/** 纯文字小说：本地直接读文本自动分章；EPUB 会先判定是文字书还是图片漫画 */
+export const NOVEL_RE = /\.(txt|text|md|markdown)$/i;
 /** 浏览器端解不了的压缩包，交给服务端 7-Zip 引擎（与 server/archive.js 的 SEVENZ_RE 对齐） */
 export const SEVENZ_ONLY_RE =
   /\.(7z|rar|cbr|cb7|r\d{2}|ace|arj|lzh|lha|cab|iso|tar|tgz|gz|bz2|xz)$/i;
 
 /** 导入对话框 accept 用的完整格式列表（与 ingest 的识别能力一致，避免选得到却解不了） */
 export const IMPORT_ACCEPT =
-  'image/*,.zip,.cbz,.pdf,.epub,.rar,.cbr,.7z,.cb7,.r00,.r01,.tar,.tgz,.gz,.bz2,.xz,.ace,.arj,.lzh,.lha,.cab,.iso';
+  'image/*,.zip,.cbz,.pdf,.epub,.txt,.text,.md,.markdown,.rar,.cbr,.7z,.cb7,.r00,.r01,.tar,.tgz,.gz,.bz2,.xz,.ace,.arj,.lzh,.lha,.cab,.iso';
 
 export interface RawItem {
   name: string;
@@ -111,6 +113,7 @@ export async function extractArchive(file: Blob): Promise<{ items: RawItem[]; me
   const items: RawItem[] = [];
   let meta: ArchiveMeta | undefined;
 
+  const imageEntries: { entry: any; filename: string; base: string }[] = [];
   for (const entry of entries) {
     if (entry.directory) continue;
     const filename = entry.filename.replace(/\\/g, '/');
@@ -122,9 +125,25 @@ export async function extractArchive(file: Blob): Promise<{ items: RawItem[]; me
     }
     if (!IMAGE_RE.test(base)) continue;
     if (/(^|\/)(__MACOSX|\.)/.test(filename)) continue;
-    const blob = await entry.getData!(new BlobWriter());
-    items.push({ name: base, blob, path: filename });
+    imageEntries.push({ entry, filename, base });
   }
+  // 并发读取（限流 6）：逐张串行 await 是「解析太慢」的主因之一。
+  // 用索引槽位保证结果顺序不被并发完成顺序打乱。
+  const LIMIT = 6;
+  let cursor = 0;
+  const slots: (RawItem | null)[] = new Array(imageEntries.length).fill(null);
+  await Promise.all(Array.from({ length: Math.min(LIMIT, imageEntries.length) }, async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= imageEntries.length) break;
+      const { entry, filename, base } = imageEntries[i];
+      try {
+        const blob = await entry.getData!(new BlobWriter());
+        slots[i] = { name: base, blob, path: filename };
+      } catch { /* 单张损坏不影响整包 */ }
+    }
+  }));
+  for (const it of slots) if (it) items.push(it);
   await reader.close();
   items.sort((a, b) => naturalCompare(a.path, b.path));
   return { items, meta };

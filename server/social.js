@@ -74,6 +74,25 @@ function parseCookies(header = '') {
   return out;
 }
 
+/**
+ * 头像地址规范化：只允许存本站自己的 /api/u/:uid/avatar 相对路径。
+ * 前端跨域时会把相对地址补成完整 URL（含隧道域名、sharecode），若原样入库，
+ * 隧道地址一变或换后端，头像就永久失效；data:/blob: 内联图更不能写进数据库。
+ */
+function normalizeAvatarUrl(value, uid) {
+  let s = String(value ?? '').trim();
+  if (!s) return '';
+  if (/^(data|blob):/i.test(s)) return '';
+  try {
+    const u = new URL(s, 'http://cv.local');
+    if (!/^\/api\/u\/[^/]+\/avatar$/.test(u.pathname)) return '';
+    const v = u.searchParams.get('v');
+    return `/api/u/${uid}/avatar${v ? `?v=${encodeURIComponent(v)}` : ''}`;
+  } catch {
+    return '';
+  }
+}
+
 export function publicUser(u) {
   if (!u) return null;
   return {
@@ -541,7 +560,7 @@ export function registerSocial(app, ctx) {
     const b = req.body || {};
     if (b.name !== undefined) u.name = String(b.name).trim().slice(0, 30) || u.name;
     if (b.bio !== undefined) u.bio = String(b.bio).slice(0, 300);
-    if (b.avatar !== undefined) u.avatar = String(b.avatar).slice(0, 500);
+    if (b.avatar !== undefined) u.avatar = normalizeAvatarUrl(b.avatar, u.id);
     if (b.password) {
       if (String(b.password).length < 6) return res.status(400).json({ error: '密码至少 6 位' });
       setPassword(u, b.password);
