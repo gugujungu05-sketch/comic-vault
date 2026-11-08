@@ -15,7 +15,7 @@ const { spawn } = require('node:child_process');
 const http = require('node:http');
 const https = require('node:https');
 
-const VERSION = '3.4.0.4';
+const VERSION = '3.4.0.5';
 const OLD_TUNNEL_RE = /workbuddy\.host|a3375579f1d0038dc/i;
 const DRIVE_ZIP_URL = 'https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ';
 const APP_DIR = path.join(__dirname, 'app');

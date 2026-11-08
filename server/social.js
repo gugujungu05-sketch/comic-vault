@@ -312,7 +312,12 @@ async function deliverCode(db, entry, email, code, purpose, res, okHint) {
   if (mailConfigured() && !mail.sent) {
     db.codes = db.codes.filter((c) => c !== entry);
     saveDbSoon();
-    return res.status(502).json({ error: '验证码邮件发送失败，请稍后重试' });
+    // 真实错误（含 SMTP 细节）只进服务端日志，避免把账号/内网信息泄露给前端；
+    // 前端给出可操作的分类提示，让用户知道这不是自己操作的问题。
+    const via = mail.channel === 'smtp' ? 'SMTP 邮件服务器' : '邮件服务';
+    return res.status(502).json({
+      error: `验证码邮件发送失败：${via}暂时不可用。请稍后重试；若持续失败，请联系站点管理员检查邮件配置。`,
+    });
   }
   return res.json({
     ok: true,

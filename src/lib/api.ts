@@ -37,25 +37,52 @@ export function setApiBase(url: string): void {
   } catch { /* 忽略 */ }
 }
 
-/** 探测可用后端：依次尝试候选地址，成功（/api/runtime 200 且应用名正确）即锁定 */
+/** 探测单个后端；成功返回该 base，失败返回 null */
+async function probeBackend(base: string, timeoutMs: number): Promise<string | null> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(`${base}/api/runtime`, {
+      cache: 'no-store', signal: ctrl.signal, credentials: 'include',
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && typeof data === 'object' && 'app' in data ? base : null;
+  } catch { return null; }
+}
+
+/**
+ * 探测可用后端：所有候选**并行竞速**，谁先返回可用就立即锁定。
+ *
+ * 历史 bug：原来是串行 for 循环，每个候选最多等 8 秒。backend.json 里累积了多个
+ * 已失效的临时隧道地址，加上浏览器缓存的旧地址，隧道一换就要等 40+ 秒才轮到新地址，
+ * 期间用户点「获取验证码」等请求全部打向死地址，表现为「发送失败 / 一直转圈」。
+ * 并行后耗时恒等于最快可用后端的响应时间，失效地址不再拖慢整体。
+ */
 export async function detectApiBase(candidates: string[] = ['']): Promise<string | null> {
   const list = candidates.filter((c, i) => candidates.indexOf(c) === i);
-  for (const base of list) {
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(`${base}/api/runtime`, { cache: 'no-store', signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data && typeof data === 'object' && 'app' in data) {
-        apiBase = base;
-        try { localStorage.setItem(LS_API_BASE, apiBase); } catch { /* 忽略 */ }
-        return apiBase;
-      }
-    } catch { /* 下一个候选 */ }
-  }
-  return null;
+  if (!list.length) return null;
+  const TIMEOUT = 7000;
+  return new Promise<string | null>((resolve) => {
+    let settled = false;
+    let pending = list.length;
+    for (const base of list) {
+      probeBackend(base, TIMEOUT)
+        .then((okBase) => {
+          if (!settled && okBase !== null) {
+            settled = true;
+            apiBase = okBase;
+            try { localStorage.setItem(LS_API_BASE, apiBase); } catch { /* 忽略 */ }
+            resolve(okBase);
+          }
+        })
+        .finally(() => {
+          pending -= 1;
+          if (pending === 0 && !settled) resolve(null);
+        });
+    }
+  });
 }
 
 /** 把服务端返回的相对媒体地址补全成可访问的绝对地址（跨域后端时必须） */
@@ -132,12 +159,34 @@ function requestXHR<T>(
   });
 }
 
+/** 请求级网络故障：通知 App 重新探测后端（隧道地址变化后自动切换） */
+function notifyBackendLost() {
+  try { window.dispatchEvent(new CustomEvent('cv:backend-lost')); } catch { /* 忽略 */ }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${getApiBase()}${url}`, {
-    ...init,
-    // 跨域（GitHub Pages → 隧道）也要带会话 cookie，否则登录态无法保持
-    credentials: 'include',
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${getApiBase()}${url}`, {
+      ...init,
+      // 跨域（GitHub Pages → 隧道）也要带会话 cookie，否则登录态无法保持
+      credentials: 'include',
+    });
+  } catch (err) {
+    notifyBackendLost();
+    const raw = String((err as Error)?.message || err);
+    // 浏览器原生报错（Failed to fetch / NetworkError）对用户毫无意义，统一转成可操作提示
+    if (/failed to fetch|networkerror|load failed|abort/i.test(raw)) {
+      throw new Error('无法连接漫画库服务器，正在自动重连，请稍后重试');
+    }
+    throw new Error(`网络请求失败：${raw}`);
+  }
+  // 静态站点把 /api/ 请求当页面返回 HTML（404），或隧道层故障（502/503/530）
+  // 时视为后端丢失并触发重探测。注意 502 也可能是业务错误（如邮件发送失败），
+  // 因此只在响应不是 JSON 时才判定为网关故障。
+  if (res.status === 404 || res.status === 503 || res.status === 530) {
+    if (getApiBase()) notifyBackendLost();
+  }
   const text = await res.text();
   let data: unknown = null;
   try {
