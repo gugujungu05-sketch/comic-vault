@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { social } from '../lib/api';
 import { useSession } from '../lib/session';
@@ -112,8 +112,21 @@ function EditProfile({ user, onClose, onSaved }: { user: User; onClose: () => vo
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [cropSrc, setCropSrc] = useState('');
+  // 上传期间的本地预览地址：先立即显示裁剪结果，不必干等网络
+  const localPreview = useRef<string | null>(null);
   const errorToast = useErrorToast();
   const toast = useToast();
+
+  useEffect(() => () => {
+    if (localPreview.current) URL.revokeObjectURL(localPreview.current);
+  }, []);
+
+  function releasePreview() {
+    const old = localPreview.current;
+    localPreview.current = null;
+    // 延后回收，等 <img> 切到正式地址后再释放，避免瞬间空白
+    if (old) setTimeout(() => URL.revokeObjectURL(old), 1500);
+  }
 
   async function onPickAvatar(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -126,12 +139,19 @@ function EditProfile({ user, onClose, onSaved }: { user: User; onClose: () => vo
 
   async function onCropped(blob: Blob) {
     setCropSrc('');
+    releasePreview();
+    const preview = URL.createObjectURL(blob);
+    localPreview.current = preview;
+    setAvatarUrl(preview);
     setUploading(true);
     try {
-      const r = await social.uploadAvatar(blob, 'avatar.png');
+      const r = await social.uploadAvatar(blob, 'avatar.jpg');
       setAvatarUrl(r.url);
-      toast('头像已上传');
+      releasePreview();
+      toast('头像已上传，记得点「保存」');
     } catch (err) {
+      setAvatarUrl(user.avatar || undefined);
+      releasePreview();
       errorToast(err, '头像上传失败');
     } finally {
       setUploading(false);
@@ -139,9 +159,19 @@ function EditProfile({ user, onClose, onSaved }: { user: User; onClose: () => vo
   }
 
   async function save() {
+    if (uploading) {
+      errorToast(new Error('头像还在上传，请稍候再保存'), '请稍候');
+      return;
+    }
     setBusy(true);
     try {
-      const r = await social.updateMe({ name, bio, ...(avatarUrl && avatarUrl !== user.avatar ? { avatar: avatarUrl } : {}), ...(password ? { password } : {}) });
+      // avatar 始终提交：有值则更新，空串表示移除头像。
+      // 旧逻辑只在「有值且不同于原值」时才提交，导致点「移除头像」保存后毫无变化。
+      const r = await social.updateMe({
+        name, bio,
+        avatar: avatarUrl || '',
+        ...(password ? { password } : {}),
+      });
       onSaved(r.user);
     } catch (err) {
       errorToast(err, '保存失败');
@@ -152,7 +182,7 @@ function EditProfile({ user, onClose, onSaved }: { user: User; onClose: () => vo
 
   return (
     <Modal title="编辑资料" icon={<Icon name="user" />} onClose={onClose} width={480}
-      footer={<><button className="btn ghost" onClick={onClose}>取消</button><button className="btn primary" onClick={save} disabled={busy}>{busy ? '保存中…' : '保存'}</button></>}>
+      footer={<><button className="btn ghost" onClick={onClose}>取消</button><button className="btn primary" onClick={save} disabled={busy || uploading}>{busy ? '保存中…' : uploading ? '头像上传中…' : '保存'}</button></>}>
       <div className="field">
         <label>头像</label>
         <div className="row" style={{ alignItems: 'center', gap: 12 }}>
@@ -163,7 +193,7 @@ function EditProfile({ user, onClose, onSaved }: { user: User; onClose: () => vo
               <input type="file" accept="image/*" hidden onChange={onPickAvatar} />
             </label>
             {avatarUrl && (
-              <button className="btn sm ghost" onClick={() => { setAvatarUrl(undefined); }}>移除头像</button>
+              <button className="btn sm ghost" onClick={() => { releasePreview(); setAvatarUrl(undefined); }}>移除头像</button>
             )}
           </div>
         </div>

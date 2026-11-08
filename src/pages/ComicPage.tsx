@@ -380,16 +380,18 @@ export function ComicPage() {
                     {comic.progress?.chapterId === ch.id && <span className="badge accent">在读</span>}
                   </div>
                   <div className="chapter-sub">
-                    {ch.pages.length} 页{ch.uploadedByName ? ` · 由 ${ch.uploadedByName} 上传` : ''}
+                    {comic.kind === 'novel' ? '文字章节' : `${ch.pages.length} 页`}{ch.uploadedByName ? ` · 由 ${ch.uploadedByName} 上传` : ''}
                   </div>
                 </div>
                 <div className="row">
                   <button className="btn sm" onClick={() => navigate(`/read/${comic.id}?chapter=${ch.id}`)}>
                     <Icon name="play" size={14} />
                   </button>
-                  <button className="btn sm ghost" onClick={() => setExpanded(open ? null : ch.id)} title="管理页面">
-                    <Icon name={open ? 'up' : 'down'} size={14} />
-                  </button>
+                  {comic.kind !== 'novel' && (
+                    <button className="btn sm ghost" onClick={() => setExpanded(open ? null : ch.id)} title="管理页面">
+                      <Icon name={open ? 'up' : 'down'} size={14} />
+                    </button>
+                  )}
                   {canWrite && (
                     <>
                       <button className="btn sm ghost" onClick={() => renameChapter(ch)} title="重命名">

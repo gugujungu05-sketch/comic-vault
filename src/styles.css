@@ -2143,3 +2143,61 @@ textarea {
   font-weight: 600;
   border-bottom: 1px solid rgba(124, 108, 255, 0.2);
 }
+
+/* ------------------------------ 小说阅读器 ------------------------------ */
+.novel-reader {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh;
+}
+.novel-bar, .novel-foot {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; box-shadow: 0 1px 0 rgba(128, 128, 128, .18);
+  flex-wrap: wrap;
+}
+.nv-title {
+  font-weight: 700; font-size: 14px; margin-right: auto;
+  max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nv-btn {
+  border: 1px solid rgba(128, 128, 128, .28); background: transparent;
+  color: inherit; font-size: 12px; padding: 5px 10px; border-radius: 7px;
+  cursor: pointer; white-space: nowrap;
+}
+.nv-btn:hover { background: rgba(128, 128, 128, .14); }
+.nv-btn:disabled { opacity: .4; cursor: default; }
+.novel-stage { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: auto; }
+.novel-body {
+  max-width: 760px; margin: 0 auto; padding: 34px 22px 80px;
+  text-align: justify; word-break: break-word;
+}
+.novel-h1 { font-size: 1.5em; margin: 0 0 1.2em; line-height: 1.5; text-align: center; }
+.novel-body p { margin: 0 0 .85em; text-indent: 2em; }
+.novel-end { text-align: center; font-size: 13px; margin: 40px 0 24px; }
+.novel-chapter-nav { display: flex; justify-content: space-between; gap: 12px; }
+.novel-chapter-nav button {
+  flex: 1; padding: 11px; border-radius: 9px; cursor: pointer;
+  border: 1px solid rgba(128, 128, 128, .3); background: transparent; color: inherit;
+}
+.novel-chapter-nav button:disabled { opacity: .4; cursor: default; }
+.nv-range { flex: 1 1 160px; min-width: 100px; accent-color: #7c6cff; }
+.nv-chapter, .nv-percent { font-size: 12px; white-space: nowrap; }
+.novel-toc {
+  flex: 0 0 auto; max-height: 46vh; overflow: auto;
+  border-bottom: 1px solid rgba(128, 128, 128, .2); padding: 10px 14px;
+}
+.nv-toc-head { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+.nv-toc-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 4px; }
+.nv-toc-item {
+  text-align: left; border: 0; background: transparent; color: inherit; cursor: pointer;
+  font-size: 12px; padding: 7px 9px; border-radius: 7px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nv-toc-item:hover { background: rgba(128, 128, 128, .14); }
+.nv-toc-item.on { background: rgba(124, 108, 255, .22); font-weight: 700; }
+.nv-toc-item span { opacity: .6; margin-right: 4px; }
+@media (max-width: 640px) {
+  .novel-body { padding: 24px 16px 70px; }
+  .nv-title { max-width: 34vw; }
+  .novel-bar { gap: 5px; padding: 6px 9px; }
+}

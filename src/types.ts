@@ -18,6 +18,8 @@ export interface Chapter {
   title: string;
   number: number | null;
   pages: Page[];
+  /** 小说章节：服务端正文文件名，通过 /api/novel/:comicId/:chapterId 按需读取 */
+  textFile?: string;
   createdAt?: number;
   uploadedBy?: string | null;
   uploadedByName?: string;
@@ -153,6 +155,8 @@ export interface CommunityComic extends ComicSummary {
 
 export interface ComicSummary {
   id: string;
+  /** novel = 文字小说（章节正文按需加载），comic/缺省 = 图片漫画 */
+  kind?: 'comic' | 'novel';
   title: string;
   author: string;
   artist: string;
@@ -206,7 +210,7 @@ export interface Comic extends ComicSummary {
 export type ReaderFilter = 'none' | 'warm' | 'invert' | 'gray';
 
 export interface ReaderPrefs {
-  mode: 'single' | 'double' | 'continuous';
+  mode: 'single' | 'double' | 'continuous' | 'webtoon';
   fit: 'contain' | 'width' | 'height' | 'original';
   direction: 'ltr' | 'rtl';
   filter: ReaderFilter;

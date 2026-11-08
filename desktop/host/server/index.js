@@ -162,6 +162,8 @@ function summarize(comic) {
   const db = loadDb();
   return {
     id: comic.id,
+    /** novel = 文字小说（章节正文按需读取），comic = 图片漫画 */
+    kind: comic.kind || 'comic',
     title: displayName(comic),
     baseTitle: comic.title,
     author: comic.author || '',
@@ -821,20 +823,28 @@ app.post('/api/comics/:id/chapters/:chapterId/pages', upload.array('files', 300)
     return res.status(404).json({ error: '章节不存在' });
   }
   const insertAt = Number.isInteger(req.body?.index) ? Number(req.body.index) : chapter.pages.length;
-  const added = [];
-  for (const file of req.files || []) {
-    if (!file.mimetype?.startsWith('image/') && !IMAGE_RE.test(file.originalname || '')) {
-      await cleanupTmp(file);
-      continue;
+  const all = req.files || [];
+  const valid = all.filter((f) => f.mimetype?.startsWith('image/') || IMAGE_RE.test(f.originalname || ''));
+  for (const f of all) if (!valid.includes(f)) await cleanupTmp(f);
+  // 并发限流 4：逐张串行写盘 + 生成缩略图是「上传慢 / 进度不动」的服务端主因。
+  // 用索引槽位保证页序与选择顺序一致，不被并发完成顺序打乱。
+  const slots = new Array(valid.length).fill(null);
+  let cursor = 0;
+  const LIMIT = 4;
+  await Promise.all(Array.from({ length: Math.min(LIMIT, valid.length) }, async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= valid.length) break;
+      const file = valid[i];
+      try {
+        slots[i] = await storePage(file.path, file.originalname, file.mimetype, comic.id, chapter.id);
+      } catch (err) {
+        console.error('[upload] 失败:', err.message);
+        await cleanupTmp(file);
+      }
     }
-    try {
-      const page = await storePage(file.path, file.originalname, file.mimetype, comic.id, chapter.id);
-      added.push(page);
-    } catch (err) {
-      console.error('[upload] 失败:', err.message);
-      await cleanupTmp(file);
-    }
-  }
+  }));
+  const added = slots.filter(Boolean);
   chapter.pages.splice(insertAt, 0, ...added);
   comic.updatedAt = now();
   comic.lastActivityAt = now();
@@ -1092,7 +1102,8 @@ app.post('/api/me/avatar', requireUser, upload.single('file'), async (req, res) 
   });
   // 关键修复：把头像地址写回用户记录并落库，否则前端（尤其桌面端刷新后）
   // 读到的 user.avatar 仍为旧值，表现为「头像改不了 / 显示错误」。
-  const url = `/api/u/${req.user.id}/avatar`;
+  // 带版本号：URL 每次上传都变化，浏览器不会复用旧头像或之前缓存的 404。
+  const url = `/api/u/${req.user.id}/avatar?v=${Date.now()}`;
   req.user.avatar = url;
   saveDbSoon();
   res.json({ ok: true, url });
@@ -1106,8 +1117,239 @@ app.get('/api/u/:uid/avatar', (req, res) => {
   if (!fs.existsSync(dir)) return res.status(404).end();
   const files = fs.readdirSync(dir).filter((f) => f.startsWith('avatar.'));
   if (!files.length) return res.status(404).end();
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  // 不能长缓存：URL 曾在无头像时返回 404，max-age=86400 会让上传成功后的新头像
+  // 在整整一天内依旧读到缓存的 404 / 旧图，表现为「上传后头像不显示」。
+  // no-cache 配合 sendFile 自带的 ETag/Last-Modified，命中时仍返回 304 省流量。
+  res.setHeader('Cache-Control', 'no-cache, max-age=0, must-revalidate');
   res.sendFile(path.join(dir, files[0]));
+});
+
+/* ------------------------------ 小说 / 文字书导入 ------------------------------ */
+
+/** 常见中文/英文小说章节标题（整行、短行才算，避免把正文误判成标题） */
+const NOVEL_HEAD_RE = /^(?:第\s*[0-9零〇一二三四五六七八九十百千万两]{1,12}\s*[章节回卷集部篇][^\n]{0,60}|(?:Chapter|Part|Book|CHAPTER|PART|BOOK)\s*[0-9IVXLCivxlc]{1,8}[^\n]{0,60}|卷\s*[0-9零〇一二三四五六七八九十百千万]{1,8}[^\n]{0,60}|(?:序章|楔子|引子|序言|自序|尾声|后记|番外|终章)[^\n]{0,40}|[0-9]{1,4}\s*[、.．]\s*[^\n]{1,50})$/;
+
+function decodeTextFile(buf) {
+  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return buf.toString('utf8').slice(1);
+  const utf8 = buf.toString('utf8');
+  // 出现大量替换字符说明是 GBK/GB18030 编码的中文 TXT
+  if ((utf8.match(/\uFFFD/g) || []).length > Math.max(3, Math.floor(buf.length / 2000))) {
+    try { return new TextDecoder('gb18030').decode(buf); } catch { /* 回落 utf8 */ }
+  }
+  return utf8;
+}
+
+/** 自动分目录：按章节标题切分纯文本；识别不到足够标题时整本作为一章 */
+function splitNovelChapters(raw) {
+  const text = String(raw || '');
+  const lines = text.split('\n');
+  const heads = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.length > 70) continue;
+    if (NOVEL_HEAD_RE.test(line)) heads.push({ i, title: line });
+  }
+  if (heads.length < 2) return [{ title: '全文', text: text.trim() }];
+  const out = [];
+  const pre = lines.slice(0, heads[0].i).join('\n').trim();
+  if (pre.length > 150) out.push({ title: '开篇', text: pre });
+  for (let k = 0; k < heads.length; k++) {
+    const start = heads[k].i;
+    const end = k + 1 < heads.length ? heads[k + 1].i : lines.length;
+    const body = lines.slice(start + 1, end).join('\n').trim();
+    out.push({ title: heads[k].title, text: `${heads[k].title}\n\n${body}`.trim() });
+  }
+  return out.filter((c) => c.text.length > 0);
+}
+
+function novelDir(comicId) {
+  return path.join(STORE_DIR, comicId, '_text');
+}
+
+/** 正文独立落盘，db.json 只存文件名：整本小说不会拖慢所有接口 */
+function createNovelComic(req, { title, author, description, chapters }) {
+  const db = loadDb();
+  const t = now();
+  const comic = {
+    id: newId('c'),
+    title: String(title || '未命名小说').trim().slice(0, 120) || '未命名小说',
+    author: String(author || '').slice(0, 60),
+    artist: '', description: String(description || '').slice(0, 2000),
+    tags: [], kind: 'novel', status: 'ongoing', direction: 'ltr', language: 'zh',
+    favorite: false, cover: null, chapters: [], progress: null, share: null,
+    publisher: '', year: null, rating: null, ageRating: '', comicInfo: null,
+    ownerId: req.user.id, createdBy: req.user.id,
+    scope: 'personal', visibility: 'private', allowDownload: true,
+    aliases: [], tagEntries: [], covers: [], activeCoverId: null, activeAliasId: null,
+    category: 'other', views: 0, downloads: 0, likes: [],
+    createdAt: t, updatedAt: t, lastActivityAt: t,
+  };
+  const dir = novelDir(comic.id);
+  fs.mkdirSync(dir, { recursive: true });
+  comic.chapters = chapters.slice(0, 5000).map((c, i) => {
+    const id = newId('ch');
+    const file = `${id}.txt`;
+    fs.writeFileSync(path.join(dir, file), String(c.text || ''), 'utf8');
+    return {
+      id, title: String(c.title || `第 ${i + 1} 章`).trim().slice(0, 120),
+      number: i + 1, pages: [], textFile: file, createdAt: t, uploadedBy: req.user.id,
+    };
+  });
+  db.comics.unshift(comic);
+  saveDbSoon();
+  return { ...summarize(comic), chapters: comic.chapters };
+}
+
+/** 前端已分好章时走这个（TXT 本地解析、EPUB 本地解析） */
+app.post('/api/import/novel', requireUser, (req, res) => {
+  const body = req.body || {};
+  const chapters = Array.isArray(body.chapters) ? body.chapters : [];
+  if (!chapters.length) return res.status(400).json({ error: '没有识别到章节' });
+  try {
+    res.json({ kind: 'novel', comic: createNovelComic(req, {
+      title: body.title, author: body.author, description: body.description, chapters,
+    }) });
+  } catch (err) {
+    res.status(500).json({ error: `导入失败：${err.message || err}` });
+  }
+});
+
+/** 相对路径解析（EPUB 内 href 可能带 ../ 与 URL 编码） */
+function epubResolve(baseDir, href) {
+  let h = String(href || '').split('#')[0];
+  try { h = decodeURIComponent(h); } catch { /* 保留原样 */ }
+  const stack = baseDir ? baseDir.split('/').filter(Boolean) : [];
+  for (const seg of h.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') stack.pop();
+    else stack.push(seg);
+  }
+  return stack.join('/');
+}
+
+/**
+ * 从已解包的 EPUB 目录按 spine 读取内容，自动判定：
+ * - 图片漫画（xhtml 几乎只有 <img>）→ kind:'image'，交回原压缩包导入流程
+ * - 文字小说（xhtml 是正文）→ 按 spine 每章提取文字并自动分目录
+ */
+async function epubChaptersFromDir(outDir) {
+  const read = async (rel) => {
+    try { return await fsp.readFile(path.join(outDir, rel), 'utf8'); } catch { return ''; }
+  };
+  const container = await read('META-INF/container.xml');
+  let opfRel = (container.match(/full-path\s*=\s*["']([^"']+)["']/i) || [])[1] || '';
+  if (!opfRel) {
+    const find = async (d, depth = 0) => {
+      if (depth > 4) return '';
+      for (const e of await fsp.readdir(d, { withFileTypes: true }).catch(() => [])) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) { const r = await find(p, depth + 1); if (r) return r; }
+        else if (/\.opf$/i.test(e.name)) return p;
+      }
+      return '';
+    };
+    const found = await find(outDir);
+    if (found) opfRel = path.relative(outDir, found).split(path.sep).join('/');
+  }
+  const opf = opfRel ? await read(opfRel) : '';
+  if (!opf) return { kind: 'image' };
+  const opfDir = opfRel.includes('/') ? opfRel.slice(0, opfRel.lastIndexOf('/')) : '';
+  const dc = (tag) => {
+    const m = opf.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
+    return m ? m[1].replace(/<[^>]+>/g, '').trim() : '';
+  };
+  const manifest = new Map();
+  for (const m of opf.matchAll(/<item\b[^>]*>/gi)) {
+    const id = (m[0].match(/\bid\s*=\s*["']([^"']+)["']/i) || [])[1];
+    const href = (m[0].match(/\bhref\s*=\s*["']([^"']+)["']/i) || [])[1];
+    if (id && href) manifest.set(id, href);
+  }
+  const chapters = [];
+  let imageCount = 0;
+  for (const m of opf.matchAll(/<itemref\b[^>]*>/gi)) {
+    const idref = (m[0].match(/\bidref\s*=\s*["']([^"']+)["']/i) || [])[1];
+    const href = idref ? manifest.get(idref) : '';
+    if (!href) continue;
+    const rel = epubResolve(opfDir, href);
+    if (/\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(rel)) { imageCount += 1; continue; }
+    if (!/\.(x?html?|htm)$/i.test(rel)) continue;
+    const html = await read(rel);
+    if (!html) continue;
+    imageCount += (html.match(/<img\b|<image\b/gi) || []).length;
+    const hm = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || html.match(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i);
+    const headTitle = hm ? hm[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+    let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || [, ''])[1];
+    body = body
+      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|h[1-6]|li|blockquote|section)>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+      .replace(/&amp;/gi, '&')
+      .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (body.length < 30) continue;
+    const sub = splitNovelChapters(body);
+    if (sub.length > 1) for (const s of sub) chapters.push({ title: s.title, text: s.text });
+    else chapters.push({ title: headTitle || `第 ${chapters.length + 1} 章`, text: body });
+  }
+  const totalText = chapters.reduce((n, c) => n + c.text.length, 0);
+  // 图片漫画：正文很少、图片多；或完全没有可提取文字
+  if (!chapters.length || (imageCount >= 3 && totalText < 500)) return { kind: 'image' };
+  return {
+    kind: 'novel',
+    title: dc('dc:title'), author: dc('dc:creator'),
+    description: dc('dc:description'), chapters,
+  };
+}
+
+/** 上传 TXT / EPUB → 服务端一次解析分章入库（网站与桌面端共用，速度接近本地阅读器） */
+app.post('/api/import/novel-file', requireUser, upload.single('file'), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: '没有收到文件' });
+  const ext = extOf(file.originalname || '').toLowerCase();
+  const tmpDir = path.join(TMP_DIR, `novel_${newId('n')}`);
+  try {
+    if (['txt', 'text', 'md', 'markdown'].includes(ext)) {
+      const buf = await fsp.readFile(file.path);
+      const text = decodeTextFile(buf);
+      const chapters = splitNovelChapters(text);
+      const title = path.basename(file.originalname || '未命名小说').replace(/\.[^.]+$/, '');
+      const author = (text.slice(0, 2000).match(/(?:作者|著者)\s*[:：]\s*([^\n]{1,30})/) || [])[1] || '';
+      await cleanupTmp(file);
+      return res.json({ kind: 'novel', comic: createNovelComic(req, { title, author, chapters }) });
+    }
+    if (ext === 'epub') {
+      await ensureDir(tmpDir);
+      const outDir = path.join(tmpDir, 'out');
+      await extractWith7z(file.path, outDir);
+      const parsed = await epubChaptersFromDir(outDir);
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+      await cleanupTmp(file);
+      if (parsed.kind === 'image') return res.json({ kind: 'image' });
+      return res.json({ kind: 'novel', comic: createNovelComic(req, parsed) });
+    }
+    await cleanupTmp(file);
+    return res.status(400).json({ error: '只支持 TXT / EPUB 文字书，图片型 EPUB 请走漫画导入' });
+  } catch (err) {
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    await cleanupTmp(file).catch(() => {});
+    return res.status(400).json({ error: `解析失败：${err.message || err}` });
+  }
+});
+
+/** 按需读取单章正文：小说阅读器只拉当前章节，秒开且可定位进度 */
+app.get('/api/novel/:comicId/:chapterId', (req, res) => {
+  const comic = getComic(req.params.comicId);
+  const chapter = comic?.chapters?.find((c) => c.id === req.params.chapterId);
+  if (!comic || comic.kind !== 'novel' || !chapter?.textFile) {
+    return res.status(404).json({ error: '章节不存在' });
+  }
+  if (!isSafeSegment(chapter.textFile)) return res.status(400).json({ error: '非法路径' });
+  const file = path.join(novelDir(comic.id), chapter.textFile);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: '正文文件缺失' });
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.json({ title: chapter.title, text: fs.readFileSync(file, 'utf8') });
 });
 
 /* ------------------------------ 阅读进度 ------------------------------ */

@@ -66,24 +66,70 @@ export function absoluteUrl(url: string | null | undefined): string {
   return `${apiBase}${url}`;
 }
 
-function injectCode<T>(value: T, code: string | null, depth = 0): T {
-  if (!code || depth > 12 || value == null) return value;
+/**
+ * 统一处理响应里的资源地址：
+ * 1) 绝对化（无条件）：跨域后端（GitHub Pages → 本机/隧道服务）时，服务端返回的
+ *    /api/... 相对地址必须补上 apiBase，否则 <img src> / 下载链接会打到 Pages 静态站，
+ *    表现为「头像、封面、页面、附件加载失败或一直转圈」。
+ * 2) 分享码注入（有条件）：仅托管环境需要，且不能影响第 1 步。
+ *
+ * 历史 bug：这里原本写成 `if (!code) return value;`，绝大多数用户没有 sharecode，
+ * 导致整段绝对化被跳过，网站跨域部署时所有媒体地址全部失效。两者必须解耦。
+ */
+function transformResponse<T>(value: T, code: string | null, depth = 0): T {
+  if (value == null || depth > 12) return value;
   if (typeof value === 'string') {
     if (!value.startsWith('/api/')) return value;
     let v: string = value;
     if (code && !v.includes('sharecode=')) {
       v = `${v}${v.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(code)}`;
     }
-    // 跨域后端（apiBase 非空）时把相对地址补成绝对地址，否则 <img> 会打到当前域名
-    return (apiBase ? absoluteUrl(v) : v) as unknown as T;
+    // apiBase 为空（同源 / 桌面端）时 absoluteUrl 原样返回，行为不变
+    return absoluteUrl(v) as unknown as T;
   }
-  if (Array.isArray(value)) return value.map((v) => injectCode(v, code, depth + 1)) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => transformResponse(v, code, depth + 1)) as unknown as T;
   if (typeof value === 'object') {
     const rec = value as Record<string, unknown>;
-    for (const k of Object.keys(rec)) rec[k] = injectCode(rec[k], code, depth + 1);
+    for (const k of Object.keys(rec)) rec[k] = transformResponse(rec[k], code, depth + 1);
     return value;
   }
   return value;
+}
+
+/**
+ * 带真实上传进度的请求。fetch() 没有上传进度事件，批量上传时进度条会长时间
+ * 停在 0%（用户看到「一直不动」）；导入改用本函数逐批上报字节进度。
+ */
+function requestXHR<T>(
+  url: string,
+  init: RequestInit,
+  onUpload?: (ratio: number) => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(init.method || 'GET', `${getApiBase()}${url}`, true);
+    xhr.withCredentials = true;
+    const headers = init.headers as Record<string, string> | undefined;
+    if (headers) for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    if (onUpload && xhr.upload) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && e.total > 0) onUpload(Math.min(1, e.loaded / e.total));
+      };
+    }
+    xhr.onload = () => {
+      let data: unknown = null;
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; }
+      catch { data = xhr.responseText; }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error((data as { error?: string })?.error || xhr.statusText || '请求失败'));
+        return;
+      }
+      resolve(transformResponse(data as T, getShareCode()));
+    };
+    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
+    xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.send(init.body as Document | XMLHttpRequestBodyInit | null);
+  });
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -103,7 +149,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const message = (data as { error?: string })?.error || res.statusText || '请求失败';
     throw new Error(message);
   }
-  return injectCode(data as T, getShareCode());
+  return transformResponse(data as T, getShareCode());
 }
 
 export const api = {
@@ -160,7 +206,9 @@ export const api = {
     index?: number,
     onProgress?: (done: number, total: number) => void,
   ) => {
-    const BATCH = 12;
+    // 小批量 + 真实字节进度：批次调小让进度更早、更细地推进；
+    // 用 XHR 上报每批上传比例，避免整批传完才跳进度（表现为卡在 0%）。
+    const BATCH = 6;
     let last: Chapter = { id: chapterId, title: '', number: 0, pages: [] };
     return (async () => {
       for (let i = 0; i < files.length; i += BATCH) {
@@ -168,9 +216,11 @@ export const api = {
         const form = new FormData();
         for (const f of batch) form.append('files', f.blob, f.name);
         if (typeof index === 'number') form.append('index', String(index + i));
-        const result = await request<{ chapter: Chapter; added: number }>(
+        const before = i;
+        const result = await requestXHR<{ chapter: Chapter; added: number }>(
           `/api/comics/${comicId}/chapters/${chapterId}/pages`,
           { method: 'POST', body: form },
+          (ratio) => onProgress?.(Math.min(files.length, before + ratio * batch.length), files.length),
         );
         last = result.chapter;
         onProgress?.(Math.min(i + BATCH, files.length), files.length);
@@ -276,6 +326,28 @@ export const api = {
     ),
 
   /* ---------- RAR / 7z 压缩包导入（服务端解压） ---------- */
+
+  /** TXT / EPUB 文字书：一次上传，服务端自动分章入库，速度接近本地阅读器 */
+  importNovelFile: (file: File) => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return request<{ kind: 'novel' | 'image'; comic?: Comic }>('/api/import/novel-file', {
+      method: 'POST', body: form,
+    });
+  },
+
+  /** 前端已分好章时直接提交（无需上传原文件） */
+  importNovel: (body: {
+    title: string; author?: string; description?: string;
+    chapters: { title: string; text: string }[];
+  }) =>
+    request<{ kind: 'novel'; comic: Comic }>('/api/import/novel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+
+  /** 小说单章正文按需加载 */
+  novelChapter: (comicId: string, chapterId: string) =>
+    request<{ title: string; text: string }>(`/api/novel/${comicId}/${chapterId}`),
 
   importArchive: (file: File) => {
     const form = new FormData();

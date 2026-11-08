@@ -56,6 +56,18 @@
   const asset = (p) => { try { return Host.asset(p); } catch { return p; } };
   const coverUrl = (c) => c && c.coverUrl ? asset(c.coverUrl) : (c && c.cover ? asset(c.cover) : '');
 
+  /* 头像图片加载失败（旧缓存、文件缺失）时回退字母头像，避免整块空白。
+     用捕获阶段监听：所有视图里动态生成的头像 img 都能覆盖到。 */
+  document.addEventListener('error', (e) => {
+    const el = e.target;
+    if (el && el.tagName === 'IMG' && el.classList && el.classList.contains('avatar-mini')) {
+      const span = document.createElement('span');
+      span.className = 'avatar-mini letter';
+      span.textContent = (state.user && state.user.name ? state.user.name : '?').slice(0, 1).toUpperCase();
+      if (el.parentNode) el.parentNode.replaceChild(span, el);
+    }
+  }, true);
+
   /* ------------------------------ 启动 ------------------------------ */
   async function boot() {
     $('#buildInfo').textContent = `v${Host.version} · 独立客户端`;
@@ -108,7 +120,7 @@
       toast('头像已更新');
     } catch (err) { toast(err.message, true); } finally { busy(false); }
   }
-  /** 圆形头像裁剪：拖动取景 + 缩放，输出 320×320 PNG */
+  /** 圆形头像裁剪：拖动取景 + 缩放，输出 320×320 压缩 JPEG */
   function openAvatarCropper(dataUrl) {
     openModal(`<h3>裁剪头像</h3>
       <div class="crop-wrap"><canvas id="cropCanvas" width="320" height="320"></canvas>
@@ -130,9 +142,10 @@
       const w = img.width * baseFit * scale, h = img.height * baseFit * scale;
       const cx = 160 + ox, cy = 160 + oy;
       ctx.clearRect(0, 0, 320, 320);
+      // 先铺满整张画布：输出改为 JPEG 后圆外区域不会变成黑块
+      ctx.fillStyle = '#10151c'; ctx.fillRect(0, 0, 320, 320);
       ctx.save();
       ctx.beginPath(); ctx.arc(160, 160, 160, 0, Math.PI * 2); ctx.clip();
-      ctx.fillStyle = '#10151c'; ctx.fillRect(0, 0, 320, 320);
       ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
       ctx.restore();
     }
@@ -146,16 +159,20 @@
     cv.addEventListener('pointerup', () => { dragging = false; });
     $('#cropZoom').addEventListener('input', draw);
     $('#modal').querySelector('[data-action="crop-done"]').onclick = async () => {
-      const out = cv.toDataURL('image/png');
+      // 压缩 JPEG：体积小一个数量级，上传与加载都更快
+      const out = cv.toDataURL('image/jpeg', 0.9);
       closeModal();
-      const tmp = await Host.saveTempImage(out);
+      // 先把顶部头像换成本地裁剪结果，不等网络；上传成功后 refreshStatus 会换成正式地址
+      const mini = $('#userBox img.avatar-mini');
+      if (mini) mini.src = out;
+      const tmp = await Host.saveTempImage(out, 'avatar');
       if (!tmp) return toast('裁剪保存失败', true);
       busy(true, '上传头像…');
       try {
-        await api('POST', '/api/me/avatar', { files: [{ path: tmp, name: 'avatar.png', field: 'file' }] });
+        await api('POST', '/api/me/avatar', { files: [{ path: tmp, name: 'avatar.jpg', field: 'file' }] });
         await refreshStatus();
         toast('头像已更新');
-      } catch (err) { toast(err.message, true); } finally { busy(false); }
+      } catch (err) { toast(err.message, true); await refreshStatus(); } finally { busy(false); }
     };
   }
 
@@ -746,8 +763,28 @@
   async function startImportFrom(rawPaths) {
     if (!rawPaths || !rawPaths.length) return;
     let paths = rawPaths.filter((p) => typeof p === 'string');
-    // 与网站 ImportDialog 完全一致的支持格式（图片 / 各类压缩包 / EPUB / PDF）
     const PDF_RE = /\.pdf$/i;
+    const NOVEL_RE = /\.(txt|text|md|markdown|epub)$/i;
+
+    // 小说 TXT / 文字 EPUB：一次上传，服务端自动分章生成目录（旧版会只导入 EPUB 封面一页）。
+    // 图片型 EPUB 服务端返回 kind:'image'，退回下面的压缩包导入流程。
+    const novelPaths = paths.filter((p) => NOVEL_RE.test(p));
+    const imageEpubs = [];
+    for (const p of novelPaths) {
+      busy(true, `解析 ${base(p)}…`);
+      try {
+        const r = await api('POST', '/api/import/novel-file', {
+          files: [{ path: p, name: base(p), field: 'file' }],
+        });
+        if (r && r.kind === 'image') imageEpubs.push(p);
+        else toast(`${base(p)} 已导入，章节目录自动生成`);
+      } catch (err) { toast(`${base(p)} 导入失败：${err.message}`, true); }
+      finally { busy(false); }
+    }
+    paths = paths.filter((p) => !NOVEL_RE.test(p));
+    if (novelPaths.length) renderLibrary();
+
+    // 与网站 ImportDialog 完全一致的支持格式（图片 / 各类压缩包 / EPUB / PDF）
     const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|cb7|7z|r\d{2}|tar|tgz|gz|bz2|xz|epub|ace|arj|lzh|lha|cab|iso)$/i.test(p));
     let images = paths.filter((p) => !archives.includes(p) && !PDF_RE.test(p));
     const pdfs = paths.filter((p) => PDF_RE.test(p));
@@ -763,7 +800,7 @@
       } finally { busy(false); }
     }
     // 渲染能力不可用（如手机端）或渲染失败的 PDF，回退交给服务端（服务端会给出明确指引）
-    const archivesFinal = archives.concat(failedPdfs);
+    const archivesFinal = archives.concat(failedPdfs, imageEpubs);
     if (images.length) await startImport(images);
     if (archivesFinal.length) await importArchives(archivesFinal);
   }
@@ -977,7 +1014,8 @@
     busy(true, '发布中…');
     try {
       await api('POST', '/api/announcements', { body: { title, content } });
-      toast('公告已发布'); renderPlaza();
+      toast('公告已发布');
+      if (state.view === 'settings') renderSettings(); else renderPlaza();
     } catch (err) { toast(err.message, true); } finally { busy(false); }
   }
   async function publish() {
@@ -990,14 +1028,31 @@
   /* ------------------------------ 设置 ------------------------------ */
   async function renderSettings() {
     const rt = await api('GET', '/api/runtime').catch(() => null);
+    const ann = await api('GET', '/api/announcements').catch(() => ({ announcements: [] }));
     const u = state.update;
     const cfg = await Host.getConfig().catch(() => ({}));
     const isLocal = cfg.mode !== 'remote';
+    // 公告发布入口放到「设置」里，避免只在广场页不好找；与网站共用同一套权限与接口
+    const annList = ann.announcements || [];
+    const canAnn = !!state.user?.canAnnounce;
+    const annPanel = `<div class="panel"><h3>📢 站点公告${canAnn ? ' · 管理' : ''}</h3>
+      ${canAnn ? `<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <input class="input" id="annTitle" placeholder="公告标题" style="flex:1;min-width:160px" />
+          <button class="btn primary" data-action="announce">发布公告</button></div>
+        <textarea class="textarea" id="annBody" rows="3" placeholder="公告内容…"></textarea>`
+        : `<p class="muted" style="font-size:12px">当前账号无发布权限（仅站长可发），可在此查看站点公告。</p>`}
+      <div style="margin-top:8px">${annList.length
+        ? annList.slice(0, 8).map((a) => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">
+            <b>${esc(a.title)}</b> <span class="muted" style="font-size:11px">${fmt(a.at)}</span>
+            <div style="font-size:13px;margin-top:3px;white-space:pre-wrap">${esc(a.content)}</div></div>`).join('')
+        : '<div class="muted sm-text">还没有发布过公告</div>'}</div>
+    </div>`;
     $('#content').innerHTML = `${state.user ? `<div class="panel"><h3>账号</h3>
       <div class="user-line" style="margin-bottom:10px">${state.user.avatar ? `<img class="avatar-mini" style="width:52px;height:52px" src="${esc(asset(state.user.avatar))}" />` : `<span class="avatar-mini letter" style="width:52px;height:52px;font-size:22px">${esc(state.user.name.slice(0, 1).toUpperCase())}</span>`}
         <div><b>${esc(state.user.name)}</b><br><span class="muted">${esc(state.user.email)}</span></div></div>
       <div class="row"><button class="btn" data-action="upload-avatar">修改头像</button>
         <button class="btn ghost" data-action="logout">退出登录</button></div></div>` : ''}
+      ${annPanel}
       <div class="panel"><h3>数据与同步</h3>
       <div class="row">
         <button class="btn ${isLocal ? 'primary' : ''}" data-action="set-mode" data-id="local">本机模式（推荐）</button>

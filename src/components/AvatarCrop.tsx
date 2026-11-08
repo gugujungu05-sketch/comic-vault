@@ -3,7 +3,7 @@ import { Modal } from './Modal';
 import { Icon } from './Icon';
 
 /**
- * 圆形头像裁剪：拖动取景 + 滑杆缩放，输出 320×320 PNG Blob。
+ * 圆形头像裁剪：拖动取景 + 滑杆缩放，输出 320×320 压缩 JPEG Blob。
  * 与桌面端裁剪体验一致；上传前先裁剪，避免头像偏斜或过大。
  */
 export function AvatarCrop({
@@ -38,12 +38,13 @@ export function AvatarCrop({
     const cx = 160 + off.current.x;
     const cy = 160 + off.current.y;
     ctx.clearRect(0, 0, 320, 320);
+    // 先铺满整张画布：输出改为 JPEG 后圆外区域不会变成黑块
+    ctx.fillStyle = '#10151c';
+    ctx.fillRect(0, 0, 320, 320);
     ctx.save();
     ctx.beginPath();
     ctx.arc(160, 160, 160, 0, Math.PI * 2);
     ctx.clip();
-    ctx.fillStyle = '#10151c';
-    ctx.fillRect(0, 0, 320, 320);
     ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
     ctx.restore();
   }
@@ -57,7 +58,9 @@ export function AvatarCrop({
         <button className="btn primary" onClick={() => {
           const cv = canvasRef.current;
           if (!cv) return;
-          cv.toBlob((b) => { if (b) onDone(b); }, 'image/png');
+          // 输出压缩 JPEG：320×320 通常 20~40KB，比 PNG 小一个数量级，
+          // 经隧道上传与后续加载都明显更快（头像不需要透明通道）。
+          cv.toBlob((b) => { if (b) onDone(b); }, 'image/jpeg', 0.9);
         }}>使用这张</button>
       </>}>
       <div style={{ display: 'grid', placeItems: 'center' }}>

@@ -7,14 +7,15 @@
  * 只通过 /api 与同一台服务器交换数据，因此账号、漫画与网站/手机端实时互通。
  */
 const {
-  app, BrowserWindow, Menu, Tray, shell, dialog, ipcMain, clipboard, net, nativeImage,
+  app, BrowserWindow, Menu, Tray, shell, dialog, ipcMain, clipboard, net, nativeImage, session,
 } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
+const https = require('node:https');
 
-const VERSION = '3.4.0.3';
+const VERSION = '3.4.0.4';
 const OLD_TUNNEL_RE = /workbuddy\.host|a3375579f1d0038dc/i;
 const DRIVE_ZIP_URL = 'https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ';
 const APP_DIR = path.join(__dirname, 'app');
@@ -149,7 +150,8 @@ function mimeOf(name) {
   return ({ '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
     '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp',
     '.avif': 'image/avif', '.zip': 'application/zip', '.cbz': 'application/zip',
-    '.pdf': 'application/pdf' })[e] || 'application/octet-stream';
+    '.pdf': 'application/pdf', '.epub': 'application/epub+zip',
+    '.txt': 'text/plain', '.md': 'text/markdown', '.text': 'text/plain' })[e] || 'application/octet-stream';
 }
 function multipart(files, fields = {}) {
   const boundary = '----cv' + Date.now().toString(16) + Math.random().toString(16).slice(2);
@@ -158,9 +160,11 @@ function multipart(files, fields = {}) {
     chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`, 'utf8'));
   }
   for (const f of files || []) {
-    const name = String(f.name || path.basename(f.path || '') || 'file');
+    const name = String(f.name || path.basename(f.path || '') || 'file').replace(/["\r\n]/g, '_');
+    // 中文文件名用 RFC 5987 filename* 兜底，避免某些环境下 multer 解析不到文件名
     chunks.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="${f.field || 'files'}"; filename="${name}"\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="${f.field || 'files'}"; filename="${name}"; ` +
+      `filename*=UTF-8''${encodeURIComponent(name)}\r\n` +
       `Content-Type: ${mimeOf(name)}\r\n\r\n`, 'utf8'));
     try { chunks.push(fs.readFileSync(f.path)); }
     catch { chunks.push(Buffer.alloc(0)); }
@@ -271,17 +275,65 @@ function buildTray() {
   tray.on('click', showMain);
 }
 
+/**
+ * 文件上传用 Node 原生 http/https 发送 multipart。
+ * net.fetch 对 Buffer body + 自定义 boundary/Content-Type 的兼容在不同 Electron 版本上
+ * 不稳定（表现为桌面端「导入没反应 / 请求失败」），原生请求完全可控；
+ * 会话 cookie 从 Electron 的 session 里取，登录态与 net.fetch 完全一致。
+ */
+async function uploadViaHttp(url, method, contentType, body) {
+  const u = new URL(url);
+  const lib = u.protocol === 'https:' ? https : http;
+  let cookieHeader = '';
+  try {
+    const cookies = await session.defaultSession.cookies.get({ url: `${u.protocol}//${u.host}` });
+    cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  } catch { /* 忽略 */ }
+  return new Promise((resolve, reject) => {
+    const req = lib.request({
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || undefined,
+      path: `${u.pathname}${u.search}`,
+      method,
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': body.length,
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+      },
+      timeout: 180000,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let data = text;
+        try { data = JSON.parse(text); } catch { /* 非 JSON 原样返回 */ }
+        resolve({ status: res.statusCode || 0, data });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('上传超时，请重试')));
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 /* ------------------------------ IPC ------------------------------ */
 ipcMain.handle('cv:api', async (_e, opts = {}) => {
   const { method = 'GET', path: p = '/', query = {}, body, files } = opts;
   const url = endpoint(p, query || {});
-  const headers = {};
-  let payload;
   if (files && files.length) {
     const m = multipart(files, body && typeof body === 'object' ? body : {});
-    headers['Content-Type'] = m.type;
-    payload = m.body;
-  } else if (body !== undefined && body !== null) {
+    try { return await uploadViaHttp(url, method, m.type, m.body); }
+    catch (err) {
+      // 降级：极少数环境原生请求被代理拦截时，再试 net.fetch
+      try { return await apiFetch(url, { method, headers: { 'Content-Type': m.type }, body: m.body }); }
+      catch { return { status: 0, data: { error: err.message || '网络请求失败' } }; }
+    }
+  }
+  const headers = {};
+  let payload;
+  if (body !== undefined && body !== null) {
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
   }
@@ -296,9 +348,10 @@ const IMPORT_EXT = [
   'zip', 'cbz', 'rar', 'cbr', '7z', 'cb7', 'r00', 'r01',
   'tar', 'tgz', 'gz', 'bz2', 'xz', 'epub', 'pdf',
   'ace', 'arj', 'lzh', 'lha', 'cab', 'iso',
+  'txt', 'text', 'md', 'markdown',
 ];
 const IMPORT_FILTERS = [
-  { name: '漫画文件（图片 / ZIP / CBZ / RAR / 7Z / CBR / EPUB / PDF / TAR）', extensions: IMPORT_EXT },
+  { name: '漫画 / 小说（图片 / ZIP / CBZ / RAR / 7Z / EPUB / PDF / TXT / TAR）', extensions: IMPORT_EXT },
   { name: '全部文件', extensions: ['*'] },
 ];
 /* 任何导入入口都用同一套全格式选择器，避免「点导入却只能选图片」 */

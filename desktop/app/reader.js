@@ -11,6 +11,7 @@
   let comic = null, chapterId = '', comicId = '', pages = [];
   let index = 0, spread = false, webtoon = false, zoom = 100;
   let lastReport = 0;
+  let isNovel = false, novelText = '', novelRatio = 0, fontSize = 19;
 
   /** 把阅读进度同步到服务器（书架/详情页显示"上次读到"，节流 4 秒） */
   function reportProgress(force = false) {
@@ -39,20 +40,46 @@
     try { comic = await api('GET', `/api/comics/${comicId}`); }
     catch (err) { $('#stage').innerHTML = `<div class="r-empty">${esc(err.message)}</div>`; return; }
     const chapters = comic.chapters || [];
+    isNovel = comic.kind === 'novel';
+    if (isNovel) {
+      webtoon = true; // 小说天然上下滑动连续阅读
+      try { fontSize = Number(localStorage.getItem('cv-novel-font')) || 19; } catch {}
+      $('#btnWebtoon').textContent = '文字 ✓';
+      $('#btnSpread').style.display = 'none';
+      $('#btnZoomIn').title = '放大字号'; $('#btnZoomOut').title = '缩小字号';
+      $('#slider').max = 1000;
+    }
     if (!chapterId) chapterId = chapters[0]?.id || '';
     $('#chapterSel').innerHTML = chapters.map((c) =>
       `<option value="${esc(c.id)}" ${c.id === chapterId ? 'selected' : ''}>${esc(c.title)}</option>`).join('');
     $('#rTitle').textContent = comic.title || '阅读器';
     loadChapter(chapterId);
   }
-  function loadChapter(id) {
+  async function loadChapter(id) {
     chapterId = id;
     const ch = (comic.chapters || []).find((c) => c.id === id);
     pages = ch?.pages || [];
     index = 0;
     $('#chapterSel').value = id;
-    $('#slider').max = Math.max(0, pages.length - 1);
     $('#stage').scrollTop = 0;
+    if (isNovel) {
+      // 小说：按需读取本章正文，进度用 0~1000 千分比定位
+      novelRatio = 0;
+      $('#slider').max = 1000; $('#slider').value = 0;
+      $('#stage').className = 'r-stage novel';
+      $('#stage').innerHTML = '<div class="r-empty">正在加载本章…</div>';
+      try {
+        const r = await api('GET', `/api/novel/${comicId}/${id}`);
+        novelText = r.text || '';
+        $('#pageInfo').textContent = r.title || ch?.title || '正文';
+        draw();
+      } catch (err) {
+        $('#stage').innerHTML = `<div class="r-empty">${esc(err.message)}</div>`;
+      }
+      reportProgress(true);
+      return;
+    }
+    $('#slider').max = Math.max(0, pages.length - 1);
     draw();
     reportProgress(true);
   }
@@ -69,13 +96,25 @@
 
   function draw() {
     const stage = $('#stage');
+    if (isNovel) {
+      stage.className = 'r-stage novel';
+      const paras = String(novelText || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
+      const title = (comic.chapters || []).find((c) => c.id === chapterId)?.title || '正文';
+      stage.innerHTML = `<article class="novel-article" style="font-size:${fontSize}px">
+        <h1>${esc(title)}</h1>
+        ${paras.map((p) => `<p>${esc(p)}</p>`).join('')}
+        <div class="r-webtoon-edge done">— 本章完 · 用「下一话」继续 —</div>
+      </article>`;
+      $('#pageInfo').textContent = `${Math.round(novelRatio * 100)}%`;
+      return;
+    }
     if (!pages.length) {
       stage.className = 'r-stage';
       stage.innerHTML = '<div class="r-empty">这一话还没有页面</div>';
       $('#pageInfo').textContent = '— / —';
       return;
     }
-    $('#btnWebtoon').textContent = webtoon ? '条漫 ✓' : '条漫';
+    $('#btnWebtoon').textContent = webtoon ? '上下滑动 ✓' : '上下滑动';
     $('#btnSpread').textContent = spread ? '双页' : '单页';
     $('#zoomLabel').textContent = zoom + '%';
 
@@ -105,6 +144,7 @@
 
   function go(delta) {
     const stage = $('#stage');
+    if (isNovel) { stage.scrollBy({ top: delta * stage.clientHeight * 0.85, behavior: 'smooth' }); return; }
     if (webtoon) {
       stage.scrollBy({ top: delta * stage.clientHeight * 0.85, behavior: 'smooth' });
       return;
@@ -126,12 +166,30 @@
   $('#btnNext').onclick = () => go(1);
   $('#btnPrevChapter').onclick = () => goChapter(-1);
   $('#btnNextChapter').onclick = () => goChapter(1);
-  $('#btnWebtoon').onclick = () => { webtoon = !webtoon; $('#stage').scrollTop = 0; draw(); };
-  $('#btnZoomIn').onclick = () => { zoom = Math.min(200, zoom + 10); draw(); };
-  $('#btnZoomOut').onclick = () => { zoom = Math.max(50, zoom - 10); draw(); };
+  $('#btnWebtoon').onclick = () => { if (isNovel) return; webtoon = !webtoon; $('#stage').scrollTop = 0; draw(); };
+  $('#btnZoomIn').onclick = () => {
+    if (isNovel) { fontSize = Math.min(30, fontSize + 1); try { localStorage.setItem('cv-novel-font', String(fontSize)); } catch {} draw(); return; }
+    zoom = Math.min(200, zoom + 10); draw();
+  };
+  $('#btnZoomOut').onclick = () => {
+    if (isNovel) { fontSize = Math.max(14, fontSize - 1); try { localStorage.setItem('cv-novel-font', String(fontSize)); } catch {} draw(); return; }
+    zoom = Math.max(50, zoom - 10); draw();
+  };
   $('#btnSpread').onclick = () => { if (webtoon) { webtoon = false; } spread = !spread; draw(); };
   $('#chapterSel').onchange = (e) => loadChapter(e.target.value);
-  $('#slider').oninput = (e) => { index = Number(e.target.value); draw(); };
+  $('#slider').oninput = (e) => {
+    index = Number(e.target.value);
+    if (isNovel) {
+      const st = $('#stage');
+      const r = index / 1000;
+      st.scrollTop = r * Math.max(1, st.scrollHeight - st.clientHeight);
+      novelRatio = r;
+      $('#pageInfo').textContent = `${Math.round(r * 100)}%`;
+      reportProgress(true);
+      return;
+    }
+    draw();
+  };
   $('#btnBack').onclick = () => {
     if (Host.closeReader) Host.closeReader();
     else if (history.length > 1) history.back();
@@ -146,6 +204,15 @@
     if (b) goChapter(Number(b.dataset.ch));
   });
   $('#stage').addEventListener('scroll', () => {
+    if (isNovel) {
+      const st = $('#stage');
+      novelRatio = Math.min(1, Math.max(0, st.scrollTop / Math.max(1, st.scrollHeight - st.clientHeight)));
+      index = Math.round(novelRatio * 1000);
+      $('#slider').value = index;
+      $('#pageInfo').textContent = `${Math.round(novelRatio * 100)}%`;
+      reportProgress();
+      return;
+    }
     if (!webtoon) return;
     const st = $('#stage');
     const ratio = st.scrollTop / Math.max(1, st.scrollHeight - st.clientHeight);
