@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { ToastProvider } from './components/Toasts';
 import { Icon } from './components/Icon';
@@ -138,12 +138,30 @@ function MobileTabs() {
   );
 }
 
+/**
+ * 读取站点 backend.json 的候选地址并并行竞速探测，返回是否找到可用后端。
+ * 抽成模块级函数供「首屏探测 / 离线重连 / 请求失败即时重连」三处复用。
+ */
+async function probeBackend(): Promise<boolean> {
+  const cfg = await fetch(`${import.meta.env.BASE_URL}backend.json`, { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const remote: string[] = Array.isArray(cfg?.candidates) ? cfg.candidates : [];
+  const found = await detectApiBase([
+    typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',
+    ...remote,
+    'http://127.0.0.1:8787',
+  ]);
+  return !!found;
+}
+
 function Shell() {
   const { theme, setTheme } = useTheme();
   const { user, loading, needsSetup, refresh } = useSession();
   const location = useLocation();
   const immersive = location.pathname.startsWith('/read/') || location.pathname.startsWith('/s/');
   const [offline, setOffline] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const probingRef = useRef(false);
 
   /* GitHub Pages 深链兜底：404.html 把 /comic-vault/s/xxx 转成 ?cvroute=s/xxx，这里还原 */
   useEffect(() => {
@@ -155,54 +173,58 @@ function Shell() {
     } catch { /* 忽略 */ }
   }, []);
 
+  /* 统一的重连动作：重新探测并按需刷新会话，带并发保护避免重复请求 */
+  const reconnect = useCallback(async (markBusy = false): Promise<boolean> => {
+    if (probingRef.current) return false;
+    probingRef.current = true;
+    if (markBusy) setReconnecting(true);
+    try {
+      const found = await probeBackend();
+      setOffline(!found);
+      if (found) refresh();
+      return found;
+    } finally {
+      probingRef.current = false;
+      if (markBusy) setReconnecting(false);
+    }
+  }, [refresh]);
+
   /* 域名直达：页面不是从后端域名打开时（如 GitHub Pages），探测可用后端并连接。
-     探测顺序：已保存的地址 → 本机服务（127.0.0.1:8787，桌面软件内置）→ 同源。 */
+     探测顺序：已保存的地址 → backend.json 候选 → 本机服务（桌面软件内置）。 */
   useEffect(() => {
     let alive = true;
     (async () => {
-      const sameOrigin = await fetch(`${import.meta.env.BASE_URL}backend.json`, { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const remote: string[] = Array.isArray(sameOrigin?.candidates) ? sameOrigin.candidates : [];
       const direct = await fetch('/api/runtime', { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
       if (direct?.app && !getApiBase()) return;
-      const found = await detectApiBase([
-        typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',
-        ...remote,
-        'http://127.0.0.1:8787',
-      ]);
       if (!alive) return;
-      if (found) {
-        setOffline(false);
-        refresh();
-      } else {
-        setOffline(true);
-      }
+      await reconnect();
     })();
     return () => { alive = false; };
-  }, [refresh]);
+  }, [reconnect]);
 
   /* 离线自动重连：探测失败（后端临时不可用）时，每隔一段时间自动重试，
-     后端一旦恢复即自动连接，无需用户手动刷新页面。 */
+     后端一旦恢复（含隧道地址变更）即自动连接，无需用户手动刷新页面。 */
   useEffect(() => {
     if (!offline) return;
-    let alive = true;
-    const timer = setInterval(async () => {
-      const sameOrigin = await fetch(`${import.meta.env.BASE_URL}backend.json`, { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const remote: string[] = Array.isArray(sameOrigin?.candidates) ? sameOrigin.candidates : [];
-      const found = await detectApiBase([
-        typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',
-        ...remote,
-        'http://127.0.0.1:8787',
-      ]);
-      if (alive && found) {
-        setOffline(false);
-        refresh();
-      }
-    }, 10000);
-    return () => { alive = false; clearInterval(timer); };
-  }, [offline, refresh]);
+    const timer = setInterval(() => { reconnect(); }, 10000);
+    return () => { clearInterval(timer); };
+  }, [offline, reconnect]);
+
+  /* 请求级网络故障：用户点「获取验证码」等操作失败时立刻重探测，
+     不用等 10 秒定时器，且能自动切到刚更新的隧道地址。
+     加冷却避免多个并发失败请求触发一堆探测。 */
+  useEffect(() => {
+    let last = 0;
+    const onLost = () => {
+      const t = Date.now();
+      if (t - last < 3000) return;
+      last = t;
+      reconnect();
+    };
+    window.addEventListener('cv:backend-lost', onLost);
+    return () => window.removeEventListener('cv:backend-lost', onLost);
+  }, [reconnect]);
 
   /* 托管环境访问凭据：记住 sharecode，SPA 跳转/刷新后补回地址栏 */
   useEffect(() => {
@@ -224,9 +246,13 @@ function Shell() {
         <Icon name="spinner" size={26} className="spin" />
         {offline && (
           <div style={{ marginTop: 14, color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: '0 24px', lineHeight: 2 }}>
-            正在寻找漫画库服务…
+            正在连接漫画库服务器…
             <br />
-            电脑上打开<b>漫画库桌面软件</b>后，刷新本页即可自动连接。
+            登录、验证码等功能需要服务器在线，连接成功后会自动恢复。
+            <br />
+            <button className="btn sm" style={{ marginTop: 8 }} onClick={() => reconnect(true)}>
+              {reconnecting ? '重试中…' : '立即重试'}
+            </button>
           </div>
         )}
       </div>
@@ -260,7 +286,11 @@ function Shell() {
       {offline && (
         <div className="offline-bar">
           <Icon name="globe" size={14} />
-          正在连接漫画库服务器…（后台自动重试，无需刷新）
+          服务器暂时不可用，登录 / 验证码等功能需等连接恢复（后台自动重试）
+          <button className="btn sm ghost" style={{ marginLeft: 'auto', padding: '2px 10px' }}
+            disabled={reconnecting} onClick={() => reconnect(true)}>
+            {reconnecting ? '重试中…' : '立即重试'}
+          </button>
         </div>
       )}
       {!immersive && <Header theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />}

@@ -82,7 +82,7 @@ async function renderCodeImage(code) {
   <text x="412" y="42" text-anchor="end" font-family="'DejaVu Sans','Arial',sans-serif" font-size="11" letter-spacing="1" fill="#cbc2ff">SECURITY CODE</text>
   <line x1="28" y1="54" x2="412" y2="54" stroke="#ffffff" stroke-opacity="0.18"/>
   ${boxes}
-  <text x="220" y="178" text-anchor="middle" font-family="'DejaVu Sans','Arial',sans-serif" font-size="12" letter-spacing="1" fill="#d7d0ff">VALID FOR 5 MINUTES</text>
+  <text x="220" y="178" text-anchor="middle" font-family="'DejaVu Sans','Arial',sans-serif" font-size="12" letter-spacing="1" fill="#d7d0ff">VALID FOR 10 MINUTES</text>
 </svg>`;
   try {
     const sharp = (await import('sharp')).default;
@@ -124,7 +124,7 @@ async function buildHtml(email, code, scene) {
       <div style="font-size:21px;font-weight:700;color:#1c2030;">验证码确认</div>
       <div style="font-size:14px;color:#6b7285;line-height:1.8;margin-top:8px;">
         你好，你正在进行 <b style="color:#6c5ce7;">${label}</b> 操作。<br>
-        请在 5 分钟内使用下方验证码完成验证。
+        请在 10 分钟内使用下方验证码完成验证。
       </div>
     </td></tr>
 
@@ -232,7 +232,11 @@ export async function sendCodeMail(email, code, purpose = 'login') {
     else await sendViaSmtp(email, code, scene);
     return { sent: true, channel };
   } catch (err) {
-    return { sent: false, channel, error: String(err?.message || err) };
+    const detail = String(err?.message || err);
+    // 关键：以前发信失败静默吞掉，用户只看到「发送失败」却无从排查。
+    // 这里输出通道、场景与真实错误（不含验证码明文），便于定位 SMTP/API 配置问题。
+    console.error(`[mail] 验证码发送失败 channel=${channel} scene=${scene} to=${email} error=${detail}`);
+    return { sent: false, channel, error: detail };
   }
 }
 
