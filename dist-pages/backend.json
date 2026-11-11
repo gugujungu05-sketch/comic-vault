@@ -1,9 +1,10 @@
 {
   "comment": "当前可用的漫画库服务器地址（本机服务探测失败时使用）。由发版流程自动更新。",
   "candidates": [
-    "https://baby-throw-heath-presented.trycloudflare.com"
+    "https://promoting-treasures-treasure-association.trycloudflare.com"
+    , "https://baby-throw-heath-presented.trycloudflare.com"
     , "https://systems-spin-listen-newbie.trycloudflare.com"
   ],
   "local": "http://127.0.0.1:8787",
-  "updatedAt": 1794149961000
+  "updatedAt": 1794404800000
 }
