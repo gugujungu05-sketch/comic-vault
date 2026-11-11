@@ -143,15 +143,28 @@ function MobileTabs() {
  * 抽成模块级函数供「首屏探测 / 离线重连 / 请求失败即时重连」三处复用。
  */
 async function probeBackend(): Promise<boolean> {
-  const cfg = await fetch(`${import.meta.env.BASE_URL}backend.json`, { cache: 'no-store' })
-    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  const remote: string[] = Array.isArray(cfg?.candidates) ? cfg.candidates : [];
-  const found = await detectApiBase([
-    typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',
-    ...remote,
-    'http://127.0.0.1:8787',
-  ]);
-  return !!found;
+  // 时间戳绕开 GitHub Pages CDN 缓存：隧道地址由守护脚本实时推送到仓库，
+  // 但 Pages 边缘节点可能短时间内仍返回旧的 backend.json（内含已失效地址），
+  // 表现为「后端已恢复、网站仍提示无法连接到服务器」。
+  const readConfig = async () => fetch(
+    `${import.meta.env.BASE_URL}backend.json?t=${Date.now()}`,
+    { cache: 'no-store' },
+  ).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+  const tryOnce = async (): Promise<boolean> => {
+    const cfg = await readConfig();
+    const remote: string[] = Array.isArray(cfg?.candidates) ? cfg.candidates : [];
+    return !!(await detectApiBase([
+      typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',
+      ...remote,
+      'http://127.0.0.1:8787',
+    ]));
+  };
+
+  if (await tryOnce()) return true;
+  // 隧道刚切换时，守护推送与 Pages 生效之间可能有秒级窗口，稍等再试一次
+  await new Promise((r) => setTimeout(r, 1500));
+  return tryOnce();
 }
 
 function Shell() {
