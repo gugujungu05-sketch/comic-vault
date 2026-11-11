@@ -7,7 +7,9 @@ mobile/*.keystore
 mobile/*.apk
 dist
 data
-bin
+# cloudflared 是 40MB 平台二进制，不进仓库；启动/守护脚本必须进仓库，
+# 否则 clone 后 `npm start` 找不到 bin/start-all.sh。
+bin/cloudflared
 .DS_Store
 *.log
 __pycache__/

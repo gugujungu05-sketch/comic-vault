@@ -9,7 +9,7 @@
     "dev:server": "node server/index.js",
     "dev:web": "vite",
     "build": "tsc --noEmit && vite build",
-    "start": "node server/index.js",
+    "start": "bash bin/start-all.sh",
     "preview": "vite preview",
     "version:sync": "node scripts/sync-version.cjs",
     "version:bump": "node scripts/sync-version.cjs --bump",
