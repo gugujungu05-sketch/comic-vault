@@ -19,11 +19,33 @@ import { getShareCode, withShareCode } from './util';
  * 媒体地址（封面 / 页面 / 附件）同样通过 absoluteUrl() 补全成绝对地址。
  */
 const LS_API_BASE = 'cv-api-base';
+const LS_API_CREDENTIAL = 'cv-api-credential';
 
 let apiBase = '';
+let apiCredential = '';
 try {
   apiBase = localStorage.getItem(LS_API_BASE) || '';
+  apiCredential = localStorage.getItem(LS_API_CREDENTIAL) || '';
 } catch { /* 忽略 */ }
+
+/**
+ * 固定托管后端（*.app.workbuddy.host）要求每个请求都带 ?sharecode= 访问凭据。
+ * 凭据由站点 backend.json 的 credential 字段下发，存进 localStorage 后刷新即可用，
+ * 不必等探测完成。注意项目本身也用 sharecode 作为「漫画分享密码」，两者同名：
+ * 因此凡 URL 已含 sharecode（业务分享码或服务端注入的凭据）时都不再重复追加。
+ */
+export function setApiCredential(code: string | null | undefined): void {
+  apiCredential = String(code || '');
+  try {
+    if (apiCredential) localStorage.setItem(LS_API_CREDENTIAL, apiCredential);
+    else localStorage.removeItem(LS_API_CREDENTIAL);
+  } catch { /* 忽略 */ }
+}
+
+function withBackendCredential(url: string): string {
+  if (!apiCredential || url.includes('sharecode=')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(apiCredential)}`;
+}
 
 export function getApiBase(): string {
   return apiBase;
@@ -42,7 +64,7 @@ async function probeBackend(base: string, timeoutMs: number): Promise<string | n
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const res = await fetch(`${base}/api/runtime`, {
+    const res = await fetch(withBackendCredential(`${base}/api/runtime`), {
       cache: 'no-store', signal: ctrl.signal, credentials: 'include',
     });
     clearTimeout(timer);
@@ -90,7 +112,9 @@ export function absoluteUrl(url: string | null | undefined): string {
   if (!url) return '';
   if (/^(https?:|data:|blob:)/i.test(url)) return url;
   if (!apiBase) return url;
-  return `${apiBase}${url}`;
+  // 服务端通常会把托管凭据注入响应里的 /api/ 地址；若网关消费掉了该参数，
+  // 这里兜底补上，避免头像、封面、页面图等 <img> 请求被网关 403。
+  return withBackendCredential(`${apiBase}${url}`);
 }
 
 /**
@@ -108,7 +132,9 @@ function transformResponse<T>(value: T, code: string | null, depth = 0): T {
   if (typeof value === 'string') {
     if (!value.startsWith('/api/')) return value;
     let v: string = value;
-    if (code && !v.includes('sharecode=')) {
+    // 固定托管后端模式下 sharecode 是网关访问凭据，不能让业务分享码占用同名参数，
+    // 否则图片等资源请求会丢凭据被 403；凭据由服务端注入 / absoluteUrl 兜底。
+    if (code && !apiCredential && !v.includes('sharecode=')) {
       v = `${v}${v.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(code)}`;
     }
     // apiBase 为空（同源 / 桌面端）时 absoluteUrl 原样返回，行为不变
@@ -134,7 +160,8 @@ function requestXHR<T>(
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open(init.method || 'GET', `${getApiBase()}${url}`, true);
+    const base = getApiBase();
+    xhr.open(init.method || 'GET', base ? withBackendCredential(`${base}${url}`) : url, true);
     xhr.withCredentials = true;
     const headers = init.headers as Record<string, string> | undefined;
     if (headers) for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
@@ -167,9 +194,10 @@ function notifyBackendLost() {
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${getApiBase()}${url}`, {
+    const base = getApiBase();
+    res = await fetch(base ? withBackendCredential(`${base}${url}`) : url, {
       ...init,
-      // 跨域（GitHub Pages → 隧道）也要带会话 cookie，否则登录态无法保持
+      // 跨域（GitHub Pages → 固定托管后端）也要带会话 cookie，否则登录态无法保持
       credentials: 'include',
     });
   } catch (err) {

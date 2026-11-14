@@ -34,6 +34,15 @@ fi
 echo $$ > /tmp/cv-tunnel.pid
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+# 固定托管后端模式：站点已指向固定地址（backend.json 带 credential）时，
+# 临时隧道不再需要，守护直接退出，避免把首候选改回隧道地址造成反复断连。
+FIXED=$(python3 -c "import json;print(json.load(open('$BACKEND')).get('credential',''))" 2>/dev/null || true)
+if [ -n "$FIXED" ]; then
+  log "已启用固定托管后端，隧道守护无需运行，退出。"
+  exit 0
+fi
+
 backend_ok() { curl -s -o /dev/null --max-time 3 "http://127.0.0.1:$PORT/api/runtime"; }
 port_listening() { ss -ltn 2>/dev/null | grep -q ":$PORT "; }
 current_url() { grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$TUNNEL_LOG" 2>/dev/null | tail -1; }

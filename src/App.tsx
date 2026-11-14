@@ -14,7 +14,7 @@ import { UserPage } from './pages/UserPage';
 import { DownloadsPage } from './pages/DownloadsPage';
 import SourcesPage from './pages/SourcesPage';
 import { SessionProvider, useSession } from './lib/session';
-import { social, detectApiBase, getApiBase } from './lib/api';
+import { social, detectApiBase, getApiBase, setApiCredential } from './lib/api';
 import { rememberShareCode, withShareCode } from './lib/util';
 import { Avatar } from './components/Avatar';
 
@@ -153,6 +153,8 @@ async function probeBackend(): Promise<boolean> {
 
   const tryOnce = async (): Promise<boolean> => {
     const cfg = await readConfig();
+    // 固定托管后端的访问凭据必须在探测之前设置，否则探测请求本身会被网关 403
+    if (typeof cfg?.credential === 'string') setApiCredential(cfg.credential);
     const remote: string[] = Array.isArray(cfg?.candidates) ? cfg.candidates : [];
     return !!(await detectApiBase([
       typeof localStorage !== 'undefined' ? localStorage.getItem('cv-api-base') || '' : '',

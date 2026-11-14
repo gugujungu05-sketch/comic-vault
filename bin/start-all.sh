@@ -47,6 +47,11 @@ ensure_backend() {
 }
 
 ensure_supervisor() {
+  # 固定托管后端模式：backend.json 带 credential 时不再拉起临时隧道守护，
+  # 否则守护会把首候选改回每次重启都变的隧道地址，破坏固定入口。
+  local fixed
+  fixed=$(python3 -c "import json;print(json.load(open('$ROOT/dist-pages/backend.json')).get('credential',''))" 2>/dev/null || true)
+  if [ -n "$fixed" ]; then return 0; fi
   if supervisor_running; then return 0; fi
   log "隧道守护未运行，拉起 bin/tunnel-supervisor.sh ..."
   setsid bash "$ROOT/bin/tunnel-supervisor.sh" >> "$SUP_LOG" 2>&1 < /dev/null &
