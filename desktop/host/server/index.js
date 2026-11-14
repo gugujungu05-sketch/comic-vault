@@ -2009,10 +2009,25 @@ app.use('/files', express.static(installersDir, {
 
 const distDir = path.join(ROOT, 'dist');
 if (fs.existsSync(distDir)) {
+  const indexHtml = path.join(distDir, 'index.html');
+  const spa = (req, res) => {
+    // 构建产物 base 是 /comic-vault/。同源托管入口若从根路径 / 或裸 /comic-vault
+    // 打开，资源路径与 Router basename 都对不上。托管网关会消费掉 ?sharecode=
+    // （服务端读不到该参数），所以绝不能用 302 重定向——会丢凭据并造成循环；
+    // 改由浏览器端带地址栏里仍存在的 sharecode 跳转，凭据不丢。
+    if (!req.path.startsWith('/comic-vault/')) {
+      const html = fs.readFileSync(indexHtml, 'utf8');
+      const inject = "<script>location.replace('/comic-vault/'+location.search+location.hash);</script>";
+      return res.type('html').send(html.replace('</head>', inject + '</head>'));
+    }
+    res.sendFile(indexHtml);
+  };
+
+  // 与 GitHub Pages 保持相同的 /comic-vault/ 子路径，资源与路由完全一致
+  app.use('/comic-vault', express.static(distDir, { index: false, maxAge: '1h' }));
+  app.get(/^\/comic-vault\/(?!api\/).*/, spa);
   app.use(express.static(distDir, { index: false, maxAge: '1h' }));
-  app.get(/^(?!\/api\/).*/, (req, res) => {
-    res.sendFile(path.join(distDir, 'index.html'));
-  });
+  app.get(/^(?!\/api\/).*/, spa);
 }
 
 app.use((err, req, res, next) => {
