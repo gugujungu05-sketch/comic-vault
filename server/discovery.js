@@ -626,6 +626,31 @@ export function registerDiscovery(app) {
     });
   });
 
+  /**
+   * 按客户端平台/架构挑选「可直接下载的安装包文件」。
+   * 历史 bug：installerUrl 只在 local:true 时才有值，公开清单里全是 local:false，
+   * 导致软件内更新拿不到安装包，只能退回 releases/latest 网页（甚至旧版网盘地址），
+   * 用户被迫打开浏览器。现在优先取 GitHub Release 资产直链，软件内即可下载运行。
+   */
+  function pickInstaller(pkgs, channel, platform, arch) {
+    if (channel === 'android') return pkgs.find((x) => x.id === 'android-apk') || null;
+    if (channel !== 'desktop') return null;
+    const p = platform === 'darwin' ? 'mac' : platform === 'linux' ? 'linux' : 'win';
+    const a = arch === 'ia32' ? 'x86' : arch;
+    if (p === 'linux') {
+      return pkgs.find((x) => /appimage/i.test(x.id) || /\.appimage$/i.test(String(x.file || ''))) || null;
+    }
+    if (p === 'mac') {
+      return pkgs.find((x) => /\.dmg$/i.test(String(x.file || ''))) || null;
+    }
+    // 严格匹配架构：没有对应包时返回 null，绝不把 x64 安装包发给 32 位客户端
+    const rank = (x) => (/setup|nsis/i.test(x.id) ? 0 : /portable/i.test(x.id) ? 1 : 5);
+    const candidates = pkgs
+      .filter((x) => /\.exe$/i.test(String(x.file || '')) && x.platform === 'win' && x.arch === a)
+      .sort((x, y) => rank(x) - rank(y));
+    return candidates[0] || null;
+  }
+
   app.get('/api/software/latest', (req, res) => {
     const channel = ['desktop', 'android', 'web'].includes(String(req.query.channel))
       ? String(req.query.channel) : 'desktop';
@@ -635,9 +660,14 @@ export function registerDiscovery(app) {
       : (CLIENT_VERSIONS[channel] || CLIENT_VERSIONS.desktop);
     const rel = readRelease();
     const pkgs = rel?.packages || [];
-    const localZip = pkgs.find((x) => x.id === 'zip-bundle' && x.local);
+    const platform = String(req.query.platform || 'win32').toLowerCase();
+    const arch = String(req.query.arch || 'x64').toLowerCase();
     const localApk = pkgs.find((x) => x.id === 'android-apk' && x.local);
-    const localDesktop = pkgs.find((x) => x.id === 'windows-portable' && x.local);
+    const chosen = pickInstaller(pkgs, channel, platform, arch);
+    /** local:true 表示服务端 /files/ 已有实体，可直接走内网；否则用清单里的公开直链 */
+    const directUrl = chosen
+      ? (chosen.local ? `/files/${encodeURIComponent(chosen.file)}` : (chosen.url || null))
+      : null;
     res.json({
       channel,
       current,
@@ -646,16 +676,10 @@ export function registerDiscovery(app) {
       build: rel?.build ?? V.build,
       hasUpdate: channel === 'web' ? false : (!current || versionCompare(current, latest) < 0),
       notes: CLIENT_NOTES[channel] || CLIENT_NOTES.desktop,
-      downloadUrl: localZip || localDesktop
-        ? `/files/${encodeURIComponent((localZip || localDesktop).file)}`
-        : DRIVE_ZIP_URL,
-      /** 软件内一键更新：优先 NSIS 安装器，其次便携版 */
-      installerUrl: (() => {
-        const nsis = pkgs.find((x) => x.id === 'windows-nsis' && x.local);
-        if (nsis) return `/files/${encodeURIComponent(nsis.file)}`;
-        if (localDesktop) return `/files/${encodeURIComponent(localDesktop.file)}`;
-        return null;
-      })(),
+      /** 下载地址始终是「安装包文件」而非网页，保证软件内可下载后直接运行 */
+      downloadUrl: directUrl || DRIVE_ZIP_URL,
+      installerUrl: directUrl,
+      installerFile: chosen?.file || null,
       apkUrl: localApk ? `/files/${encodeURIComponent(localApk.file)}` : '/files/ComicVault-android.apk',
       releasedAt: rel?.releasedAt || V.releasedAt || loadDb().softwareReleases?.[0]?.releasedAt || null,
       autoUpdated: !!rel,
@@ -663,9 +687,9 @@ export function registerDiscovery(app) {
       alwaysLatest: channel === 'web',
       hint: channel === 'web'
         ? '网页版始终为最新版本，刷新即可'
-        : rel
-          ? '网站已同步最新安装包，打开「软件下载」页即可直接下载；网页内容自动保持最新'
-          : '请到资料库下载最新安装包；网站内容会自动保持最新',
+        : directUrl
+          ? '点「一键下载并安装」在软件内完成升级，不会打开浏览器'
+          : '清单里暂无对应平台的安装包，可到软件下载页选择',
     });
   });
 
