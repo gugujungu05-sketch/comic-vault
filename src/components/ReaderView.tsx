@@ -133,6 +133,8 @@ export function ReaderView({
   const stageRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressUntil = useRef(0);
+  /* 本次触摸是否落在按键 / 面板等 UI 上：是则完全交给按键自己的 onClick，绝不翻页或关面板 */
+  const touchOnUi = useRef(false);
   const touchStart = useRef<{ x: number; y: number; t: number; moved: boolean } | null>(null);
   const saveFirst = useRef(true);
 
@@ -468,10 +470,15 @@ export function ReaderView({
     handleTap(e.clientX, e.clientY, e.currentTarget as HTMLElement);
   }
 
-  /* 手机端：滑动只翻页/滚动，绝不唤出工具栏；轻点才走 handleTap */
+  /* 手机端：滑动只翻页/滚动，绝不唤出工具栏；轻点才走 handleTap。
+     触摸起点在按键 / 面板 / 弹窗等 UI 上时直接放行——之前面板里的 chip、
+     底部翻页键都会被这里抢先处理成「关面板 + 翻页」，导致模式切不动。 */
   function onTouchBegin(e: React.TouchEvent) {
     const t = e.touches[0];
     if (!t) return;
+    touchOnUi.current = !!(e.target as HTMLElement)?.closest?.(
+      'button, .reader-panel, .reader-top, .reader-bottom, .modal, select, input, .webtoon-edge, .swipe-hint',
+    );
     touchStart.current = { x: t.clientX, y: t.clientY, t: Date.now(), moved: false };
   }
 
@@ -484,9 +491,11 @@ export function ReaderView({
   }
 
   function onTouchFinish(e: React.TouchEvent) {
+    const onUi = touchOnUi.current;
+    touchOnUi.current = false;
     const start = touchStart.current;
     touchStart.current = null;
-    if (!start) return;
+    if (!start || onUi) return; /* UI 上的触摸：按键自己的 onClick 全权处理 */
     const t = e.changedTouches[0];
     if (!t) return;
     /* 触摸产生的合成 click 一律屏蔽，改由这里精确判定，避免滑动后双击 */
@@ -566,9 +575,8 @@ export function ReaderView({
           >
             <Icon name="menu" size={15} /> 设置
           </button>
-          </div>
-          {headerExtra}
         </div>
+        {headerExtra}
       </div>
 
       {swipeHint && (
@@ -671,7 +679,7 @@ export function ReaderView({
                 style={{ width: 130 }}
                 title="拖动定位阅读进度"
               />
-              <span className="reader-pageno">上下滚动 {Math.round(scrollRatio * 100)}%</span>
+              <span className="reader-pageno">{mode === 'webtoon' ? '条漫' : '上下滚动'} {Math.round(scrollRatio * 100)}%</span>
             </>
           )}
           <span className="spacer" style={{ flex: 1 }} />
@@ -733,15 +741,29 @@ export function ReaderView({
             ) : panel === 'settings' ? (
               <div style={{ display: 'grid', gap: 16 }}>
                 <div>
-                  <div className="rp-label">阅读模式</div>
+                  <div className="rp-label">翻页模式</div>
                   <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                    {(['single', 'double', 'continuous', 'webtoon'] as Mode[]).map((k) => (
+                    {(['single', 'double'] as Mode[]).map((k) => (
+                      <button key={k} className={`chip ${mode === k ? 'active' : ''}`} type="button"
+                        onClick={() => { setMode(k); }}>
+                        {MODE_LABEL[k]}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="rp-note">一屏一页，或左右对开两页；跨页大图会自动独占一屏。</div>
+                </div>
+
+                <div>
+                  <div className="rp-label">滚动模式（不翻页）</div>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    {(['continuous', 'webtoon'] as Mode[]).map((k) => (
                       <button key={k} className={`chip ${mode === k ? 'active' : ''}`} type="button"
                         onClick={() => { setMode(k); if (k === 'webtoon') setFit('width'); }}>
                         {MODE_LABEL[k]}
                       </button>
                     ))}
                   </div>
+                  <div className="rp-note">上下滚动：一页一页往下滚，页与页之间有空隙；条漫：零间隙连成长条，适合条漫作品。</div>
                 </div>
 
                 <div>
@@ -754,7 +776,7 @@ export function ReaderView({
                       从右往左 →
                     </button>
                   </div>
-                  <div className="rp-note">从右往左时，底部按键与箭头会跟着镜像调换。</div>
+                  <div className="rp-note">从右往左时，底部按键与箭头会跟着镜像调换；滚动模式下方向不参与。</div>
                 </div>
 
                 <div>

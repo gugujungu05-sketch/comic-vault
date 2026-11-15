@@ -748,16 +748,21 @@ textarea {
 .reader-stage.fit-width img { width: 100%; height: auto; }
 .reader-stage.original img { max-width: none; max-height: none; }
 
+/* 上下滚动：一页一页往下滚，页与页之间保留明显空隙，一眼能看出翻页边界 */
 .reader-stage.continuous {
   display: block;
   overflow-y: auto;
   overflow-x: hidden;
   place-items: initial;
+  padding: 14px 0 22px;
 }
 .reader-stage.continuous .cont-page {
   display: block;
-  margin: 0 auto;
+  margin: 0 auto 18px;
+  border-radius: 3px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
 }
+.reader-stage.continuous .cont-page:last-child { margin-bottom: 0; }
 .reader-stage.continuous img { width: 100%; display: block; }
 
 /* 条漫（Webtoon）：图片宽度撑满、零间隙、上下连续滚动，长图不被切断 */
