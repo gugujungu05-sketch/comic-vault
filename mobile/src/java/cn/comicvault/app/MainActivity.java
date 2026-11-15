@@ -60,12 +60,13 @@ public class MainActivity extends Activity {
 
     private static final String PREFS = "cv_config";
     private static final String KEY_URL = "server_url";
+    private static final String KEY_THEME = "theme";
     private static final String DEFAULT_URL =
             "https://a3375579f1d0038dc.app.workbuddy.host/?sharecode=HDZTNNHTBW";
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.7";
+    private static final String APP_VERSION = "3.4.0.8";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";
@@ -587,8 +588,11 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public String getConfig() {
             try {
+                String saved = prefs().getString(KEY_THEME, "dark");
+                if (!"light".equals(saved)) saved = "dark";
                 return new JSONObject().put("server", currentUrl)
-                        .put("theme", "dark").put("version", APP_VERSION).toString();
+                        .put("mode", "remote")
+                        .put("theme", saved).put("version", APP_VERSION).toString();
             } catch (Exception e) { return "{}"; }
         }
 
@@ -602,7 +606,44 @@ public class MainActivity extends Activity {
             return "{}";
         }
 
-        @JavascriptInterface public String setTheme(String theme) { return "{}"; }
+        @JavascriptInterface public String setTheme(String theme) {
+            String t = "light".equals(theme) ? "light" : "dark";
+            prefs().edit().putString(KEY_THEME, t).apply();
+            return "{\"ok\":true,\"theme\":\"" + t + "\"}";
+        }
+
+        /** 软件内下载新版 APK：交给系统下载管理器，完成后点通知即可安装。
+         *  返回 JSON 给 app.js，避免「点下载没反应」；异常时退回浏览器打开下载地址。 */
+        @JavascriptInterface public String installUpdate(String url) {
+            final String u = String.valueOf(url);
+            if (!u.startsWith("http://") && !u.startsWith("https://")) {
+                return "{\"ok\":false,\"error\":\"下载地址不合法\"}";
+            }
+            runOnUiThread(() -> {
+                try {
+                    DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                    if (dm == null) throw new IllegalStateException("no download service");
+                    String name = u.substring(u.lastIndexOf('/') + 1);
+                    int q = name.indexOf('?');
+                    if (q > 0) name = name.substring(0, q);
+                    if (!name.endsWith(".apk")) name = "ComicVault-update.apk";
+                    DownloadManager.Request req = new DownloadManager.Request(Uri.parse(u));
+                    req.setTitle("漫画库 新版本安装包");
+                    req.setDescription("下载完成后点击通知，按提示完成安装");
+                    req.setNotificationVisibility(
+                            DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                    req.setMimeType("application/vnd.android.package-archive");
+                    req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+                    dm.enqueue(req);
+                    android.widget.Toast.makeText(MainActivity.this,
+                            "开始下载新版本，完成后请点通知栏安装",
+                            android.widget.Toast.LENGTH_LONG).show();
+                } catch (Exception e) {
+                    openExternally(Uri.parse(u));
+                }
+            });
+            return "{\"ok\":true,\"installed\":false}";
+        }
 
         @JavascriptInterface public String checkUpdate() {
             try {

@@ -78,13 +78,21 @@
   /* ------------------------------ 启动 ------------------------------ */
   async function boot() {
     $('#buildInfo').textContent = `v${Host.version} · 独立客户端`;
+    /* 主题先在同步阶段套用缓存值：避免启动时先闪一下深色；宿主配置读不到时也不回退 */
+    let cachedTheme = '';
+    try { cachedTheme = localStorage.getItem('cv-theme') || ''; } catch { /* 忽略 */ }
+    if (cachedTheme === 'light' || cachedTheme === 'dark') document.documentElement.dataset.theme = cachedTheme;
     try {
       const cfg = await Host.getConfig();
       state.server = cfg.server || '';
       state.mode = cfg.mode || 'local';
-      state.theme = cfg.theme || 'dark';
+      state.theme = (cachedTheme === 'light' || cachedTheme === 'dark') ? cachedTheme : (cfg.theme || 'dark');
       document.documentElement.dataset.theme = state.theme;
-    } catch { /* 忽略 */ }
+      try { localStorage.setItem('cv-theme', state.theme); } catch { /* 忽略 */ }
+    } catch {
+      state.theme = cachedTheme || 'dark';
+      document.documentElement.dataset.theme = state.theme;
+    }
     await refreshStatus();
     render();
   }
@@ -104,9 +112,45 @@
     $('#userBox').innerHTML = state.user
       ? `<div class="user-line">${state.user.avatar ? `<img class="avatar-mini" src="${esc(asset(state.user.avatar))}" />` : '<span class="avatar-mini letter">' + esc(state.user.name.slice(0, 1).toUpperCase()) + '</span>'}
          <div><b>${esc(state.user.name)}</b><br><span>${esc(state.user.email)}</span></div></div>
-         <button class="btn sm ghost" data-action="upload-avatar">修改头像</button>
-         <button class="btn sm ghost" data-action="logout">退出登录</button>`
+         <div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">
+           <button class="btn sm ghost" data-action="edit-profile">编辑资料</button>
+           <button class="btn sm ghost" data-action="upload-avatar">修改头像</button>
+           <button class="btn sm ghost" data-action="logout">退出登录</button>
+         </div>`
       : '<span>未登录 · 公共内容可浏览</span>';
+  }
+  /** 编辑个人资料：昵称 / 简介 / 密码，统一走 /api/me（POST 兼容所有宿主） */
+  function openProfileEditor() {
+    if (!state.user) return toast('请先登录', true);
+    const u = state.user;
+    openModal(`<h3>编辑个人资料</h3>
+      <label class="field"><span>昵称</span><input class="input" id="pfName" maxlength="30" value="${esc(u.name || '')}" placeholder="显示名称" /></label>
+      <label class="field"><span>个人简介</span><textarea class="textarea" id="pfBio" rows="3" maxlength="300" placeholder="写点什么介绍自己…">${esc(u.bio || '')}</textarea></label>
+      <label class="field"><span>新密码（不改请留空）</span><input class="input" id="pfPwd" type="password" minlength="6" placeholder="至少 6 位" /></label>
+      <p class="muted" style="font-size:11px;margin:6px 0 0">邮箱暂不支持自助修改。修改密码后当前登录保持有效。</p>
+      <div class="modal-actions">
+        <button class="btn" data-action="close-modal">取消</button>
+        <button class="btn primary" data-action="profile-save">保存资料</button>
+      </div>`);
+    setTimeout(() => { const el = $('#pfName'); if (el) el.focus(); }, 30);
+  }
+  async function saveProfile() {
+    const name = String($('#pfName')?.value || '').trim();
+    const bio = String($('#pfBio')?.value || '').trim();
+    const pwd = String($('#pfPwd')?.value || '');
+    if (!name) return toast('昵称不能为空', true);
+    if (pwd && pwd.length < 6) return toast('密码至少 6 位', true);
+    const body = { name, bio };
+    if (pwd) body.password = pwd;
+    busy(true, '保存中…');
+    try {
+      const r = await api('POST', '/api/me', { body });
+      if (r && r.user) state.user = { ...state.user, ...r.user };
+      closeModal();
+      await refreshStatus();
+      if (state.view === 'settings') await renderSettings(); else render();
+      toast('个人资料已保存');
+    } catch (err) { toast(err.message, true); } finally { busy(false); }
   }
   async function uploadAvatar() {
     let pick = [];
@@ -1295,8 +1339,11 @@
     $('#content').innerHTML = `${state.user ? `<div class="panel"><h3>账号</h3>
       <div class="user-line" style="margin-bottom:10px">${state.user.avatar ? `<img class="avatar-mini" style="width:52px;height:52px" src="${esc(asset(state.user.avatar))}" />` : `<span class="avatar-mini letter" style="width:52px;height:52px;font-size:22px">${esc(state.user.name.slice(0, 1).toUpperCase())}</span>`}
         <div><b>${esc(state.user.name)}</b><br><span class="muted">${esc(state.user.email)}</span></div></div>
-      <div class="row"><button class="btn" data-action="upload-avatar">修改头像</button>
-        <button class="btn ghost" data-action="logout">退出登录</button></div></div>` : ''}
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn primary" data-action="edit-profile">编辑个人资料</button>
+        <button class="btn" data-action="upload-avatar">修改头像</button>
+        <button class="btn ghost" data-action="logout">退出登录</button></div>
+      <p class="muted" style="font-size:11px;margin:8px 0 0">可修改昵称、个人简介与登录密码；邮箱暂不支持自助更换。</p></div>` : ''}
       ${annPanel}
       <div class="panel"><h3>数据与同步</h3>
       <div class="row">
@@ -1328,27 +1375,46 @@
       <div class="kv"><span>最新版本</span><b>v${esc(u.latest || '—')}</b></div>
       <div class="kv"><span>状态</span><b style="color:${u.hasUpdate ? 'var(--warn)' : 'var(--accent)'}">${u.hasUpdate ? '发现新版本' : '已是最新'}</b></div>
       ${(u.notes || []).length ? `<ul class="notes">${u.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-      ${u.hasUpdate ? `<div class="row" style="margin-top:10px">
+      ${u.hasUpdate ? `<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
         ${u.installerUrl ? `<button class="btn primary" data-action="install-update">${isMobile ? '⬇ 下载新版本' : '⬇ 一键下载并安装'}</button>` : '<span class="muted">暂无对应平台的安装包，请到软件下载页查看</span>'}
+        ${u.installerUrl ? `<button class="btn" data-action="open-download-url">在浏览器打开下载</button>` : ''}
         </div>
-        <p class="muted" style="font-size:11px;margin:8px 0 0">${u.installerFile ? `安装包：${esc(u.installerFile)}<br>` : ''}全程在软件内下载并运行安装，不会打开浏览器，也不会跳转到其他网站。</p>` : ''}`;
+        ${u.updateError ? `<p style="color:var(--danger);font-size:12px;margin:8px 0 0">上次下载失败：${esc(u.updateError)}。可点上方「在浏览器打开下载」手动获取安装包。</p>` : ''}
+        <p class="muted" style="font-size:11px;margin:8px 0 0">${u.installerFile ? `安装包：${esc(u.installerFile)}<br>` : ''}${isMobile ? '点击后由系统下载安装包，下载完成点通知按提示安装。' : '安装包约 100MB+，下载期间按钮暂时不可点，任务栏进度条显示进度；完成后自动打开安装程序。'}</p>` : ''}`;
   }
   async function checkUpdate() {
     busy(true, '检查中…');
     try { state.update = await Host.checkUpdate(); renderSettings(); toast(state.update.hasUpdate ? '发现新版本' : '已是最新版本'); }
     catch (err) { toast(err.message, true); } finally { busy(false); }
   }
-  /** 软件内直接更新：下载安装包并运行安装 */
+  /** 软件内直接更新：优先走宿主下载安装；没有该能力的宿主退回系统下载 */
   async function installUpdate() {
     const u = state.update;
-    const url = u?.installerUrl || u?.downloadUrl;
+    const url = u?.installerUrl || u?.downloadUrl || u?.apkUrl;
     if (!url) return toast('没有可用的下载地址', true);
     busy(true, '下载新版本…');
     try {
-      const r = await Host.installUpdate(url);
-      if (!r?.ok) throw new Error(r?.error || '下载失败');
-      toast(r.installed ? '安装包已就绪，安装完成后重新打开软件' : '已保存到下载目录');
-    } catch (err) { toast(err.message, true); } finally { busy(false); }
+      let r;
+      if (typeof Host.installUpdate === 'function') {
+        r = await Host.installUpdate(url);
+      } else if (typeof Host.openExternal === 'function') {
+        await Host.openExternal(url);
+        r = { ok: true, opened: true };
+      } else {
+        throw new Error('当前客户端不支持软件内下载，请点「在浏览器打开下载」');
+      }
+      if (r && r.ok === false) throw new Error(r.error || '下载失败');
+      if (u) u.updateError = '';
+      toast(r?.installed ? '安装包已就绪，正在打开安装程序'
+        : r?.opened ? '已打开下载页面，完成后点击安装'
+        : '已开始下载，完成后按提示安装');
+      renderSettings();
+    } catch (err) {
+      const msg = err.message || String(err);
+      if (u) u.updateError = msg;
+      toast('下载失败：' + msg, true);
+      renderSettings();
+    } finally { busy(false); }
   }
 
   /* ------------------------------ 事件 ------------------------------ */
@@ -1467,6 +1533,8 @@
         renderUpdates(); toast('已取消订阅');
       }
       else if (a === 'upload-avatar') await uploadAvatar();
+      else if (a === 'edit-profile') openProfileEditor();
+      else if (a === 'profile-save') await saveProfile();
       else if (a === 'set-mode') {
         await Host.setMode(id);
         await refreshStatus(); renderSettings();
@@ -1480,7 +1548,20 @@
         busy(false); renderSettings();
       }
       else if (a === 'install-update') await installUpdate();
-      else if (a === 'theme') { state.theme = id; document.documentElement.dataset.theme = id; await Host.setTheme(id); renderSettings(); }
+      else if (a === 'open-download-url') {
+        const u = state.update;
+        const url = u?.installerUrl || u?.downloadUrl || u?.apkUrl;
+        if (!url) { toast('没有可用的下载地址', true); return; }
+        if (typeof Host.openExternal === 'function') { await Host.openExternal(url); toast('已打开下载页面'); }
+        else window.open(url, '_blank');
+      }
+      else if (a === 'theme') {
+        state.theme = id === 'light' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = state.theme;
+        try { localStorage.setItem('cv-theme', state.theme); } catch { /* 忽略 */ }
+        try { await Host.setTheme(state.theme); } catch { /* 旧宿主不支持时靠 localStorage 兜底 */ }
+        renderSettings();
+      }
       else if (a === 'check-update') await checkUpdate();
       else if (a === 'open-site') await Host.openExternal(await Host.siteUrl());
       /* 兼容旧版按钮：一律留在软件内下载，不再打开浏览器 */
