@@ -71,6 +71,55 @@ export function downloadUrl(url: string) {
   document.body.removeChild(a);
 }
 
+/** 保存一张图片到设备（阅读器「保存本页」用）。
+ *  网站走浏览器下载；桌面 / 手机壳里 <a download> 对图片 URL 无效，改交给宿主
+ *  saveImage(dataUrl) 写进本地磁盘 / 相册，任何结果都有返回值供上层提示。 */
+export async function saveImageToDevice(url: string, fileName: string): Promise<boolean> {
+  type Host = {
+    saveImage?: (d: string, n: string) => Promise<{ ok?: boolean }>;
+    imageToDataUrl?: (u: string) => Promise<string>;
+  };
+  const w = window as unknown as { cvApp?: Host; CVAndroid?: Host };
+  const host = w.cvApp || w.CVAndroid;
+  const name = fileName.replace(/[\\/:*?"<>|]/g, '_');
+  try {
+    let dataUrl = '';
+    if (host?.imageToDataUrl) dataUrl = await host.imageToDataUrl(url);
+    if (!dataUrl) {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = reject;
+        fr.readAsDataURL(blob);
+      });
+    }
+    if (host?.saveImage) {
+      const r = await host.saveImage(dataUrl, name);
+      return !!r?.ok;
+    }
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return true;
+  } catch {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return false;
+  }
+}
+
 /** 从文件名解析话数：'第03话' / 'ch03' / '003' -> 3 */
 export function guessChapterNumber(name: string): number | null {
   const m = name.match(/(\d+)/);

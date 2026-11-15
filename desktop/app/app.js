@@ -653,7 +653,7 @@
         <button class="btn" data-action="add-pages" data-id="${esc(chapters[0]?.id || '')}">↑ 追加页面到第一话（可排序）</button>
         <span class="spacer"></span>
         <button class="btn primary" data-action="share-comic">↗ 分享链接 / 二维码</button>
-        ${!isMobile ? `<button class="btn" data-action="export-comic">⇩ 导出整本 CBZ</button>` : ''}
+        <button class="btn" data-action="export-comic">⇩ 下载 / 导出（分话）</button>
       </div></div>
       ${chapters.length ? `<table class="table"><thead><tr><th style="width:52px">#</th><th>话标题</th><th style="width:70px">页数</th><th style="width:340px">操作</th></tr></thead><tbody>
         ${chapters.map((ch, i) => `<tr class="${pg && pg.chapterId === ch.id ? 'reading' : ''}">
@@ -666,7 +666,7 @@
             <button class="btn sm icon" data-action="move-chapter" data-id="${esc(ch.id)}" data-dir="-1" title="上移" ${i === 0 ? 'disabled' : ''}>↑</button>
             <button class="btn sm icon" data-action="move-chapter" data-id="${esc(ch.id)}" data-dir="1" title="下移" ${i === chapters.length - 1 ? 'disabled' : ''}>↓</button>
             <button class="btn sm" data-action="add-pages" data-id="${esc(ch.id)}">加页</button>
-            ${!isMobile ? `<button class="btn sm" data-action="export-chapter" data-id="${esc(ch.id)}">导出</button>` : ''}
+            <button class="btn sm" data-action="export-chapter" data-id="${esc(ch.id)}" title="只下载这一话">⇩ 本话</button>
             <button class="btn sm danger" data-action="del-chapter" data-id="${esc(ch.id)}">删除</button>
           </td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">还没有话，点「新建一话」开始</div>'}`;
@@ -744,7 +744,7 @@
         <div class="share-qr" id="shareQrBox">
           <img id="shareQr" alt="分享二维码" />
           <div class="muted" style="font-size:11px;text-align:center">扫码直接打开</div>
-          <a id="shareQrDl" class="btn sm" href="#" download="ComicVault-分享二维码.png">保存二维码</a>
+          <button id="shareQrDl" class="btn sm" type="button">保存二维码</button>
         </div>
         <div class="share-main">
           ${linkRow('主链接 · 可直接打开（推荐）', mainLink, 'shMain')}
@@ -830,6 +830,52 @@
       };
     });
     const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+
+    /* 保存二维码：优先交给宿主落盘。Electron / Android WebView 里 <a download>
+       指向 data URL 不会触发任何下载，这正是旧版「点保存二维码没反应」的根因。
+       旧宿主没有该能力时降级为浏览器下载，且任何结果都有可见提示。 */
+    async function qrPngDataUrl() {
+      const pic = $('#shareQr')?.src || '';
+      if (!pic) return '';
+      if (/^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,/i.test(pic)) return pic;
+      /* SVG 兜底：画到 canvas 转 PNG，保证相册 / 图片查看器都能打开 */
+      try {
+        const image = new Image();
+        image.src = pic;
+        await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; });
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 480;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, 480, 480);
+        ctx.drawImage(image, 0, 0, 480, 480);
+        return cv.toDataURL('image/png');
+      } catch { return ''; }
+    }
+    bind('#shareQrDl', async () => {
+      let pic = '';
+      try { pic = await qrPngDataUrl(); } catch { /* 下面统一提示 */ }
+      if (!pic) return toast('二维码还没生成好，请稍后再试或升级客户端', true);
+      if (Host.saveImage) {
+        try {
+          const r = await Host.saveImage(pic, 'ComicVault-分享二维码');
+          if (r && r.ok) return toast(`已保存：${r.path || '图片'}`);
+          if (r && r.canceled) return;
+          if (r && !r.unsupported) return toast(r.error || '保存失败', true);
+        } catch (err) { return toast('保存失败：' + err.message, true); }
+      }
+      if (!isMobile) {
+        const a = document.createElement('a');
+        a.href = pic;
+        a.download = 'ComicVault-分享二维码.png';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        toast('已触发下载；若仍没反应请升级客户端');
+      } else {
+        toast('当前客户端版本暂不支持保存二维码，请升级到新版本', true);
+      }
+    });
     bind('#shCreate', async () => {
       busy(true, '生成中…');
       try {
@@ -890,16 +936,69 @@
     await api('DELETE', `/api/comics/${state.comic}/chapters/${id}`);
     renderComic(); toast('已删除');
   }
-  async function exportCbz(chapterId) {
+  async function exportCbz(chapterIds) {
     const c = state.comicData;
     if (!c) return;
-    const ch = chapterId ? chapterOf(chapterId) : null;
-    const q = chapterId ? `&chapters=${encodeURIComponent(chapterId)}` : '';
-    const name = `${c.title}${ch ? '·' + ch.title : ''}.cbz`.replace(/[\\/:*?"<>|]/g, '_');
+    const ids = Array.isArray(chapterIds) ? chapterIds.filter(Boolean)
+      : (chapterIds ? [chapterIds] : []);
+    const q = ids.length ? `&chapters=${encodeURIComponent(ids.join(','))}` : '';
+    const picked = (c.chapters || []).filter((x) => ids.includes(x.id));
+    const suffix = picked.length === 1 ? `·${picked[0].title}` : ids.length > 1 ? `·${ids.length}话` : '';
+    const name = `${c.title}${suffix}.cbz`.replace(/[\\/:*?"<>|]/g, '_');
     if (!Host.saveApiFile) return toast('这个客户端版本暂不支持导出，请升级', true);
     const r = await Host.saveApiFile(`/api/export/${c.id}?format=cbz${q}`, name);
     if (r && r.ok) toast(`已保存：${r.path}`);
     else if (r && !r.canceled) toast(r.error || '导出失败', true);
+  }
+
+  /** 下载范围：整本 / 单话 / 多话（勾选），与网站分享页保持一致 */
+  function openExportDialog() {
+    const c = state.comicData;
+    if (!c) return;
+    const chs = c.chapters || [];
+    openModal(`<h3>下载《${esc(c.title)}》</h3>
+      <p class="muted" style="font-size:12px;line-height:1.7;margin:0 0 12px">
+        可选整本、单独一话，或自己勾选多话一起打包成一个 CBZ（按话分目录）。</p>
+      <div class="field-row">
+        <label class="chk"><input type="radio" name="expScope" value="all" checked /> 整本（${chs.length} 话）</label>
+        <label class="chk"><input type="radio" name="expScope" value="single" /> 单话</label>
+        <label class="chk"><input type="radio" name="expScope" value="multi" /> 多话（勾选）</label>
+      </div>
+      <div id="expSingleWrap" style="display:none;margin-top:10px">
+        <label class="field"><span>选择要下载的那一话</span>
+          <select class="input" id="expSingle">${chs.map((ch, i) =>
+            `<option value="${esc(ch.id)}">第 ${i + 1} 话 · ${esc(ch.title)}（${(ch.pages || []).length} 页）</option>`).join('')}</select></label>
+      </div>
+      <div id="expMultiWrap" style="display:none;margin-top:10px;max-height:230px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">
+        ${chs.map((ch, i) => `<label class="chk" style="display:block;margin:4px 0"><input type="checkbox" class="expCh" value="${esc(ch.id)}" /> 第 ${i + 1} 话 · ${esc(ch.title)}（${(ch.pages || []).length} 页）</label>`).join('')}
+        <div class="row" style="gap:6px;margin-top:8px">
+          <button class="btn sm" id="expAll" type="button">全选</button>
+          <button class="btn sm" id="expNone" type="button">清空</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" data-action="close-modal">取消</button>
+        <button class="btn primary" id="expGo" type="button">下载 CBZ</button>
+      </div>`, true);
+    const scope = () => $('#modal input[name="expScope"]:checked')?.value || 'all';
+    const sync = () => {
+      const s = scope(), a = $('#expSingleWrap'), b = $('#expMultiWrap');
+      if (a) a.style.display = s === 'single' ? '' : 'none';
+      if (b) b.style.display = s === 'multi' ? '' : 'none';
+    };
+    $$('#modal input[name="expScope"]').forEach((r) => { r.onchange = sync; });
+    const b2 = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+    b2('#expAll', () => $$('#modal .expCh').forEach((x) => { x.checked = true; }));
+    b2('#expNone', () => $$('#modal .expCh').forEach((x) => { x.checked = false; }));
+    b2('#expGo', async () => {
+      const s = scope();
+      let ids = [];
+      if (s === 'single') { const v = $('#expSingle')?.value; if (v) ids = [v]; }
+      else if (s === 'multi') ids = $$('#modal .expCh').filter((x) => x.checked).map((x) => x.value);
+      if (s !== 'all' && !ids.length) return toast('请先选择要下载的话', true);
+      closeModal();
+      await exportCbz(ids);
+    });
   }
   async function addChapter() {
     const title = prompt('新一话的标题', `第 ${(state.comicData?.chapters || []).length + 1} 话`);
@@ -1547,8 +1646,8 @@
       else if (a === 'rename-chapter') await renameChapter(id);
       else if (a === 'move-chapter') await moveChapter(id, Number(el.dataset.dir));
       else if (a === 'del-chapter') await delChapter(id);
-      else if (a === 'export-chapter') await exportCbz(id);
-      else if (a === 'export-comic') await exportCbz('');
+      else if (a === 'export-chapter') await exportCbz([id]);
+      else if (a === 'export-comic') openExportDialog();
       else if (a === 'sub-check') await subCheck(id);
       else if (a === 'sub-check-all') await subCheckAll();
       else if (a === 'sub-toggle') {

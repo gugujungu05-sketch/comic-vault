@@ -111,30 +111,49 @@ def main():
             pg.locator('.share-actions .btn.primary').click()
             pg.wait_for_selector('.reader', timeout=10000)
             ck('点开始阅读进入阅读器', pg.locator('.reader').count() == 1)
+            # 分享阅读默认沉浸：一整排按键收进「设置」面板，翻页热区不再盖住画面
+            ck('分享阅读默认沉浸（顶栏隐藏）',
+               'hidden' in (pg.locator('.reader-top').get_attribute('class') or ''))
+            ck('不再有覆盖画面的翻页热区', pg.locator('.reader-nav').count() == 0)
+
+            def wake(page):
+                if 'hidden' in (page.locator('.reader-top').get_attribute('class') or ''):
+                    page.locator('.reader-peek').click()
+                    page.wait_for_timeout(180)
+
+            wake(pg)
             body = pg.locator('.reader-top').inner_text()
-            ck('阅读器有「条漫」选项', '条漫' in body)
+            ck('唤出后顶栏有「存本页」与「设置」', '存本页' in body and '设置' in body)
             bot = pg.locator('.reader-bottom').inner_text()
             ck('阅读器有「上一话」「下一话」按钮', '上一话' in bot and '下一话' in bot)
             prev = pg.locator('.reader-bottom button', has_text='上一话')
             ck('第 1 话时「上一话」禁用', prev.is_disabled())
 
-            pg.locator('.reader-top button', has_text='条漫').click()
+            pg.locator('.reader-top button', has_text='设置').click()
+            pg.wait_for_timeout(250)
+            ck('设置面板有「条漫」选项', '条漫' in pg.locator('.reader-panel').inner_text())
+            pg.locator('.reader-panel button', has_text='条漫').click()
             pg.wait_for_timeout(400)
             ck('条漫模式 stage 切换', pg.locator('.reader-stage.webtoon').count() == 1)
             ck('条漫模式渲染全部页面', pg.locator('.webtoon-page').count() == 2)
             ck('条漫模式显示下一话入口', pg.locator('.webtoon-edge').count() >= 1)
             ck('条漫模式隐藏翻页悬浮层', pg.locator('.reader-nav').count() == 0)
+            pg.locator('.reader-panel header button').click()
+            pg.wait_for_timeout(150)
 
             # 通过目录切到第 2 话，验证显式上下话
+            wake(pg)
             pg.locator('.reader-bottom button', has_text='下一话').click()
             pg.wait_for_timeout(400)
             sel = pg.locator('.reader-bottom select').input_value()
             ck('点「下一话」切到第 2 话', sel == '1', f'select={sel}')
             ck('第 2 话时「下一话」禁用',
                pg.locator('.reader-bottom button', has_text='下一话').is_disabled())
+            wake(pg)
             pg.locator('.reader-bottom button', has_text='上一话').click()
             pg.wait_for_timeout(300)
             ck('点「上一话」返回第 1 话', pg.locator('.reader-bottom select').input_value() == '0')
+            wake(pg)
             ck('阅读器顶栏有返回封面', '封面' in pg.locator('.reader-top').inner_text())
             pg.locator('.reader-top button', has_text='封面').click()
             pg.wait_for_selector('.share-landing', timeout=8000)
