@@ -1,67 +1,68 @@
 {
   "schema": 1,
-  "version": "3.4.0.10",
-  "webVersion": "2.7.0.14",
+  "version": "3.4.0.13.1",
+  "webVersion": "2.7.0.17.1",
   "versions": {
-    "web": "2.7.0.14",
-    "desktop": "3.4.0.10",
-    "android": "3.4.0.10"
+    "web": "2.7.0.17.1",
+    "desktop": "3.4.0.13.1",
+    "android": "3.4.0.13.1"
   },
   "buildVersion": "3.4.0",
-  "build": 18,
-  "releasedAt": 1794732178176,
-  "generatedAt": 1794732557396,
+  "build": 21,
+  "releasedAt": 1794738237629,
+  "generatedAt": 1794742701200,
   "driveUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
     "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
     "minor": "第 2 段：成体系的新功能（如多选导入、条漫模式）",
     "patch": "第 3 段：一次完整发版里的一组修复",
-    "build": "第 4 段：文案、样式、脚本、文档等小改动，默认只加这一段"
+    "build": "第 4 段：小改动 / 小修复，日常发版默认只加这一段",
+    "hotfix": "第 5 段：同一天内的热修或补丁，不改其它段"
   },
   "packages": [
     {
       "id": "windows-x64-setup",
       "platform": "win",
       "arch": "x64",
-      "file": "ComicVault-3.4.0.10-windows-x64-setup.exe",
-      "sizeBytes": 121664349,
-      "sha256": "af6ba3563363af2fa7257affda321274264d2efb1e849f8b8c38c694a9fe8aea",
+      "file": "ComicVault-3.4.0.13.1-windows-x64-setup.exe",
+      "sizeBytes": 121669634,
+      "sha256": "7ab3097c85bebc4eadca54737d418ea250a45a1cc7f3d4729a633b111f57a929",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.10/ComicVault-3.4.0.10-windows-x64-setup.exe",
-      "updatedAt": 1794732287174
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.13.1/ComicVault-3.4.0.13.1-windows-x64-setup.exe",
+      "updatedAt": 1794742573030
     },
     {
       "id": "windows-x64-portable",
       "platform": "win",
       "arch": "x64",
-      "file": "ComicVault-3.4.0.10-windows-x64-portable.exe",
-      "sizeBytes": 110733594,
-      "sha256": "ea9424b7715bd79292ae19938038fe247ae13806e7da9fa2c6142d81fed1d53a",
+      "file": "ComicVault-3.4.0.13.1-windows-x64-portable.exe",
+      "sizeBytes": 110726554,
+      "sha256": "36a1b7357c7d7b794320fb8c60536d8d59be7c1e17001e1f95ad30a27cadf70b",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.10/ComicVault-3.4.0.10-windows-x64-portable.exe",
-      "updatedAt": 1794732386881
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.13.1/ComicVault-3.4.0.13.1-windows-x64-portable.exe",
+      "updatedAt": 1794742674702
     },
     {
       "id": "linux-x64",
       "platform": "linux",
       "arch": "x64",
-      "file": "ComicVault-3.4.0.10-linux-x64.AppImage",
-      "sizeBytes": 126281622,
-      "sha256": "18004196e64029db93525fd5b1bc211c118c233dc2858493bd77b040ed233495",
+      "file": "ComicVault-3.4.0.13.1-linux-x64.AppImage",
+      "sizeBytes": 126285900,
+      "sha256": "4c04ed732462675a64d6092862ca86d66e2f50f35cc92917abf5ad743815d9a2",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.10/ComicVault-3.4.0.10-linux-x64.AppImage",
-      "updatedAt": 1794732399035
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.13.1/ComicVault-3.4.0.13.1-linux-x64.AppImage",
+      "updatedAt": 1794742687424
     },
     {
       "id": "android-apk",
       "platform": "android",
       "arch": "universal",
-      "file": "ComicVault-3.4.0.10-android.apk",
-      "sizeBytes": 111971,
-      "sha256": "c45bfaaf3cd883f8c0e90d45d2ad10fb22a9bb9369443f307cad1f0e8f0096d4",
+      "file": "ComicVault-3.4.0.13.1-android.apk",
+      "sizeBytes": 116067,
+      "sha256": "7a53af031312c5b5fbf46a43b842b2638d7898929a87daf14d1d4bdf014671fb",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.10/ComicVault-3.4.0.10-android.apk",
-      "updatedAt": 1794732402316
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.13.1/ComicVault-3.4.0.13.1-android.apk",
+      "updatedAt": 1794742691347
     }
   ],
   "mirror": true,
