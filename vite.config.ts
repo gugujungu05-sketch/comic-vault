@@ -38,10 +38,13 @@ function credentialBootstrap(): Plugin {
         const boot = [
           '<script>',
           '(function(){',
-          'var KEY="cv-sharecode",code=null;',
+          'var KEY="cv-sharecode",DEFAULT_CODE="HDZTNNHTBW",code=null;',
           'try{code=new URLSearchParams(location.search).get("sharecode");}catch(e){}',
-          'if(code){try{localStorage.setItem(KEY,code);}catch(e){}try{sessionStorage.setItem(KEY,code);}catch(e){}}',
           'if(!code){try{code=localStorage.getItem(KEY)||sessionStorage.getItem(KEY);}catch(e){}}',
+          // 固定托管入口从书签/历史打开时地址栏可能丢掉 ?sharecode=，网关会 403 整站资源。
+          // 仅在该域名下补内置凭据（凭据本来就公开在 backend.json 里），GitHub Pages 不受影响。
+          'if(!code&&/app\\.workbuddy\\.host$/i.test(location.hostname))code=DEFAULT_CODE;',
+          'if(code){try{localStorage.setItem(KEY,code);}catch(e){}try{sessionStorage.setItem(KEY,code);}catch(e){}}',
           'function wc(u){return code?u+(u.indexOf("?")>=0?"&":"?")+"sharecode="+encodeURIComponent(code):u;}',
           // 可安装应用清单：把凭据带进 manifest，服务端据此生成带凭据的启动地址与图标
           // 凭据同时放进路径：托管网关会消费 ?sharecode=，服务端只能从路径取到

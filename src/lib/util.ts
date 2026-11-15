@@ -208,9 +208,12 @@ export function installNetworkCredential(): void {
   // 无凭据（本地 / 自托管）时也注册 Service Worker，
   // 这样「安装为应用」与桌面软件在任何部署形态下都可用，并获得离线外壳。
   if (!('serviceWorker' in navigator)) return;
-  const swUrl = code ? `/sw.js?sharecode=${encodeURIComponent(code)}` : '/sw.js';
+  // 项目站点部署在 /comic-vault/ 子路径下，SW 也必须注册在该路径，
+  // 否则 /sw.js 与根 scope 会 404（控制台报错，且无法为 <img> 补凭据）。
+  const swBase = import.meta.env.BASE_URL || '/';
+  const swUrl = code ? `${swBase}sw.js?sharecode=${encodeURIComponent(code)}` : `${swBase}sw.js`;
   navigator.serviceWorker
-    .register(swUrl, { scope: '/' })
+    .register(swUrl, { scope: swBase })
     .then((reg) => {
       if (!code) return;
       const send = () => {

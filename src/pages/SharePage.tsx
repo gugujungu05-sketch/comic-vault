@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api, shareExportUrl, type PublicComic } from '../lib/api';
 import { ReaderView } from '../components/ReaderView';
 import { ExportDialog } from '../components/ExportDialog';
@@ -9,7 +9,10 @@ import { useToast } from '../components/Toasts';
 
 /** 分享链接落地页：先把「这是什么、有几话、能不能下载」讲清楚，再进入阅读器 */
 export function SharePage() {
-  const { token } = useParams();
+  const { token: routeToken } = useParams();
+  const location = useLocation();
+  /** 兼容两种入口：/s/:token（深链）与 /comic-vault/?s=token（200 直达，二维码/扫码用） */
+  const token = routeToken || new URLSearchParams(location.search).get('s') || '';
   const navigate = useNavigate();
   const toast = useToast();
   const [data, setData] = useState<PublicComic | null>(null);
@@ -59,7 +62,7 @@ export function SharePage() {
   }
 
   function downloadCbz() {
-    const url = shareExportUrl(token!, 'cbz', undefined, password || undefined);
+    const url = shareExportUrl(token, 'cbz', undefined, password || undefined);
     downloadUrl(url);
     toast('已开始下载 CBZ');
   }

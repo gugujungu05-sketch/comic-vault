@@ -173,7 +173,11 @@ function Shell() {
   const { theme, setTheme } = useTheme();
   const { user, loading, needsSetup, refresh } = useSession();
   const location = useLocation();
-  const immersive = location.pathname.startsWith('/read/') || location.pathname.startsWith('/s/');
+  /** 分享入口改成 200 可达的 /comic-vault/?s=token，等价于 /s/token 落地页 */
+  const shareFromQuery = new URLSearchParams(location.search).get('s');
+  const immersive = location.pathname.startsWith('/read/') ||
+    location.pathname.startsWith('/s/') ||
+    (!!shareFromQuery && location.pathname === '/');
   const [offline, setOffline] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const probingRef = useRef(false);
@@ -310,7 +314,7 @@ function Shell() {
       )}
       {!immersive && <Header theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />}
       <Routes>
-        <Route path="/" element={<LibraryPage />} />
+        <Route path="/" element={shareFromQuery ? <SharePage /> : <LibraryPage />} />
         <Route path="/community" element={<CommunityPage />} />
         <Route path="/plaza" element={<PlazaPage />} />
         <Route path="/u/:id" element={<UserPage />} />

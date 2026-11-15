@@ -44,7 +44,17 @@ export function ShareDialog({
     }
   }, [comic.share]);
 
-  const link = share?.token ? withShareCode(`${window.location.origin}/s/${share.token}`) : '';
+  /**
+   * 分享链接必须是「真实存在的静态页」才能被二维码 / 微信 / 浏览器直接打开。
+   * 历史 bug：拼成 origin + /s/token，在 GitHub Pages 项目站点下少了 /comic-vault/
+   * 前缀，直接落到 GitHub 默认 404；即使补齐前缀，/comic-vault/s/token 也是
+   * 404.html 兜底的深链，HTTP 状态码仍是 404，扫码和预览会判定失败。
+   * 现在统一用入口页 + ?s=token（HTTP 200，刷新也不会丢），App 内还原成分享落地页。
+   * withShareCode 保留托管网关凭据，保证同源固定入口生成的链接别人也能打开。
+   */
+  const link = share?.token
+    ? withShareCode(`${window.location.origin}${import.meta.env.BASE_URL}?s=${encodeURIComponent(share.token)}`)
+    : '';
 
   async function loadLogs() {
     try {
