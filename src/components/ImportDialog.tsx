@@ -75,6 +75,7 @@ export function ImportDialog({
   const [listLimit, setListLimit] = useState(300);
 
   const imgRef = useRef<HTMLInputElement>(null);
+  const photoRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
   const arcRef = useRef<HTMLInputElement>(null);
 
@@ -410,15 +411,18 @@ export function ImportDialog({
         }}
         onDragLeave={() => setDropped(false)}
         onDrop={onDrop}
-        onClick={() => imgRef.current?.click()}
+        onClick={() => photoRef.current?.click()}
       >
         <div className="big">拖拽图片 / 压缩包 / PDF / EPUB / TXT 小说 到此处</div>
         <div>支持图片、各类压缩包、PDF、EPUB、TXT/MD 小说；小说与文字 EPUB 会自动识别章节生成目录，一次导入即可阅读</div>
       </div>
 
-      <div className="row">
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+        <button className="btn sm" onClick={() => photoRef.current?.click()}>
+          <Icon name="image" size={15} /> 选择图片（相册可多选）
+        </button>
         <button className="btn sm" onClick={() => imgRef.current?.click()}>
-          <Icon name="image" size={15} /> 选择文件（图片 / 压缩包 / PDF / EPUB / 小说）
+          <Icon name="image" size={15} /> 选择文件 / 继续添加
         </button>
         <button className="btn sm" onClick={() => dirRef.current?.click()}>
           <Icon name="folder" size={15} /> 选择文件夹
@@ -436,6 +440,25 @@ export function ImportDialog({
         </span>
       </div>
 
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, lineHeight: 1.7 }}>
+        <b>可以反复添加：</b>每次选择都会<b>追加</b>到列表，不会清空之前已选的文件，最后统一排序再导入。
+        部分手机浏览器（vivo / OPPO 等）点「选择文件」会打开文件管理器且一次只能选 1 个，
+        多点几次「继续添加」即可；点「选择图片」会打开相册，通常能一次多选。
+      </div>
+
+      {/* 纯图片选择器：accept=image/* 会让国产手机浏览器调起「相册」而不是单选的文件管理器 */}
+      <input
+        id="cv-import-photos"
+        ref={photoRef}
+        type="file"
+        multiple
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          if (e.target.files) ingest(filesFromFileList(e.target.files));
+          e.target.value = '';
+        }}
+      />
       <input
         id="cv-import-images"
         ref={imgRef}

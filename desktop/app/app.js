@@ -7,6 +7,13 @@
   const isMobile = !!window.CVAndroid;
   if (isMobile) document.body.classList.add('mobile');
 
+  /* 固定后端与公开站点：即使宿主进程没有提供 cv:share-config（旧客户端 / 升级途中），
+     分享链接也必须拼成完整可打开的 URL，绝不退化成裸 token 的一串随机字母。
+     与网站 src/lib/api.ts 的 shareLandingUrl() 保持同一套地址与凭据。 */
+  const FALLBACK_SERVER = 'https://a3375579f1d0038dc.app.workbuddy.host';
+  const FALLBACK_SHARECODE = 'HDZTNNHTBW';
+  const FALLBACK_PUBLIC_SITE = 'https://gugujungu05-sketch.github.io/comic-vault/';
+
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) =>
@@ -22,7 +29,7 @@
     view: 'library', user: null, server: '', theme: 'dark',
     comics: [], community: [], categories: [], boards: [], posts: [],
     comic: null, q: '', board: 'all', category: 'all', update: null, busy: false,
-    importPaths: null, importSel: new Set(),
+    importPaths: null, importSel: new Set(), importIntoChapter: '',
     sourcesList: [], sourceId: '', srcResults: [], srcComic: null, srcChecked: new Set(),
     subs: [],
     selecting: false, selComics: new Set(),
@@ -595,9 +602,10 @@
     $('#content').innerHTML = `<div class="panel"><div class="panel-title"><h3>${esc(c.title)}</h3>
         <span class="muted">${chapters.length} 话 · ${totalPages} 页</span></div>
       ${progressHtml}
-      <div class="row" style="margin-top:10px">
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:6px">
+        <button class="btn primary" data-action="import-into-current">＋ 导入页面到本书（可多选 / 排序）</button>
         <button class="btn" data-action="add-chapter">＋ 新建一话</button>
-        <button class="btn" data-action="add-pages" data-id="${esc(chapters[0]?.id || '')}">↑ 上传页面到第一话</button>
+        <button class="btn" data-action="add-pages" data-id="${esc(chapters[0]?.id || '')}">↑ 追加页面到第一话（可排序）</button>
         <span class="spacer"></span>
         <button class="btn primary" data-action="share-comic">↗ 分享链接 / 二维码</button>
         ${!isMobile ? `<button class="btn" data-action="export-comic">⇩ 导出整本 CBZ</button>` : ''}
@@ -627,27 +635,48 @@
   async function openShare() {
     const c = state.comicData;
     if (!c) return;
-    let cfg = { landing: '', backup: '', credential: '' };
-    try { cfg = (Host.shareConfig ? await Host.shareConfig() : null) || cfg; } catch { /* 忽略 */ }
+    /* 内置兜底：宿主没提供 cv:share-config（旧客户端 / 升级途中）也能生成完整链接。
+       历史 bug：cfg.landing 为空时 mainLink 只剩裸 token，界面上就是「一串乱排字母」。 */
+    const cfg = {
+      landing: `${FALLBACK_SERVER}/comic-vault/?s=`,
+      backup: `${FALLBACK_PUBLIC_SITE}?s=`,
+      credential: FALLBACK_SHARECODE,
+    };
+    try {
+      const remote = Host.shareConfig ? await Host.shareConfig() : null;
+      if (remote && /^https?:\/\//i.test(String(remote.landing || ''))) {
+        cfg.landing = remote.landing;
+        if (/^https?:\/\//i.test(String(remote.backup || ''))) cfg.backup = remote.backup;
+        if (remote.credential) cfg.credential = remote.credential;
+      }
+    } catch { /* 用内置兜底 */ }
+    /** 落地页前缀必须完整、且以 ?s= 结尾，保证拼出来是别人能打开的 URL */
+    const landingPrefix = (raw) => {
+      const l = /^https?:\/\//i.test(String(raw || ''))
+        ? String(raw) : `${FALLBACK_SERVER}/comic-vault/?s=`;
+      return /[?&]s=$/.test(l)
+        ? l : `${l.replace(/[?&]+$/, '')}${l.includes('?') ? '&' : '?'}s=`;
+    };
     const sh = c.share || {};
     const token = sh.token || '';
     const enabled = !!sh.enabled;
     const chapters = c.chapters || [];
     const sel = new Set(sh.chapterIds || []);
     const expireDays = sh.expiresAt ? Math.max(0, Math.ceil((sh.expiresAt - Date.now()) / 86400000)) : 0;
-    const mainLink = token
-      ? `${cfg.landing}${encodeURIComponent(token)}${cfg.credential ? `&sharecode=${encodeURIComponent(cfg.credential)}` : ''}` : '';
-    const backupLink = token ? `${cfg.backup}${encodeURIComponent(token)}` : '';
+    const cred = `&sharecode=${encodeURIComponent(cfg.credential)}`;
+    const mainLink = token ? `${landingPrefix(cfg.landing)}${encodeURIComponent(token)}${cred}` : '';
+    const backupLink = token ? `${landingPrefix(cfg.backup)}${encodeURIComponent(token)}${cred}` : '';
     const linkRow = (label, url, id) => url ? `<label class="field"><span>${label}</span>
       <div class="share-link"><input class="input" id="${id}" readonly value="${esc(url)}" />
-        <button class="btn sm" data-copy="${id}" type="button">复制</button></div></label>` : '';
+        <button class="btn sm" data-copy="${id}" type="button">复制</button>
+        <button class="btn sm" data-open="${id}" type="button">打开</button></div></label>` : '';
 
     openModal(`<h3>分享《${esc(c.title)}》</h3>
       ${!token ? `<div class="empty" style="padding:16px 0">
           <p class="muted" style="font-size:12px">生成后，别人点链接或扫二维码就能直接在线观看、下载，不需要登录。</p>
           <button class="btn primary" id="shCreate" type="button">生成分享链接与二维码</button></div>` : `
       <div class="share-panel">
-        <div class="share-qr">
+        <div class="share-qr" id="shareQrBox">
           <img id="shareQr" alt="分享二维码" />
           <div class="muted" style="font-size:11px;text-align:center">扫码直接打开</div>
           <a id="shareQrDl" class="btn sm" href="#" download="ComicVault-分享二维码.png">保存二维码</a>
@@ -659,7 +688,7 @@
             <button class="btn" id="shPreview" type="button">预览链接</button>
             <button class="btn" id="shRotate" type="button">刷新链接（旧链接立即失效）</button>
           </div>
-          <p class="muted" style="font-size:11px;margin:8px 0 0">${enabled ? '分享已开启' : '<b style="color:var(--warn)">分享已关闭，别人暂时打不开</b>'}。链接里的 <b>sharecode</b> 是服务器访问凭据，请勿删除；${sh.allowDownload !== false ? '对方可下载 CBZ' : '下载已关闭'}。</p>
+          <p class="muted" style="font-size:11px;margin:8px 0 0;line-height:1.7">${enabled ? '分享已开启' : '<b style="color:var(--warn)">分享已关闭，别人暂时打不开</b>'}。链接里的 <b>sharecode</b> 是服务器访问凭据，请勿删除；${sh.allowDownload !== false ? '对方可下载 CBZ' : '下载已关闭'}。<br><code>?s=</code> 后面那串字符是分享令牌（不是乱码），请<b>整条复制</b>发送，不要删改；点「打开」可先自己验证能不能看。</p>
         </div>
       </div>
       <div class="panel" style="margin-top:12px"><h3>分享设置</h3>
@@ -680,17 +709,44 @@
       </div>`}
     `, true);
 
-    /* 离线生成二维码，不请求任何外部服务 */
-    const QR = window.QRCode;
-    if (token && mainLink && QR && typeof QR.toDataURL === 'function') {
-      try {
-        const u = await QR.toDataURL(mainLink, {
-          width: 240, margin: 1, errorCorrectionLevel: 'M',
-          color: { dark: '#241a45', light: '#ffffff' },
-        });
-        const img = $('#shareQr'); if (img) img.src = u;
-        const dl = $('#shareQrDl'); if (dl) dl.href = u;
-      } catch { /* 二维码失败不影响链接 */ }
+    /* 离线生成二维码：PNG 优先，失败退回纯矩阵 SVG（不依赖 canvas / 不请求外部服务）。
+       任何一步失败都在面板里显示可见提示，绝不留一张空白图让用户以为「二维码没做」。 */
+    const QR = window.QRCode && (window.QRCode.create ? window.QRCode : window.QRCode.default);
+    function qrSvgDataUrl(qr) {
+      const n = qr.modules.size, d = qr.modules.data, quiet = 2, cell = 8;
+      const dim = (n + quiet * 2) * cell;
+      let rects = `<rect width="${dim}" height="${dim}" fill="#ffffff"/>`;
+      for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+        if (d[r * n + c]) rects += `<rect x="${(c + quiet) * cell}" y="${(r + quiet) * cell}" width="${cell}" height="${cell}" fill="#241a45"/>`;
+      }
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${dim}" height="${dim}" viewBox="0 0 ${dim} ${dim}" shape-rendering="crispEdges">${rects}</svg>`;
+      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    }
+    if (token && mainLink) {
+      let pic = '', ext = 'png';
+      if (QR && typeof QR.toDataURL === 'function') {
+        try {
+          pic = await QR.toDataURL(mainLink, { width: 240, margin: 1, errorCorrectionLevel: 'M', color: { dark: '#241a45', light: '#ffffff' } });
+        } catch { /* 试下一种 */ }
+      }
+      if (!pic && QR && typeof QR.toString === 'function') {
+        try {
+          pic = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+            await QR.toString(mainLink, { type: 'svg', width: 240, margin: 1, errorCorrectionLevel: 'M', color: { dark: '#241a45', light: '#ffffff' } }));
+          ext = 'svg';
+        } catch { /* 试下一种 */ }
+      }
+      if (!pic && QR && typeof QR.create === 'function') {
+        try { pic = qrSvgDataUrl(QR.create(mainLink, { errorCorrectionLevel: 'M' })); ext = 'svg'; } catch { /* 忽略 */ }
+      }
+      const img = $('#shareQr'), dl = $('#shareQrDl'), box = $('#shareQrBox');
+      if (pic) {
+        if (img) { img.src = pic; img.style.display = ''; }
+        if (dl) { dl.href = pic; dl.setAttribute('download', `ComicVault-分享二维码.${ext}`); dl.style.display = ''; }
+        if (img) img.onerror = () => { if (box) box.innerHTML = '<div class="muted" style="font-size:12px;line-height:1.7;padding:12px;text-align:center">二维码图片加载失败<br>请直接复制上方链接发送</div>'; };
+      } else if (box) {
+        box.innerHTML = '<div class="muted" style="font-size:12px;line-height:1.7;padding:12px;text-align:center">二维码生成失败<br>请直接复制上方链接发送</div>';
+      }
     }
     $$('#modal [data-copy]').forEach((b) => {
       b.onclick = async () => {
@@ -698,6 +754,14 @@
         if (!text) return;
         try { await Host.copyText(text); toast('链接已复制'); }
         catch { try { await navigator.clipboard.writeText(text); toast('链接已复制'); } catch { toast('复制失败，请手动选择复制', true); } }
+      };
+    });
+    $$('#modal [data-open]').forEach((b) => {
+      b.onclick = () => {
+        const url = $('#' + b.dataset.open)?.value || '';
+        if (!/^https?:\/\//i.test(url)) return toast('链接无效，请刷新后重试', true);
+        if (Host.openExternal) Host.openExternal(url);
+        else window.open(url, '_blank', 'noopener');
       };
     });
     const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
@@ -782,7 +846,8 @@
     if (!chapterId) return toast('请先新建一话', true);
     const paths = await Host.pickFiles();
     if (!paths || !paths.length) return;
-    await uploadInto(state.comic, chapterId, paths);
+    /* 「加页」也走带勾选 / 拖拽 / ↑↓ / 倒序的排序网格，不再无脑直接上传 */
+    await startImport(paths, { intoChapterId: chapterId });
   }
 
   /* ------------------------------ 导入（桌面核心优势） ------------------------------ */
@@ -891,7 +956,7 @@
     return out;
   }
   /** 统一导入入口：压缩包走服务端 7z 解压（和网站一样），PDF 本地渲染，图片走本地网格 */
-  async function startImportFrom(rawPaths) {
+  async function startImportFrom(rawPaths, opts = {}) {
     if (!rawPaths || !rawPaths.length) return;
     let paths = rawPaths.filter((p) => typeof p === 'string');
     const PDF_RE = /\.pdf$/i;
@@ -932,7 +997,7 @@
     }
     // 渲染能力不可用（如手机端）或渲染失败的 PDF，回退交给服务端（服务端会给出明确指引）
     const archivesFinal = archives.concat(failedPdfs, imageEpubs);
-    if (images.length) await startImport(images);
+    if (images.length) await startImport(images, opts);
     if (archivesFinal.length) await importArchives(archivesFinal);
   }
   /** ZIP/CBZ/RAR/7Z/EPUB/PDF：交给服务端解压/渲染 → 按目录分话确认 → 落盘成章节。
@@ -1015,8 +1080,10 @@
       } catch (err) { toast(err.message, true); } finally { busy(false); }
     };
   }
-  async function startImport(rawPaths) {
+  async function startImport(rawPaths, opts = {}) {
     if (!state.user) { state.view = 'library'; render(); return toast('请先登录再导入', true); }
+    state.importIntoChapter = opts.intoChapterId || '';
+    const intoChapter = !!state.importIntoChapter;
     let paths = rawPaths;
     try { paths = await Host.resolvePaths(rawPaths); } catch { /* 已是文件列表 */ }
     if (!paths || !paths.length) return toast('没有找到可用图片', true);
@@ -1026,8 +1093,14 @@
     state.importSel = new Set(paths.map(keyOf));
     let comics = state.comics;
     try { comics = (await api('GET', '/api/comics')).comics || []; } catch { /* 忽略 */ }
-    const options = comics.map((c) => `<option value="${esc(c.id)}">${esc(c.title)}</option>`).join('');
-    openModal(`<h3>导入漫画 · ${paths.length} 个文件</h3>
+    const options = comics.map((c) => `<option value="${esc(c.id)}"${opts.defaultComicId === c.id ? ' selected' : ''}>${esc(c.title)}</option>`).join('');
+    const targetBlock = intoChapter
+      ? `<label class="field"><span>导入到</span><div class="muted" style="font-size:12px">当前漫画的这一话 · 勾选的页面按下方编号追加到末尾</div></label>`
+      : `<label class="field"><span>导入到</span>
+          <select class="select" id="impTarget"><option value="__new__">＋ 新建一本漫画</option>${options}</select></label>
+        <label class="field" id="impTitleRow"><span>漫画标题</span><input class="input" id="impTitle" value="${esc(nameOf(paths[0]).replace(/\.[^.]+$/, ''))}" /></label>
+        <label class="field"><span>话标题</span><input class="input" id="impChapter" value="第 1 话" /></label>`;
+    openModal(`<h3>${intoChapter ? '追加页面' : '导入漫画'} · ${paths.length} 个文件</h3>
       <div class="imp-tools"><span class="muted" id="impCount"></span>
         <span class="spacer"></span>
         <button class="btn sm" id="impAll" type="button">全选</button>
@@ -1035,18 +1108,21 @@
         <button class="btn sm" id="impSort" type="button">按名称排序</button>
         <button class="btn sm" id="impReverse" type="button">倒序</button></div>
       <div class="imp-grid" id="impGrid"></div>
-      <p class="muted" style="font-size:11px;margin:10px 0 0">一次可选多个文件；点格子勾选或取消，<b>拖动格子或点 ↑↓ 可手动调整页序</b>，编号就是导入后的页序。手机端可在系统选择器里进入「漫画页面」来源一次多选。</p>
-      <label class="field"><span>导入到</span>
-        <select class="select" id="impTarget"><option value="__new__">＋ 新建一本漫画</option>${options}</select></label>
-      <label class="field" id="impTitleRow"><span>漫画标题</span><input class="input" id="impTitle" value="${esc(nameOf(paths[0]).replace(/\.[^.]+$/, ''))}" /></label>
-      <label class="field"><span>话标题</span><input class="input" id="impChapter" value="第 1 话" /></label>
+      <p class="muted" style="font-size:11px;margin:10px 0 0">一次可选多个文件；点格子勾选或取消，<b>拖动格子或点 ↑↓ 可手动调整页序</b>，编号就是导入后的页序。手机端如一次只能选一个，可反复点「选择文件」继续累加。</p>
+      ${targetBlock}
       <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
         <button class="btn primary" data-action="do-import">开始导入</button></div>
       <span id="busyLabel" class="muted" style="font-size:11px"></span>`, true);
     renderImportGrid();
-    $('#impTarget').addEventListener('change', (e) => {
-      $('#impTitleRow').style.display = e.target.value === '__new__' ? '' : 'none';
-    });
+    const targetSel = $('#impTarget');
+    if (targetSel) {
+      const syncTitle = () => {
+        const row = $('#impTitleRow');
+        if (row) row.style.display = targetSel.value === '__new__' ? '' : 'none';
+      };
+      targetSel.addEventListener('change', syncTitle);
+      syncTitle();
+    }
     const grid = $('#impGrid');
     grid.addEventListener('change', (e) => {
       const cb = e.target.closest('input[type=checkbox]');
@@ -1103,11 +1179,14 @@
   async function doImport() {
     const paths = (state.importPaths || []).filter((p) => state.importSel.has(keyOf(p)));
     if (!paths.length) return toast('请至少勾选一个文件', true);
-    const target = $('#impTarget').value;
+    const target = $('#impTarget')?.value || '__new__';
     let comicId = target, chapterId = '';
     busy(true, '准备中…');
     try {
-      if (target === '__new__') {
+      if (state.importIntoChapter) {
+        /* 「加页」路径：追加到当前漫画的指定话，页序沿用排序网格的编号 */
+        comicId = state.comic; chapterId = state.importIntoChapter;
+      } else if (target === '__new__') {
         const c = await api('POST', '/api/comics', { body: { title: $('#impTitle').value.trim() || '导入的漫画' } });
         comicId = c.id;
         const chs = await api('POST', `/api/comics/${comicId}/chapters`, { body: { title: $('#impChapter').value.trim() || '第 1 话' } });
@@ -1119,6 +1198,7 @@
       }
       if (!chapterId) throw new Error('创建章节失败');
       closeModal();
+      state.importIntoChapter = '';
       await uploadInto(comicId, chapterId, paths);
       state.importPaths = null;
       state.importSel = new Set();
@@ -1310,6 +1390,11 @@
       else if (a === 'add-chapter') await addChapter();
       else if (a === 'add-pages') await addPages(id);
       else if (a === 'share-comic') await openShare();
+      else if (a === 'import-into-current') {
+        /* 漫画详情页直接导入：一次多选 → 排序网格 → 默认落到当前漫画的新话 */
+        const p = Host.pickFiles ? await Host.pickFiles() : null;
+        if (p && p.length) await startImportFrom(p, { defaultComicId: state.comic });
+      }
       else if (a === 'read-first' || a === 'read-chapter') {
         const c = state.comicData;
         let ch;
