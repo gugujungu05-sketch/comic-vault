@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Icon } from './Icon';
 import { QrCode } from './QrCode';
-import { api } from '../lib/api';
+import { api, shareLandingUrl } from '../lib/api';
 import type { Chapter, ComicSummary, ShareLog } from '../types';
-import { copyText, formatDate, withShareCode } from '../lib/util';
+import { copyText, formatDate } from '../lib/util';
 import { useErrorToast, useToast } from './Toasts';
 
 export function ShareDialog({
@@ -44,7 +44,22 @@ export function ShareDialog({
     }
   }, [comic.share]);
 
-  const link = share?.token ? withShareCode(`${window.location.origin}/s/${share.token}`) : '';
+  /**
+   * 分享链接必须是「HTTP 200 且服务端能渲染落地页」的地址，才能被二维码 / 微信 /
+   * 浏览器直接打开、在线阅读并下载。
+   *
+   * 历史 bug：拼成 origin + /s/token，在 GitHub Pages 项目站点下少了 /comic-vault/
+   * 前缀，直接落到 GitHub 默认 404；即使补齐前缀，/comic-vault/s/token 也是
+   * 404.html 兜底的深链，HTTP 状态码仍是 404，扫码和预览一律判定失败。
+   * GitHub Pages 是纯静态托管，这类深链的 404 状态码前端无法根治。
+   *
+   * 主链接改为指向固定后端同源入口（真实 Express + SPA fallback，任意路径都返回
+   * 200 并渲染分享落地页，自带网关凭据，别人点开即可看/下载），这是最稳的一条。
+   * 另附 GitHub Pages 入口 + ?s=token（静态 200）作为干净备用链接。
+   */
+  const link = share?.token ? shareLandingUrl(share.token) : '';
+  const PUBLIC_SITE = 'https://gugujungu05-sketch.github.io/comic-vault/';
+  const githubLink = share?.token ? `${PUBLIC_SITE}?s=${encodeURIComponent(share.token)}` : '';
 
   async function loadLogs() {
     try {
@@ -88,6 +103,12 @@ export function ShareDialog({
     if (!link) return;
     const ok = await copyText(link);
     toast(ok ? '链接已复制' : '复制失败，请手动选择复制', ok ? 'ok' : 'err');
+  }
+
+  async function copyGithub() {
+    if (!githubLink) return;
+    const ok = await copyText(githubLink);
+    toast(ok ? '备用链接已复制' : '复制失败，请手动选择复制', ok ? 'ok' : 'err');
   }
 
   async function revoke() {
@@ -202,6 +223,19 @@ export function ShareDialog({
                 <a className="btn sm" href={link} target="_blank" rel="noreferrer">
                   <Icon name="eye" size={14} /> 打开
                 </a>
+              </div>
+              <div className="row" style={{ gap: 6, marginTop: 6, alignItems: 'center' }}>
+                <span style={{ color: 'var(--muted)', fontSize: 12 }}>备用（GitHub 入口）：</span>
+                <button className="btn sm ghost" onClick={copyGithub} title={githubLink}>
+                  <Icon name="copy" size={13} /> 复制备用链接
+                </button>
+                <a className="btn sm ghost" href={githubLink} target="_blank" rel="noreferrer">
+                  <Icon name="eye" size={13} /> 打开
+                </a>
+              </div>
+              <div style={{ color: 'var(--muted)', fontSize: 11.5, lineHeight: 1.7, marginTop: 6 }}>
+                主链接与二维码指向常驻服务器，别人点开即可在线阅读、下载，无需登录；
+                网址里带一段访问凭据属正常现象。备用链接用于只需静态页面时。
               </div>
               {!enabled && (
                 <div style={{ color: 'var(--warn)', fontSize: 12 }}>当前分享已关闭，链接暂时无法访问。</div>

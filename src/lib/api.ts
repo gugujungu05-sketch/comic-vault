@@ -4,7 +4,7 @@ import type {
   RankingItem, Settings, ShareLog, SoftwareInfo, Stats, Sticker, UpdateInfo,
   UploadRecord, User,
 } from '../types';
-import { getShareCode, withShareCode } from './util';
+import { getShareCode } from './util';
 
 /**
  * 托管环境下，接口返回的资源地址（封面、页面图、缩略图）会直接用于 <img src>，
@@ -26,6 +26,23 @@ let apiCredential = '';
 try {
   apiBase = localStorage.getItem(LS_API_BASE) || '';
   apiCredential = localStorage.getItem(LS_API_CREDENTIAL) || '';
+} catch { /* 忽略 */ }
+
+/**
+ * 静态站首屏兜底：GitHub Pages 上页面一加载就要知道后端在哪、带什么凭据。
+ *
+ * 历史 bug：探测 backend.json 是异步的，首屏的 /api/runtime、/api/auth/status、
+ * /api/activity 会先打到 Pages 同源而返回 404；用户在这几秒窗口里点「获取验证码」
+ * 就看到「无法连接到服务器」。内置默认值后首屏请求直接命中固定后端，探测只用于故障转移。
+ * 凭据本来就在公开可下载的 backend.json 里，内置不增加任何暴露面。
+ */
+const DEFAULT_API_BASE = 'https://a3375579f1d0038dc.app.workbuddy.host';
+const DEFAULT_API_CREDENTIAL = 'HDZTNNHTBW';
+try {
+  if (typeof location !== 'undefined' && /github\.io$/i.test(location.hostname)) {
+    if (!apiBase) apiBase = DEFAULT_API_BASE;
+    if (!apiCredential) apiCredential = DEFAULT_API_CREDENTIAL;
+  }
 } catch { /* 忽略 */ }
 
 /**
@@ -57,6 +74,22 @@ export function setApiBase(url: string): void {
     if (apiBase) localStorage.setItem(LS_API_BASE, apiBase);
     else localStorage.removeItem(LS_API_BASE);
   } catch { /* 忽略 */ }
+}
+
+/**
+ * 生成「别人一定能打开」的分享落地页链接。
+ *
+ * GitHub Pages 是纯静态托管：/comic-vault/s/:token 这类深链必然返回 404（HTTP
+ * 状态码层面，404.html 兜底也改不掉，微信/扫码预览会直接判定打不开）；这是平台
+ * 限制，前端无法根治。因此分享链接统一指向固定后端同源入口——它是真实 Express
+ * 服务，SPA fallback 会返回 200 + 完整分享落地页，并且自带网关访问凭据，任何人
+ * 点开/扫码都能直接在线阅读与下载，不需要登录、不需要跨站 cookie。
+ */
+export function shareLandingUrl(token: string): string {
+  const base = (getApiBase() || DEFAULT_API_BASE).replace(/\/+$/, '');
+  const cred = apiCredential || DEFAULT_API_CREDENTIAL;
+  const url = `${base}/comic-vault/?s=${encodeURIComponent(token)}`;
+  return `${url}&sharecode=${encodeURIComponent(cred)}`;
 }
 
 /** 探测单个后端；成功返回该 base，失败返回 null */
@@ -191,7 +224,7 @@ function notifyBackendLost() {
   try { window.dispatchEvent(new CustomEvent('cv:backend-lost')); } catch { /* 忽略 */ }
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(url: string, init?: RequestInit, retried = false): Promise<T> {
   let res: Response;
   try {
     const base = getApiBase();
@@ -202,6 +235,16 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     });
   } catch (err) {
     notifyBackendLost();
+    // 网络层故障（网关抖动 / DNS / 临时断网）：立刻探活默认后端并重放一次请求，
+    // 不用等 10 秒定时器，用户也不会直接撞上「无法连接到服务器」。
+    if (!retried) {
+      const revived = await probeBackend(apiBase || DEFAULT_API_BASE, 5000);
+      if (revived) {
+        apiBase = revived;
+        try { localStorage.setItem(LS_API_BASE, apiBase); } catch { /* 忽略 */ }
+        return request<T>(url, init, true);
+      }
+    }
     const raw = String((err as Error)?.message || err);
     // 浏览器原生报错（Failed to fetch / NetworkError）对用户毫无意义，统一转成可操作提示
     if (/failed to fetch|networkerror|load failed|abort/i.test(raw)) {
@@ -214,6 +257,20 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   // 因此只在响应不是 JSON 时才判定为网关故障。
   if (res.status === 404 || res.status === 503 || res.status === 530) {
     if (getApiBase()) notifyBackendLost();
+  }
+  // 静态站把 /api/ 当页面返回 HTML、或网关故障：GET 请求重探测后重放一次。
+  // POST 不重放响应层错误，避免验证码 / 注册 / 下单类请求被重复提交。
+  if (!retried && !/^(POST|PUT|PATCH|DELETE)$/i.test(String(init?.method || 'GET')) &&
+      (res.status === 404 || res.status === 403 || res.status === 502 || res.status === 503)) {
+    const peek = await res.clone().text().catch(() => '');
+    if (/^\s*</.test(peek) || res.status === 502 || res.status === 503) {
+      const revived = await probeBackend(apiBase || DEFAULT_API_BASE, 5000);
+      if (revived) {
+        apiBase = revived;
+        try { localStorage.setItem(LS_API_BASE, apiBase); } catch { /* 忽略 */ }
+        return request<T>(url, init, true);
+      }
+    }
   }
   const text = await res.text();
   let data: unknown = null;
@@ -860,15 +917,20 @@ export interface PublicComic {
   };
 }
 
+/**
+ * 下载链接必须直接指向后端：网站跨域部署在 GitHub Pages 时，相对 /api/ 地址会被
+ * 浏览器当成 Pages 静态资源请求而 404，表现为「分享能打开但下载没反应」。
+ * absoluteUrl() 会补上后端域名与托管网关凭据；同源部署时行为不变。
+ */
 export function exportUrl(comicId: string, format: string, chapterIds?: string[]) {
   const params = new URLSearchParams({ format });
   if (chapterIds?.length) params.set('chapters', chapterIds.join(','));
-  return withShareCode(`/api/export/${comicId}?${params.toString()}`);
+  return absoluteUrl(`/api/export/${comicId}?${params.toString()}`);
 }
 
 export function shareExportUrl(token: string, format: string, chapterIds?: string[], password?: string) {
   const params = new URLSearchParams({ format });
   if (chapterIds?.length) params.set('chapters', chapterIds.join(','));
   if (password) params.set('password', password);
-  return withShareCode(`/api/share/${token}/export?${params.toString()}`);
+  return absoluteUrl(`/api/share/${token}/export?${params.toString()}`);
 }
