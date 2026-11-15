@@ -101,36 +101,40 @@ export const CATEGORIES = [
 ];
 const CATEGORY_IDS = new Set(CATEGORIES.filter((c) => c.id !== 'all').map((c) => c.id));
 
-/** 站内可提供的软件模板：真实文件名 / 体积 / 校验和由 release.json 覆盖 */
+/** GitHub Release 资产直链前缀：网页地址（releases/latest）绝不能当下载链接 */
+const RELEASE_DOWNLOAD_BASE = 'https://github.com/gugujungu05-sketch/comic-vault/releases/download';
+
+/**
+ * 站内软件条目。id 必须与 data/release.json 的 packages[].id 完全一致。
+ *
+ * 历史 bug：模板 id 是 windows-portable / linux-appimage，而发版脚本产出的清单 id
+ * 是 windows-x64-setup / linux-x64，两者对不上 → 本地成品直链全部漏匹配，
+ * 下载按钮只剩 releases/latest 网页地址，用户点了像「没反应」。
+ * 现在按「平台 + 架构 + 版本」分文件，移除用户明确不要的安装包合集 / 绿色版。
+ */
 const SOFTWARE_TEMPLATE = [
   {
-    id: 'windows-portable', platform: 'Windows', icon: '🪟',
-    name: 'Windows 便携版', file: '漫画库-便携版.exe', size: '约 106 MB',
-    desc: '免安装，双击即用；数据与在线网站、手机端互通。',
+    id: 'windows-x64-setup', platform: 'Windows', icon: '🪟',
+    name: 'Windows 64 位 · 安装版', file: `ComicVault-${V.desktop}-windows-x64-setup.exe`, size: '约 116 MB',
+    desc: 'NSIS 安装版，双击安装；数据与在线网站、手机端互通。推荐 64 位 Windows 使用。',
     url: DRIVE_ZIP_URL, primary: true,
   },
   {
-    id: 'windows-green', platform: 'Windows', icon: '📦',
-    name: 'Windows 绿色版', file: '漫画库-Windows绿色版.zip', size: '约 151 MB',
-    desc: '解压到任意目录即可运行，方便放在 U 盘里。',
+    id: 'windows-x64-portable', platform: 'Windows', icon: '💾',
+    name: 'Windows 64 位 · 便携版', file: `ComicVault-${V.desktop}-windows-x64-portable.exe`, size: '约 106 MB',
+    desc: '免安装，双击即用；可放在 U 盘里，数据与在线网站互通。',
     url: DRIVE_ZIP_URL,
   },
   {
-    id: 'linux-appimage', platform: 'Linux', icon: '🐧',
-    name: 'Linux AppImage', file: '', size: '约 120 MB',
+    id: 'linux-x64', platform: 'Linux', icon: '🐧',
+    name: 'Linux 64 位 · AppImage', file: `ComicVault-${V.desktop}-linux-x64.AppImage`, size: '约 120 MB',
     desc: 'chmod +x 后直接运行，无需 root 安装。',
     url: DRIVE_ZIP_URL,
   },
   {
     id: 'android-apk', platform: 'Android', icon: '🤖',
-    name: 'Android 安装包', file: 'ComicVault-android.apk', size: '约 70 KB',
-    desc: '独立手机客户端界面，底部导航 + 原生设置，数据实时同步。',
-    url: '/files/ComicVault-android.apk',
-  },
-  {
-    id: 'zip-bundle', platform: '全部平台', icon: '🗂️',
-    name: '安装包合集', file: '漫画库-安装包合集.zip', size: '约 376 MB',
-    desc: '一次下载全部安装包与安装说明；含 Windows / Linux / Android 成品。',
+    name: 'Android · 安装包', file: `ComicVault-${V.android}-android.apk`, size: '约 90 KB',
+    desc: '独立手机客户端界面，底部导航 + 原生设置，数据与网站实时同步。',
     url: DRIVE_ZIP_URL,
   },
   {
@@ -143,17 +147,25 @@ const SOFTWARE_TEMPLATE = [
 
 /**
  * 把发版清单合并进软件模板。
- * release.json 里 local=true 的包会被挂到 /files/ 直链，网站可直接下载最新成品。
+ * - local=true：服务端 /files/ 有实体，给本站直链（前端会补后端域名与网关凭据）；
+ * - 其余情况：给 GitHub Release 的「资产直链」而不是 releases/latest 网页，
+ *   保证任何情况下点下载都是真的下载文件，不会只打开一个页面。
  */
 function softwareList(rel) {
-  const pkgs = new Map((rel?.packages || []).map((x) => [x.id, x]));
+  const list = rel?.packages || [];
+  const pkgs = new Map(list.map((x) => [x.id, x]));
+  const byFile = new Map(list.map((x) => [x.file, x]));
+  const tag = `v${rel?.version || V.desktop}`;
   return SOFTWARE_TEMPLATE.map((t) => {
-    const p = pkgs.get(t.id);
-    const file = p?.file || t.file || `漫画库 ComicVault-${BUILD_VERSION}.AppImage`;
+    const p = pkgs.get(t.id) || byFile.get(t.file) || null;
+    const file = p?.file || t.file;
     const local = !!(p && p.local);
+    const fallback = p?.url && p.url !== DRIVE_ZIP_URL
+      ? p.url
+      : `${RELEASE_DOWNLOAD_BASE}/${tag}/${encodeURIComponent(file)}`;
     const url = t.id === 'pwa' ? '/'
       : local ? `/files/${encodeURIComponent(file)}`
-        : (p?.url || t.url);
+        : fallback;
     return {
       id: t.id, platform: t.platform, icon: t.icon, name: t.name,
       desc: t.desc, primary: t.primary,
@@ -628,27 +640,44 @@ export function registerDiscovery(app) {
 
   /**
    * 按客户端平台/架构挑选「可直接下载的安装包文件」。
-   * 历史 bug：installerUrl 只在 local:true 时才有值，公开清单里全是 local:false，
-   * 导致软件内更新拿不到安装包，只能退回 releases/latest 网页（甚至旧版网盘地址），
-   * 用户被迫打开浏览器。现在优先取 GitHub Release 资产直链，软件内即可下载运行。
+   * 严格匹配架构：32 位客户端绝不误收 x64 安装包（Electron 45 已不提供 win32-ia32）。
    */
   function pickInstaller(pkgs, channel, platform, arch) {
-    if (channel === 'android') return pkgs.find((x) => x.id === 'android-apk') || null;
+    if (channel === 'android') {
+      return pkgs.find((x) => x.id === 'android-apk')
+        || pkgs.find((x) => /\.apk$/i.test(String(x.file || ''))) || null;
+    }
     if (channel !== 'desktop') return null;
     const p = platform === 'darwin' ? 'mac' : platform === 'linux' ? 'linux' : 'win';
     const a = arch === 'ia32' ? 'x86' : arch;
     if (p === 'linux') {
       return pkgs.find((x) => /appimage/i.test(x.id) || /\.appimage$/i.test(String(x.file || ''))) || null;
     }
-    if (p === 'mac') {
-      return pkgs.find((x) => /\.dmg$/i.test(String(x.file || ''))) || null;
-    }
-    // 严格匹配架构：没有对应包时返回 null，绝不把 x64 安装包发给 32 位客户端
+    if (p === 'mac') return pkgs.find((x) => /\.dmg$/i.test(String(x.file || ''))) || null;
+    // 严格匹配架构：清单缺 arch / 是 32 位而清单只有 x64 时都不返回，避免误装
     const rank = (x) => (/setup|nsis/i.test(x.id) ? 0 : /portable/i.test(x.id) ? 1 : 5);
     const candidates = pkgs
-      .filter((x) => /\.exe$/i.test(String(x.file || '')) && x.platform === 'win' && x.arch === a)
+      .filter((x) => /\.exe$/i.test(String(x.file || ''))
+        && String(x.platform || '') === 'win' && String(x.arch || '') === a)
       .sort((x, y) => rank(x) - rank(y));
     return candidates[0] || null;
+  }
+
+  /**
+   * 把清单里的相对 /files/ 路径补成常驻服务器的绝对地址，并附上网关访问凭据。
+   * 历史 bug：只回相对路径、且 downloadUrl 兜底到 releases/latest 网页，旧客户端
+   * 就会「打开浏览器」而不是在软件里下载。现在软件内拿到地址即可直接 net.fetch。
+   * 本地 / 内网部署（未配置 publicServer）时保持相对地址，由客户端自己拼。
+   */
+  function publicFileUrl(u) {
+    if (!u) return null;
+    const base = String(V.publicServer || '').replace(/\/+$/, '');
+    const cred = String(V.publicCredential || '');
+    const withCred = (full) => (!cred || full.includes('sharecode=')
+      ? full : `${full}${full.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(cred)}`);
+    if (/^https?:/i.test(u)) return withCred(u);
+    if (!base) return u;
+    return withCred(`${base}${u}`);
   }
 
   app.get('/api/software/latest', (req, res) => {
@@ -662,12 +691,18 @@ export function registerDiscovery(app) {
     const pkgs = rel?.packages || [];
     const platform = String(req.query.platform || 'win32').toLowerCase();
     const arch = String(req.query.arch || 'x64').toLowerCase();
-    const localApk = pkgs.find((x) => x.id === 'android-apk' && x.local);
+    const apkPkg = pkgs.find((x) => x.id === 'android-apk')
+      || pkgs.find((x) => /\.apk$/i.test(String(x.file || ''))) || null;
+    const apkPath = apkPkg
+      ? (apkPkg.local ? `/files/${encodeURIComponent(apkPkg.file)}` : (apkPkg.url || null))
+      : '/files/ComicVault-android.apk';
     const chosen = pickInstaller(pkgs, channel, platform, arch);
-    /** local:true 表示服务端 /files/ 已有实体，可直接走内网；否则用清单里的公开直链 */
+    /** local:true 表示服务端 /files/ 已有实体；否则用清单里的公开资产直链 */
     const directUrl = chosen
       ? (chosen.local ? `/files/${encodeURIComponent(chosen.file)}` : (chosen.url || null))
       : null;
+    /** 绝对地址：软件内拿到即可直接下载安装，不再打开浏览器 */
+    const installerUrl = publicFileUrl(directUrl);
     res.json({
       channel,
       current,
@@ -676,20 +711,20 @@ export function registerDiscovery(app) {
       build: rel?.build ?? V.build,
       hasUpdate: channel === 'web' ? false : (!current || versionCompare(current, latest) < 0),
       notes: CLIENT_NOTES[channel] || CLIENT_NOTES.desktop,
-      /** 下载地址始终是「安装包文件」而非网页，保证软件内可下载后直接运行 */
-      downloadUrl: directUrl || DRIVE_ZIP_URL,
-      installerUrl: directUrl,
+      /** 下载地址永远是「安装包文件」；没有对应平台时留空，绝不退回网页 */
+      downloadUrl: installerUrl,
+      installerUrl,
       installerFile: chosen?.file || null,
-      apkUrl: localApk ? `/files/${encodeURIComponent(localApk.file)}` : '/files/ComicVault-android.apk',
+      apkUrl: publicFileUrl(apkPath),
       releasedAt: rel?.releasedAt || V.releasedAt || loadDb().softwareReleases?.[0]?.releasedAt || null,
       autoUpdated: !!rel,
       /** 网页 / PWA 内容随服务器实时更新，永不提示升级 */
       alwaysLatest: channel === 'web',
       hint: channel === 'web'
         ? '网页版始终为最新版本，刷新即可'
-        : directUrl
-          ? '点「一键下载并安装」在软件内完成升级，不会打开浏览器'
-          : '清单里暂无对应平台的安装包，可到软件下载页选择',
+        : installerUrl
+          ? '点「一键下载并安装」在软件内完成升级，全程不打开浏览器'
+          : '当前平台暂无对应架构的安装包（32 位 Windows 请改用 64 位版本），可到软件下载页查看',
     });
   });
 

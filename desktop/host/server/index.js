@@ -2004,7 +2004,14 @@ app.get('/api/runtime', (_req, res) => {
 const installersDir = path.join(DATA_DIR, 'installers');
 app.use('/files', express.static(installersDir, {
   index: false, maxAge: '1h', fallthrough: true,
-  setHeaders: (res) => res.setHeader('Accept-Ranges', 'bytes'),
+  setHeaders: (res, filePath) => {
+    res.setHeader('Accept-Ranges', 'bytes');
+    // 安装包一律以附件下载：跨域直链时 <a download> 会被浏览器忽略，
+    // 没有这个响应头就会变成「打开一个页面 / 点了没反应」。
+    if (/\.(exe|apk|appimage|zip|dmg|msi)$/i.test(filePath)) {
+      res.setHeader('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+    }
+  },
 }));
 
 const distDir = path.join(ROOT, 'dist');
