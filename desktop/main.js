@@ -15,7 +15,7 @@ const { spawn } = require('node:child_process');
 const http = require('node:http');
 const https = require('node:https');
 
-const VERSION = '3.4.0.13.1';
+const VERSION = '3.4.0.13.2';
 /** 只有旧版临时隧道地址才需要强制回退本机，固定云端地址不能被误清 */
 const OLD_TUNNEL_RE = /trycloudflare\.com|ngrok|loca\.lt|cloudflare-tunnel/i;
 /** 项目自己的公开入口：软件里所有「打开网站 / 分享链接」都用它，不再出现 workbuddy 网盘地址 */
@@ -135,18 +135,47 @@ function endpoint(pathname, extra = {}) {
 }
 
 /* ------------------------------ HTTP ------------------------------ */
+/** 直连会话：不走系统代理。VPN / 加速器开启时系统代理会把到云端后端的请求
+ *  也代理出去，代理节点连不上国内托管服务就「开了 VPN 软件全挂」——
+ *  代理请求失败时自动用本会话直连重试一次。 */
+let directSessionRef = null;
+function directSession() {
+  if (!directSessionRef) {
+    try {
+      directSessionRef = session.fromPartition('cv-direct', { cache: false });
+      directSessionRef.setProxy({ mode: 'direct' });
+    } catch { directSessionRef = session.defaultSession; }
+  }
+  return directSessionRef;
+}
+
 /** 用 Electron 的 net.fetch：与窗口共用同一 session 的 Cookie，登录态与 <img> 一致 */
 async function apiFetch(url, { method = 'GET', headers = {}, body } = {}) {
   // 超时保护：普通请求 30s，上传/大文件 180s，避免「一直加载」卡死界面
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), body ? 180000 : 30000);
-  try {
-    // 登录态不再只依赖 Electron 的 httpOnly cookie：token 落在 config.json，
-    // 每次请求显式带上，重启软件 / 内置服务换端口都不会掉登录。
-    const authHeaders = { ...headers };
+  const doFetch = (useDirect, signal) => {
+    const headers2 = { ...headers };
     const savedToken = readConfig().authToken;
-    if (savedToken) authHeaders['x-cv-token'] = savedToken;
-    const res = await net.fetch(url, { method, headers: authHeaders, body, credentials: 'include', signal: ctl.signal });
+    if (savedToken) headers2['x-cv-token'] = savedToken;
+    const opts = { method, headers: headers2, body, credentials: 'include', signal };
+    if (useDirect) opts.session = directSession();
+    return net.fetch(url, opts);
+  };
+  try {
+    let res;
+    try {
+      res = await doFetch(false, ctl.signal);
+    } catch (err) {
+      if (ctl.signal.aborted) {
+        // 代理挂起拖到超时：换直连再给一次完整预算，直连通了软件就能用，不用用户去关 VPN
+        const ctl2 = new AbortController();
+        const timer2 = setTimeout(() => ctl2.abort(), body ? 180000 : 30000);
+        try { res = await doFetch(true, ctl2.signal); } finally { clearTimeout(timer2); }
+      } else {
+        throw err;
+      }
+    }
     const text = await res.text();
     let data = text;
     try { data = JSON.parse(text); } catch { /* 非 JSON 原样返回 */ }
@@ -156,8 +185,8 @@ async function apiFetch(url, { method = 'GET', headers = {}, body } = {}) {
     if (res.ok && /\/api\/auth\/logout/.test(String(url))) writeConfig({ authToken: '' });
     return { status: res.status, data };
   } catch (err) {
-    if (ctl.signal.aborted) return { status: 0, data: { error: '请求超时，服务器没有响应' } };
-    throw err;
+    if (ctl.signal.aborted) return { status: 0, data: { error: '请求超时，服务器没有响应。若已开启 VPN / 加速器，请先关闭或把 *.app.workbuddy.host 设为直连' } };
+    return { status: 0, data: { error: `网络连接失败：${err.message}。若已开启 VPN / 加速器，请先关闭或把 *.app.workbuddy.host 设为直连` } };
   } finally { clearTimeout(timer); }
 }
 function mimeOf(name) {

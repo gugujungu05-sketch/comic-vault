@@ -140,6 +140,18 @@ export async function detectApiBase(candidates: string[] = ['']): Promise<string
   });
 }
 
+/** 网络（VPN）诊断：探测后端连通性并测耗时，供设置页「网络检测」使用。
+ *  同源部署（桌面内置服务 / 自托管）优先探测本机服务；Pages 部署探测云端后端。 */
+export async function networkDiag(): Promise<{ ok: boolean; ms: number; base: string }> {
+  const sameOrigin = typeof location !== 'undefined' && !/github\.io$/i.test(location.hostname);
+  const list = [apiBase || '', sameOrigin ? '' : DEFAULT_API_BASE]
+    .filter((b, i, arr) => arr.indexOf(b) === i && (b || arr.indexOf('') === i));
+  const candidates = list.length ? list : [DEFAULT_API_BASE];
+  const t0 = Date.now();
+  const ok = await detectApiBase(candidates);
+  return { ok: ok !== null, ms: Date.now() - t0, base: ok !== null ? (ok || '同源服务') : String(candidates[0] || DEFAULT_API_BASE) };
+}
+
 /** 把服务端返回的相对媒体地址补全成可访问的绝对地址（跨域后端时必须） */
 export function absoluteUrl(url: string | null | undefined): string {
   if (!url) return '';
@@ -213,8 +225,11 @@ function requestXHR<T>(
       }
       resolve(transformResponse(data as T, getShareCode()));
     };
-    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
+    xhr.onerror = () => reject(new Error(`网络错误，上传失败。${VPN_HINT}`));
+    xhr.ontimeout = () => reject(new Error(`上传超时（网络被代理拦截或过慢）。${VPN_HINT}`));
     xhr.onabort = () => reject(new Error('上传已取消'));
+    // VPN 下 TCP 挂起会永远转圈：给上传留 15 分钟兜底
+    xhr.timeout = 15 * 60 * 1000;
     xhr.send(init.body as Document | XMLHttpRequestBodyInit | null);
   });
 }
@@ -224,18 +239,39 @@ function notifyBackendLost() {
   try { window.dispatchEvent(new CustomEvent('cv:backend-lost')); } catch { /* 忽略 */ }
 }
 
+/** VPN / 代理环境下的可操作提示：后端域名被代理节点拦截是最常见的「开了 VPN 全挂」原因 */
+export const VPN_HINT = '若已开启 VPN / 加速器，请先关闭，或在分流规则里把 *.app.workbuddy.host 设为直连（DIRECT）';
+
+/** 给 fetch 加超时；调用方若自带 signal 则两者任一触发即中止。
+ *  VPN 下常见「TCP 挂起不报错」——没有超时会一直转圈，用户以为软件死了。 */
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
+  const isUpload = init.body instanceof FormData || init.body instanceof Blob;
+  const limit = timeoutMs ?? (isUpload ? 0 : /^(GET|HEAD)$/i.test(String(init.method || 'GET')) ? 15000 : 45000);
+  if (!limit) return fetch(url, init);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), limit);
+  const onOuter = () => ctl.abort();
+  init.signal?.addEventListener('abort', onOuter);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);
+    init.signal?.removeEventListener('abort', onOuter);
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit, retried = false): Promise<T> {
   let res: Response;
   try {
     const base = getApiBase();
-    res = await fetch(base ? withBackendCredential(`${base}${url}`) : url, {
+    res = await fetchWithTimeout(base ? withBackendCredential(`${base}${url}`) : url, {
       ...init,
       // 跨域（GitHub Pages → 固定托管后端）也要带会话 cookie，否则登录态无法保持
       credentials: 'include',
     });
   } catch (err) {
     notifyBackendLost();
-    // 网络层故障（网关抖动 / DNS / 临时断网）：立刻探活默认后端并重放一次请求，
+    // 网络层故障（网关抖动 / DNS / 临时断网 / VPN 代理拦截）：立刻探活默认后端并重放一次，
     // 不用等 10 秒定时器，用户也不会直接撞上「无法连接到服务器」。
     if (!retried) {
       const revived = await probeBackend(apiBase || DEFAULT_API_BASE, 5000);
@@ -246,9 +282,9 @@ async function request<T>(url: string, init?: RequestInit, retried = false): Pro
       }
     }
     const raw = String((err as Error)?.message || err);
-    // 浏览器原生报错（Failed to fetch / NetworkError）对用户毫无意义，统一转成可操作提示
-    if (/failed to fetch|networkerror|load failed|abort/i.test(raw)) {
-      throw new Error('无法连接漫画库服务器，正在自动重连，请稍后重试');
+    // 浏览器原生报错（Failed to fetch / NetworkError / 超时中止）对用户毫无意义，统一转成可操作提示
+    if (/failed to fetch|networkerror|load failed|abort|timed?\s?out/i.test(raw)) {
+      throw new Error(`无法连接漫画库服务器（${/abort/i.test(raw) && !/signal/i.test(raw) ? '连接超时' : '网络错误'}）。${VPN_HINT}`);
     }
     throw new Error(`网络请求失败：${raw}`);
   }

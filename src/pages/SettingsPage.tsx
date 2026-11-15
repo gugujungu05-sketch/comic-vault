@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, discover, social } from '../lib/api';
+import { api, discover, social, networkDiag, VPN_HINT } from '../lib/api';
 import { useSession } from '../lib/session';
 import type { Announcement, Stats, UpdateInfo } from '../types';
 import { Icon } from '../components/Icon';
@@ -152,6 +152,21 @@ export function SettingsPage() {
       errorToast(err, '检查更新失败');
     } finally {
       setChecking(false);
+    }
+  }
+
+  /* 网络（VPN）诊断：测后端连通性，给出可操作建议 */
+  const [diag, setDiag] = useState<{ ok: boolean; ms: number; base: string } | null>(null);
+  const [diagBusy, setDiagBusy] = useState(false);
+  async function runDiag() {
+    setDiagBusy(true);
+    try {
+      const r = await networkDiag();
+      setDiag(r);
+    } catch {
+      setDiag({ ok: false, ms: 0, base: '' });
+    } finally {
+      setDiagBusy(false);
     }
   }
 
@@ -399,6 +414,18 @@ export function SettingsPage() {
               <div className="muted sm-text">{update.hint}</div>
             </div>
           )}
+          <div className="row" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn" onClick={runDiag} disabled={diagBusy}>
+              <Icon name="eye" size={15} /> {diagBusy ? '检测中…' : '网络检测'}
+            </button>
+            {diag && (
+              <span className="muted sm-text">
+                {diag.ok
+                  ? `服务器连接正常（${diag.ms}ms）`
+                  : `连不上服务器。${VPN_HINT}`}
+              </span>
+            )}
+          </div>
           <div className="chapter-sub">
             电脑上想用独立窗口：运行项目 <code>desktop/</code> 里的「启动软件.bat」（Windows）或「启动软件.command」（macOS / Linux），
             也可打包成 exe / dmg 安装包。软件菜单里可随时切换服务器地址，指向线上或本机服务。

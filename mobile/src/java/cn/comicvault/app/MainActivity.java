@@ -74,7 +74,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.13.1";
+    private static final String APP_VERSION = "3.4.0.13.2";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";
@@ -531,9 +531,14 @@ public class MainActivity extends Activity {
                 catch (Exception e) { out.put("data", text); }
                 return out.toString();
             } catch (Exception e) {
+                String hint = String.valueOf(e.getMessage());
+                if (hint == null || hint.isEmpty() || "null".equals(hint)) hint = "网络连接失败";
+                if (hint.contains("timeout") || hint.contains("Timeout") || hint.contains("connect")) {
+                    hint += "：请检查网络；若已开启 VPN / 加速器，请先关闭或把漫画库相关域名设为直连";
+                }
                 try {
                     return new JSONObject().put("status", 0)
-                            .put("data", new JSONObject().put("error", String.valueOf(e.getMessage())))
+                            .put("data", new JSONObject().put("error", hint))
                             .toString();
                 } catch (Exception x) {
                     return "{\"status\":0,\"data\":{\"error\":\"request failed\"}}";
