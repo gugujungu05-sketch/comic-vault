@@ -230,27 +230,57 @@ function sharedChapters(comic) {
   return (comic.chapters || []).filter((c) => set.has(c.id));
 }
 
-/** 记录一次分享访问（阅读或下载），最多保留 200 条 */
-function logVisit(comic, req, event = 'view') {
+/** 记录一次分享访问（打开 / 阅读 / 下载），最多保留 200 条。
+ *  带 visitorId 时「同一访客合并成一条访问记录」：重复打开只累加次数、刷新时间，
+ *  并持续更新这条记录上的阅读位置，分享者在访问记录里就能看到每个人读到哪。 */
+function logVisit(comic, req, event = 'view', extra = {}) {
   const share = comic.share;
   if (!share) return;
   share.logs = share.logs || [];
   const ip = String(req.headers['x-forwarded-for'] || req.ip || req.socket?.remoteAddress || '')
     .split(',')[0]
     .trim();
-  share.logs.unshift({
-    ts: now(),
-    event,
-    ip,
-    ua: String(req.headers['user-agent'] || '').slice(0, 180),
-  });
+  const ua = String(req.headers['user-agent'] || '').slice(0, 180);
+  const vid = extra.visitorId ? String(extra.visitorId).slice(0, 64) : '';
+  if (vid) {
+    const i = share.logs.findIndex((l) => l.visitorId === vid);
+    const prev = i >= 0 ? share.logs[i] : null;
+    if (prev) share.logs.splice(i, 1);
+    share.logs.unshift({
+      ts: now(),
+      event,
+      ip,
+      ua,
+      visitorId: vid,
+      visits: (Number(prev?.visits) || 0) + 1,
+      position: extra.position || prev?.position || '',
+      chapterTitle: extra.chapterTitle || prev?.chapterTitle || '',
+    });
+  } else {
+    share.logs.unshift({ ts: now(), event, ip, ua });
+  }
   if (share.logs.length > 200) share.logs.length = 200;
 }
 
-function publicComic(comic) {
+function publicComic(comic, visitorId) {
   const cover = coverOf(comic);
   const chapters = sharedChapters(comic);
   const token = comic.share?.token;
+  /* 同一访客的上次阅读位置：按匿名 visitorId 续读。章节若已被分享者移出范围则忽略 */
+  const saved = String(visitorId || '') ? (comic.share?.progress || {})[String(visitorId)] : null;
+  let resume = null;
+  if (saved) {
+    const ch = chapters.find((c) => c.id === saved.chapterId);
+    if (ch) {
+      resume = {
+        chapterId: ch.id,
+        chapterTitle: ch.title || '',
+        pageIndex: Math.max(0, Math.min((ch.pages?.length || 1) - 1, Number(saved.pageIndex) || 0)),
+        chapterIndex: chapters.indexOf(ch),
+        ts: saved.ts || 0,
+      };
+    }
+  }
   const withShare = (u) => (token ? `${u}${u.includes('?') ? '&' : '?'}share=${encodeURIComponent(token)}` : u);
   return {
     id: comic.id,
@@ -287,6 +317,7 @@ function publicComic(comic) {
       hasPassword: !!comic.share?.passwordHash,
       chapterIds: comic.share?.chapterIds || [],
       partial: (comic.share?.chapterIds || []).length > 0,
+      resume,
     },
   };
 }
@@ -1440,10 +1471,38 @@ function shareAccess(req, res, next) {
 
 app.get('/api/share/:token', shareAccess, (req, res) => {
   const comic = req.sharedComic;
+  const vid = String(req.query?.visitorId || '').slice(0, 64);
   comic.share.views = (comic.share.views || 0) + 1;
-  logVisit(comic, req, 'view');
+  logVisit(comic, req, 'view', vid ? { visitorId: vid } : {});
   saveDbSoon();
-  res.json(publicComic(comic));
+  res.json(publicComic(comic, vid));
+});
+
+/** 访客上报阅读位置：按匿名 visitorId 记在该分享下，重开链接可续读；
+ *  同时刷新「同一访问记录」上的阅读位置，供分享者在访问记录里查看。 */
+app.post('/api/share/:token/progress', shareAccess, (req, res) => {
+  const comic = req.sharedComic;
+  const vid = String(req.body?.visitorId || '').slice(0, 64);
+  if (!vid) return res.status(400).json({ error: '缺少访客标识' });
+  const chapters = sharedChapters(comic);
+  const ch = chapters.find((c) => c.id === String(req.body?.chapterId || '')) || chapters[0];
+  if (!ch) return res.json({ ok: false });
+  const pageIndex = Math.max(0, Math.min(Math.max(0, (ch.pages?.length || 1) - 1),
+    Number(req.body?.pageIndex) || 0));
+  comic.share.progress = comic.share.progress || {};
+  comic.share.progress[vid] = {
+    chapterId: ch.id,
+    chapterTitle: ch.title || '',
+    pageIndex,
+    ts: now(),
+  };
+  logVisit(comic, req, 'read', {
+    visitorId: vid,
+    position: `第 ${chapters.indexOf(ch) + 1} 话 · 第 ${pageIndex + 1} 页`,
+    chapterTitle: ch.title || '',
+  });
+  saveDbSoon();
+  res.json({ ok: true, resume: comic.share.progress[vid] });
 });
 
 app.post('/api/share/:token/unlock', (req, res) => {
@@ -2027,7 +2086,13 @@ if (fs.existsSync(distDir)) {
     // 改由浏览器端带地址栏里仍存在的 sharecode 跳转，凭据不丢。
     if (!req.path.startsWith('/comic-vault/')) {
       const html = fs.readFileSync(indexHtml, 'utf8');
-      const inject = "<script>location.replace('/comic-vault/'+location.search+location.hash);</script>";
+      /* /s/:token 深链也要带上令牌再落到 /comic-vault/?s=token，否则跳转后
+         地址栏只剩 /comic-vault/，分享落地页会判定「分享不存在」。
+         URLSearchParams 会保留地址栏里的 sharecode 网关凭据，不会丢。 */
+      const inject = "<script>(function(){var m=/^\\/s\\/([^/]+)\\/?$/.exec(location.pathname);"
+        + "if(m){var q=new URLSearchParams(location.search);q.set('s',decodeURIComponent(m[1]));"
+        + "location.replace('/comic-vault/?'+q.toString()+location.hash);return;}"
+        + "location.replace('/comic-vault/'+location.search+location.hash);})();</script>";
       return res.type('html').send(html.replace('</head>', inject + '</head>'));
     }
     res.sendFile(indexHtml);

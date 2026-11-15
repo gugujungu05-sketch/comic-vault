@@ -728,6 +728,30 @@ textarea {
 .reader-nav.prev { left: 0; }
 .reader-nav.next { right: 0; }
 
+/* ---------- 分享（只读）阅读：沉浸式，按键收进设置面板，不压画面 ---------- */
+.r-advanced-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.reader-readonly .r-advanced-group { display: none; }
+.reader-readonly .reader-top {
+  gap: 8px; padding: 8px 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent);
+}
+.reader-readonly .reader-bottom {
+  padding: 6px 10px 8px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.55), transparent);
+}
+.reader-readonly .reader-info { max-width: 44vw; font-size: 13px; }
+/* 沉浸态只在角落留一个半透明小点，用来唤出菜单 */
+.reader-peek {
+  position: absolute; top: 10px; right: 12px; z-index: 6;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(18, 20, 26, 0.34); color: #fff;
+  backdrop-filter: blur(6px); cursor: pointer; opacity: 0.42;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.reader-peek:hover { opacity: 1; transform: scale(1.08); }
+
 .reader-panel {
   position: absolute;
   top: 0;
@@ -2012,6 +2036,17 @@ textarea {
 }
 .share-chapter-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .share-foot { margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; }
+
+/* 分享落地页：单话 / 多话 / 整本下载 + 续读位置 */
+.share-chapters-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.share-chapters-head h2 { margin-bottom: 12px; }
+.share-chapter-row { display: flex; align-items: center; gap: 8px; }
+.share-chapter-row > input[type='checkbox'] { flex: none; width: 18px; height: 18px; accent-color: var(--accent); }
+.share-chapter-row .share-chapter { flex: 1; min-width: 0; width: auto; }
+.share-chapter-dl { flex: 0 0 auto; white-space: nowrap; }
+.share-pick-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0 12px; }
+.share-pick-bar .grow { flex: 1; }
+.share-resume-tag { font-size: 12px; font-weight: 500; opacity: 0.85; margin-left: 6px; }
 @media (max-width: 768px) {
   .share-landing { padding: 0 12px 48px; }
   .share-topbar-note { display: none; }

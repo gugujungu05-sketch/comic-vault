@@ -530,9 +530,26 @@ export const api = {
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
     ),
 
-  getShared: (token: string, password?: string) =>
-    request<PublicComic>(`/api/share/${token}`, {
+  getShared: (token: string, password?: string, visitorId?: string) => {
+    const q = visitorId ? `?visitorId=${encodeURIComponent(visitorId)}` : '';
+    return request<PublicComic>(`/api/share/${token}${q}`, {
       headers: password ? { 'x-share-password': password } : undefined,
+    });
+  },
+
+  /** 访客上报阅读位置（同一访客重开链接可续读，访问记录里也会显示读到哪） */
+  reportShareProgress: (
+    token: string,
+    body: { visitorId: string; chapterId: string; pageIndex: number },
+    password?: string,
+  ) =>
+    request<{ ok: boolean }>(`/api/share/${token}/progress`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(password ? { 'x-share-password': password } : {}),
+      },
+      body: JSON.stringify(body),
     }),
 
   unlockShare: (token: string, password: string) =>
@@ -914,6 +931,14 @@ export interface PublicComic {
     hasPassword: boolean;
     chapterIds?: string[];
     partial?: boolean;
+    /** 同一访客上次读到的位置，null 表示没有记录 */
+    resume?: {
+      chapterId: string;
+      chapterTitle: string;
+      pageIndex: number;
+      chapterIndex: number;
+      ts: number;
+    } | null;
   };
 }
 

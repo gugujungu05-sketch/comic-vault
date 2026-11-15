@@ -10,6 +10,11 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.ContentValues;
+import android.provider.MediaStore;
+import android.media.MediaScannerConnection;
+import android.os.Build;
+import android.util.Base64;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -66,7 +71,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.9";
+    private static final String APP_VERSION = "3.4.0.10";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";
@@ -679,6 +684,149 @@ public class MainActivity extends Activity {
         @JavascriptInterface public String closeReader() {
             runOnUiThread(() -> web.loadUrl(LOCAL_APP_URL));
             return "{}";
+        }
+
+        /** 把服务器上的一张图片读成 data URL。file:// 页面无法直接 fetch http 图片，
+         *  由 Java 代理取回字节，供 saveImage 写进相册（阅读器「保存本页」用）。 */
+        @JavascriptInterface public String imageToDataUrl(String url) {
+            try {
+                String u = String.valueOf(url);
+                if (!u.startsWith("http://") && !u.startsWith("https://")) return "";
+                HttpURLConnection conn = (HttpURLConnection) new URL(u).openConnection();
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(30000);
+                String cookie = CookieManager.getInstance().getCookie(currentUrl);
+                if (cookie != null) conn.setRequestProperty("Cookie", cookie);
+                conn.setRequestProperty("Accept", "image/*");
+                String mime = conn.getContentType();
+                if (mime == null || !mime.startsWith("image/")) mime = "image/jpeg";
+                mime = mime.split(";")[0].trim();
+                java.io.InputStream is = conn.getInputStream();
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+                is.close();
+                conn.disconnect();
+                return "data:" + mime + ";base64," + Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        /** 保存一张图片到系统相册 Pictures/ComicVault（分享二维码 / 阅读器单页通用）。
+         *  Android WebView 里 <a download> 对 data URL 不会触发任何下载，以前表现为
+         *  「点『保存二维码』没反应」；这里统一由 Java 用 MediaStore 落盘并给 Toast 反馈。 */
+        @JavascriptInterface public String saveImage(String dataUrl, String name) {
+            try {
+                String s = String.valueOf(dataUrl);
+                int comma = s.indexOf(",");
+                if (!s.startsWith("data:image/") || comma < 0) {
+                    return "{\"ok\":false,\"error\":\"图片数据无效\"}";
+                }
+                String head = s.substring(0, comma);
+                byte[] bytes = Base64.decode(s.substring(comma + 1), Base64.DEFAULT);
+                String mime = head.contains("image/png") ? "image/png"
+                        : head.contains("image/webp") ? "image/webp"
+                        : head.contains("image/gif") ? "image/gif"
+                        : head.contains("image/bmp") ? "image/bmp" : "image/jpeg";
+                String ext = "image/png".equals(mime) ? ".png"
+                        : "image/webp".equals(mime) ? ".webp"
+                        : "image/gif".equals(mime) ? ".gif"
+                        : "image/bmp".equals(mime) ? ".bmp" : ".jpg";
+                String safe = String.valueOf(name).replaceAll("[^a-zA-Z0-9._\\-\\u4e00-\\u9fa5]", "_");
+                if (safe.length() > 80) safe = safe.substring(0, 80);
+                if (safe.isEmpty()) safe = "ComicVault-图片";
+                final String display = safe + ext;
+                final String result;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentValues cv = new ContentValues();
+                    cv.put(MediaStore.Images.Media.DISPLAY_NAME, display);
+                    cv.put(MediaStore.Images.Media.MIME_TYPE, mime);
+                    cv.put(MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES + "/ComicVault");
+                    Uri uri = getContentResolver().insert(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+                    if (uri == null) throw new IllegalStateException("无法创建相册条目");
+                    OutputStream os = getContentResolver().openOutputStream(uri);
+                    if (os == null) throw new IllegalStateException("无法写入相册");
+                    os.write(bytes);
+                    os.flush();
+                    os.close();
+                    result = Environment.DIRECTORY_PICTURES + "/ComicVault/" + display;
+                } else {
+                    java.io.File dir = new java.io.File(
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                            "ComicVault");
+                    if (!dir.exists() && !dir.mkdirs()) {
+                        throw new IllegalStateException("无法创建图片目录");
+                    }
+                    java.io.File f = new java.io.File(dir, display);
+                    java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+                    fos.write(bytes);
+                    fos.flush();
+                    fos.close();
+                    MediaScannerConnection.scanFile(MainActivity.this,
+                            new String[]{f.getAbsolutePath()}, new String[]{mime}, null);
+                    result = f.getAbsolutePath();
+                }
+                runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                        "已保存到相册：" + display, Toast.LENGTH_LONG).show());
+                try {
+                    return new JSONObject().put("ok", true).put("path", result).toString();
+                } catch (Exception e) {
+                    return "{\"ok\":true}";
+                }
+            } catch (Exception e) {
+                try {
+                    return new JSONObject().put("ok", false)
+                            .put("error", String.valueOf(e.getMessage()).replace("\"", "'")).toString();
+                } catch (Exception x) {
+                    return "{\"ok\":false}";
+                }
+            }
+        }
+
+        /** 下载服务器上的文件（按话 / 整本导出）到公共「下载」目录，通知栏可见。
+         *  与桌面端 cv:save-api-file 对齐，让手机端也能选择单话 / 多话 / 整本下载。 */
+        @JavascriptInterface public String saveApiFile(String apiPath, String defaultName) {
+            try {
+                String p = String.valueOf(apiPath);
+                Uri base = Uri.parse(currentUrl);
+                String code = base.getQueryParameter("sharecode");
+                int q = p.indexOf('?');
+                String pathPart = q >= 0 ? p.substring(0, q) : p;
+                String queryPart = q >= 0 ? p.substring(q + 1) : "";
+                String url = base.buildUpon().path(pathPart).clearQuery().build().toString();
+                if (!queryPart.isEmpty()) url += "?" + queryPart;
+                if (code != null && !queryPart.contains("sharecode=")) {
+                    url += (queryPart.isEmpty() ? "?" : "&") + "sharecode=" + Uri.encode(code);
+                }
+                String name = String.valueOf(defaultName)
+                        .replaceAll("[^a-zA-Z0-9._\\-\\u4e00-\\u9fa5]", "_");
+                if (name.isEmpty()) name = "ComicVault-export.cbz";
+                DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                if (dm == null) throw new IllegalStateException("no download service");
+                DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+                req.setTitle(name);
+                req.setDescription("漫画库导出文件");
+                req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+                String cookie = CookieManager.getInstance().getCookie(currentUrl);
+                if (cookie != null) req.addRequestHeader("Cookie", cookie);
+                dm.enqueue(req);
+                final String msg = "开始下载：" + name + "，完成后在「下载」目录查看";
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show());
+                return new JSONObject().put("ok", true)
+                        .put("path", Environment.DIRECTORY_DOWNLOADS + "/" + name).toString();
+            } catch (Exception e) {
+                try {
+                    return new JSONObject().put("ok", false)
+                            .put("error", String.valueOf(e.getMessage()).replace("\"", "'")).toString();
+                } catch (Exception x) {
+                    return "{\"ok\":false}";
+                }
+            }
         }
     }
 

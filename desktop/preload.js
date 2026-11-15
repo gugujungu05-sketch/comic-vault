@@ -2,7 +2,7 @@
 /** 本地界面专用桥：只暴露最小 API，页面拿不到 Node 能力 */
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const VERSION = '3.4.0.9';
+const VERSION = '3.4.0.10';
 
 contextBridge.exposeInMainWorld('cvApp', {
   version: VERSION,
@@ -51,6 +51,10 @@ contextBridge.exposeInMainWorld('cvApp', {
 
   /* 下载服务器上的文件（如 CBZ 导出）到用户选择的位置 */
   saveApiFile: (apiPath, defaultName) => ipcRenderer.invoke('cv:save-api-file', apiPath, defaultName),
+  /* 保存一张图片到本地（分享二维码 / 阅读器单页）：绕开 <a download> 对 data URL 无反应 */
+  saveImage: (dataUrl, nameHint) => ipcRenderer.invoke('cv:save-image', dataUrl, nameHint),
+  /* 把服务器图片读成 data URL，供 saveImage 落盘 */
+  imageToDataUrl: (url) => ipcRenderer.invoke('cv:image-to-data-url', url),
 
   /* 原生菜单动作 */
   onMenu: (cb) => ipcRenderer.on('cv:menu', (_e, action) => cb(action)),

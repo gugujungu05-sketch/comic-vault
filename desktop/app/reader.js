@@ -199,6 +199,50 @@
     if (Host.toggleFullscreen) Host.toggleFullscreen();
     else document.documentElement.requestFullscreen?.().catch(() => {});
   };
+
+  /* 阅读器内轻量提示：借用页码位置临时显示，2.8 秒后由 draw() 复原 */
+  function toastR(msg) {
+    const el = $('#pageInfo');
+    if (!el) return;
+    el.textContent = msg;
+    clearTimeout(toastR._t);
+    toastR._t = setTimeout(() => { if (el.textContent === msg) draw(); }, 2800);
+  }
+  /* 保存当前这一页图片：宿主把图片读成 data URL，再落到本地磁盘 / 手机相册。
+     WebView 与 Electron 里 <a download> 对图片 URL 无效，必须走宿主桥。 */
+  $('#btnSave').onclick = async () => {
+    if (isNovel) return toastR('小说没有图片可保存');
+    const p = pages[index];
+    if (!p) return toastR('这一话还没有页面');
+    const ch = (comic.chapters || []).find((c) => c.id === chapterId);
+    const name = `${comic.title}-${ch?.title || '漫画'}-第${index + 1}页`;
+    let dataUrl = '';
+    try {
+      if (Host.imageToDataUrl) dataUrl = await Host.imageToDataUrl(pageSrc(p));
+      if (!dataUrl) {
+        const res = await fetch(pageSrc(p));
+        const blob = await res.blob();
+        dataUrl = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result || ''));
+          fr.onerror = reject;
+          fr.readAsDataURL(blob);
+        });
+      }
+    } catch { /* 下面统一提示 */ }
+    if (!dataUrl) return toastR('读取图片失败，请重试');
+    if (Host.saveImage) {
+      const r = await Host.saveImage(dataUrl, name);
+      return toastR(r?.ok ? `已保存：${r.path || '图片'}` : (r?.error || '保存失败'));
+    }
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${name}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toastR('已触发下载');
+  };
   $('#stage').addEventListener('click', (e) => {
     const b = e.target.closest('[data-ch]');
     if (b) goChapter(Number(b.dataset.ch));

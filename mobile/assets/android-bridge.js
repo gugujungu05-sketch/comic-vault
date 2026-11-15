@@ -6,7 +6,7 @@
   if (!A) return;
   var j = function (s) { try { return JSON.parse(s); } catch (e) { return {}; } };
   window.CVAndroid = {
-    version: '3.4.0.9',
+    version: '3.4.0.10',
     platform: 'android',
     api: function (o) {
       return Promise.resolve().then(function () { return j(A.api(JSON.stringify(o))); });
@@ -57,6 +57,28 @@
     pickFolder: function () { return window.CVAndroid.pickFiles(); },
     resolvePaths: function (p) { return Promise.resolve(p || []); },
     /* 同步返回选中图片的缩略图 data URL，供导入网格预览 */
-    thumb: function (id) { try { return A.thumb(id) || ''; } catch (e) { return ''; } }
+    thumb: function (id) { try { return A.thumb(id) || ''; } catch (e) { return ''; } },
+    /* 保存一张图片到系统相册（分享二维码 / 阅读器单页）。
+       WebView 里 <a download> 对 data URL 完全不生效，必须由 Java 侧 MediaStore 落盘。 */
+    saveImage: function (dataUrl, name) {
+      try {
+        if (typeof A.saveImage !== 'function') return Promise.resolve({ ok: false, unsupported: true });
+        return Promise.resolve(j(A.saveImage(dataUrl, name)));
+      } catch (e) { return Promise.resolve({ ok: false, error: String(e) }); }
+    },
+    /* 下载服务器上的文件（分话 / 整本导出）到公共「下载」目录 */
+    saveApiFile: function (apiPath, defaultName) {
+      try {
+        if (typeof A.saveApiFile !== 'function') return Promise.resolve({ ok: false, unsupported: true });
+        return Promise.resolve(j(A.saveApiFile(apiPath, defaultName)));
+      } catch (e) { return Promise.resolve({ ok: false, error: String(e) }); }
+    },
+    /* 把一张图片 URL 读成 data URL（阅读器单页保存用），带 sharecode 凭据 */
+    imageToDataUrl: function (url) {
+      try {
+        if (typeof A.imageToDataUrl !== 'function') return Promise.resolve('');
+        return Promise.resolve(A.imageToDataUrl(url) || '');
+      } catch (e) { return Promise.resolve(''); }
+    }
   };
 })();

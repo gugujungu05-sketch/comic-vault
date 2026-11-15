@@ -134,13 +134,32 @@ export function ShareDialog({
     }
   }
 
-  function downloadQr() {
+  async function downloadQr() {
     const img = document.getElementById('cv-share-qr') as HTMLImageElement | null;
-    if (!img?.src) return;
-    const a = document.createElement('a');
-    a.href = img.src;
-    a.download = `${comic.title}-分享二维码.png`;
-    a.click();
+    if (!img?.src) { toast('二维码还在生成中，请稍后再试', 'err'); return; }
+    const name = `${comic.title}-分享二维码.png`.replace(/[\\/:*?"<>|]/g, '_');
+    try {
+      /* 走 blob URL 再触发下载，比直接把 data URL 塞进 a[href] 兼容性更好，
+         某些浏览器 / 内嵌 WebView 对 data URL 的 download 属性是无反应的 */
+      const blob = await (await fetch(img.src)).blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      toast('二维码已保存', 'ok');
+    } catch {
+      const a = document.createElement('a');
+      a.href = img.src;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('已触发下载', 'ok');
+    }
   }
 
   /** 直接把二维码图片写进剪贴板，方便粘贴到微信 / QQ；不支持时回退为图片地址 */
@@ -408,7 +427,7 @@ export function ShareDialog({
         <>
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <span style={{ color: 'var(--muted)', fontSize: 12 }}>
-              最近 200 条访问 / 下载记录（含时间、来源 IP、设备）
+              同一访客合并为一条，显示访问次数、时间与最近阅读位置
             </span>
             <div className="row" style={{ gap: 6 }}>
               <button className="btn sm ghost" onClick={loadLogs}>
@@ -428,9 +447,18 @@ export function ShareDialog({
               {logs.map((l, i) => (
                 <div className="li" key={`${l.ts}-${i}`}>
                   <span className={`chip ${l.event.startsWith('download') ? 'active' : ''}`}>
-                    {l.event.startsWith('download') ? `下载 ${l.event.split(':')[1]?.toUpperCase() || ''}` : '阅读'}
+                    {l.event.startsWith('download')
+                      ? `下载 ${l.event.split(':')[1]?.toUpperCase() || ''}`
+                      : l.event === 'read' ? '阅读' : '访问'}
                   </span>
-                  <span className="grow" style={{ fontSize: 12 }}>{formatDate(l.ts)}</span>
+                  <span className="grow" style={{ fontSize: 12, minWidth: 0 }}>
+                    <div>{formatDate(l.ts)}{l.visits ? ` · 第 ${l.visits} 次访问` : ''}</div>
+                    {l.position ? (
+                      <div style={{ color: 'var(--accent)', marginTop: 2 }}>
+                        读到 {l.position}{l.chapterTitle ? ` · ${l.chapterTitle}` : ''}
+                      </div>
+                    ) : null}
+                  </span>
                   <span style={{ color: 'var(--muted)', fontSize: 12 }}>{l.ip || '未知来源'}</span>
                 </div>
               ))}

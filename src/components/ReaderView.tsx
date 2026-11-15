@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Chapter, ReaderFilter, ReaderPrefs } from '../types';
 import { Icon } from './Icon';
 import { PageEditor } from './PageEditor';
+import { saveImageToDevice } from '../lib/util';
+import { useToast } from './Toasts';
 
 type Mode = 'single' | 'double' | 'continuous' | 'webtoon';
 type Fit = 'contain' | 'width' | 'height' | 'original';
@@ -61,6 +63,7 @@ export function ReaderView({
   comicId?: string;
   onPagesChanged?: (chapter: Chapter) => void;
 }) {
+  const toast = useToast();
   const prefs = useRef(loadPrefs()).current;
   const [chapterIndex, setChapterIndex] = useState(() => {
     const i = chapters.findIndex((c) => c.id === initialChapterId);
@@ -71,8 +74,9 @@ export function ReaderView({
   const [mode, setMode] = useState<Mode>(prefs.mode);
   const [fit, setFit] = useState<Fit>(prefs.fit);
   const [zoom, setZoom] = useState(1);
-  const [uiVisible, setUiVisible] = useState(true);
-  const [panel, setPanel] = useState<'toc' | 'pages' | 'filter' | null>(null);
+  /* 分享（只读）阅读默认沉浸：一进来就是纯画面，工具栏收起不挡内容 */
+  const [uiVisible, setUiVisible] = useState(!readOnly);
+  const [panel, setPanel] = useState<'toc' | 'pages' | 'filter' | 'settings' | null>(null);
   const [help, setHelp] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [filter, setFilter] = useState<ReaderFilter>(prefs.filter);
@@ -174,11 +178,27 @@ export function ReaderView({
   }, []);
 
   useEffect(() => {
-    poke();
+    /* 分享阅读保持沉浸：不在挂载时把工具栏弹出来 */
+    if (!readOnly) poke();
     return () => {
       if (hideTimer.current) clearTimeout(hideTimer.current);
     };
-  }, [poke]);
+  }, [poke, readOnly]);
+
+  /* 分享阅读时鼠标移到画面中部不再误触发工具栏，只有靠近上下边缘才唤出 */
+  const onEdgeMove = useCallback((e: React.MouseEvent) => {
+    if (!readOnly) { poke(); return; }
+    const h = window.innerHeight;
+    if (e.clientY < 72 || e.clientY > h - 72) poke();
+  }, [poke, readOnly]);
+
+  async function saveCurrentPage() {
+    const p = currentPages[0] || chapter?.pages[pageIndex];
+    if (!p?.url) { toast('这一页还没有图片', 'err'); return; }
+    const name = `${title}-${chapter?.title || '漫画'}-第${pageIndex + 1}页`;
+    const ok = await saveImageToDevice(p.url, name);
+    toast(ok ? '本页图片已保存' : '已打开图片，可长按保存', ok ? 'ok' : 'err');
+  }
 
   /** 显式切换上一话 / 下一话，并回到该话开头 */
   const goChapter = useCallback((delta: number) => {
@@ -279,7 +299,14 @@ export function ReaderView({
   function onStageClick(e: React.MouseEvent) {
     if (mode === 'continuous' || mode === 'webtoon') return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const leftSide = e.clientX - rect.left < rect.width / 2;
+    const x = (e.clientX - rect.left) / Math.max(1, rect.width);
+    /* 点画面正中间唤出 / 收起工具栏：左右区域仍是翻页，不再靠两个大按钮盖住画面 */
+    if (x > 0.34 && x < 0.66 && readOnly) {
+      if (uiVisible) setUiVisible(false);
+      else poke();
+      return;
+    }
+    const leftSide = x < 0.5;
     if (rtl) leftSide ? goNext() : goPrev();
     else leftSide ? goPrev() : goNext();
   }
@@ -340,14 +367,20 @@ export function ReaderView({
 
   return (
     <div
-      className="reader"
-      onMouseMove={poke}
+      className={`reader${readOnly ? ' reader-readonly' : ''}`}
+      onMouseMove={onEdgeMove}
       onTouchStart={onTouchBegin}
       onTouchEnd={onTouchFinish}
       onTouchCancel={() => {
         touchStart.current = null;
       }}
     >
+      {/* 沉浸时只在角落留一个极小的唤出点，不再有一整排按键压在画面上 */}
+      {readOnly && !uiVisible && (
+        <button className="reader-peek" onClick={poke} title="显示阅读菜单" aria-label="显示阅读菜单">
+          <Icon name="menu" size={16} />
+        </button>
+      )}
       <div className={`reader-top ${uiVisible ? '' : 'hidden'}`}>
         <button className="btn sm ghost" onClick={onExit} title="返回">
           <Icon name="left" size={16} />
@@ -358,6 +391,17 @@ export function ReaderView({
         </div>
 
         <div className="row" style={{ marginLeft: 'auto', gap: 6 }}>
+          {readOnly && (
+            <>
+              <button className="btn sm ghost" onClick={saveCurrentPage} title="保存当前这一页图片">
+                <Icon name="download" size={15} /> 存本页
+              </button>
+              <button className="btn sm ghost" onClick={() => setPanel(panel === 'settings' ? null : 'settings')} title="阅读设置">
+                <Icon name="menu" size={15} /> 设置
+              </button>
+            </>
+          )}
+          <div className="r-advanced-group">
           <button
             className={`btn sm ${mode === 'single' ? 'primary' : 'ghost'}`}
             onClick={() => setMode('single')}
@@ -433,6 +477,7 @@ export function ReaderView({
           <button className="btn sm ghost" onClick={toggleFullscreen} title="全屏 (F)">
             <Icon name="fullscreen" size={15} />
           </button>
+          </div>
           {headerExtra}
         </div>
       </div>
@@ -501,12 +546,8 @@ export function ReaderView({
         )}
       </div>
 
-      {mode !== 'continuous' && mode !== 'webtoon' && (
-        <>
-          <button className="reader-nav prev" onClick={goPrev} aria-label="上一页" />
-          <button className="reader-nav next" onClick={goNext} aria-label="下一页" />
-        </>
-      )}
+      {/* 不再用两个占屏幕 2/3 宽的透明按钮盖住画面：点击画面左右区域即可翻页
+          （onStageClick），中间点一下唤出菜单，图片本身也能正常长按 / 点击。 */}
 
       <div className={`reader-bottom ${uiVisible ? '' : 'hidden'}`}>
         <div className="row" style={{ gap: 10 }}>
@@ -581,8 +622,8 @@ export function ReaderView({
       {panel && (
         <div className="reader-panel">
           <header>
-            <Icon name={panel === 'toc' ? 'list' : panel === 'pages' ? 'grid' : 'eye'} size={16} />
-            {panel === 'toc' ? '目录' : panel === 'pages' ? '页面' : '画面'}
+            <Icon name={panel === 'toc' ? 'list' : panel === 'pages' ? 'grid' : panel === 'settings' ? 'menu' : 'eye'} size={16} />
+            {panel === 'toc' ? '目录' : panel === 'pages' ? '页面' : panel === 'settings' ? '阅读设置' : '画面'}
             <button className="btn icon ghost" style={{ marginLeft: 'auto' }} onClick={() => setPanel(null)}>
               <Icon name="close" size={16} />
             </button>
@@ -625,6 +666,62 @@ export function ReaderView({
                     {p.wide && <span className="wide-tag">跨页</span>}
                   </button>
                 ))}
+              </div>
+            ) : panel === 'settings' ? (
+              <div style={{ display: 'grid', gap: 16 }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>阅读模式</div>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    {([
+                      ['single', '单页'],
+                      ['double', '双页'],
+                      ['continuous', '上下滚动'],
+                      ['webtoon', '条漫'],
+                    ] as [Mode, string][]).map(([k, label]) => (
+                      <button
+                        key={k}
+                        className={`chip ${mode === k ? 'active' : ''}`}
+                        type="button"
+                        onClick={() => { setMode(k); if (k === 'webtoon') setFit('width'); }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>画面与导航</div>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    <button className="btn sm ghost" onClick={() => setDirection(rtl ? 'ltr' : 'rtl')}>
+                      方向：{rtl ? '从右往左 RTL' : '从左往右 LTR'}
+                    </button>
+                    <button className="btn sm ghost" onClick={() => setPanel('filter')}>滤镜 / 亮度</button>
+                    <button className="btn sm ghost" onClick={() => setPanel('toc')}>目录</button>
+                    <button className="btn sm ghost" onClick={() => setPanel('pages')}>页面导航</button>
+                    <button className="btn sm ghost" onClick={toggleFullscreen}>全屏</button>
+                  </div>
+                </div>
+                <div className="field">
+                  <label>页面适配</label>
+                  <select className="select" value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
+                    <option value="contain">适应屏幕</option>
+                    <option value="width">适应宽度</option>
+                    <option value="height">适应高度</option>
+                    <option value="original">原始尺寸</option>
+                  </select>
+                </div>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>智能双页</div>
+                    <div style={{ color: 'var(--muted)', fontSize: 12 }}>识别跨页大图并让它独占一屏</div>
+                  </div>
+                  <button className={`switch ${smartDouble ? 'on' : ''}`} onClick={() => setSmartDouble(!smartDouble)} aria-label="智能双页">
+                    <span className="knob" />
+                  </button>
+                </div>
+                <div style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.8 }}>
+                  点画面左右两侧翻页，点正中间显示 / 收起菜单。工具栏会自动隐藏，画面不再被按键挡住。
+                </div>
               </div>
             ) : (
               <div style={{ display: 'grid', gap: 14 }}>

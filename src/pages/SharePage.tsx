@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api, shareExportUrl, type PublicComic } from '../lib/api';
 import { ReaderView } from '../components/ReaderView';
 import { ExportDialog } from '../components/ExportDialog';
@@ -7,9 +7,28 @@ import { Icon } from '../components/Icon';
 import { downloadUrl } from '../lib/util';
 import { useToast } from '../components/Toasts';
 
+/** 同一访客用同一个匿名标识：重开链接能续读，访问记录也按这个人合并成一条 */
+function visitorIdFor(token: string): string {
+  const key = `cv-share-vid-${token.slice(0, 12)}`;
+  try {
+    let v = localStorage.getItem(key);
+    if (!v) {
+      v = `v_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem(key, v);
+    }
+    return v;
+  } catch {
+    return `v_${Math.random().toString(36).slice(2, 12)}`;
+  }
+}
+
 /** 分享链接落地页：先把「这是什么、有几话、能不能下载」讲清楚，再进入阅读器 */
 export function SharePage() {
-  const { token } = useParams();
+  const { token: routeToken } = useParams();
+  const location = useLocation();
+  /** 兼容两种入口：/s/:token（深链）与 /comic-vault/?s=token（200 直达，二维码/扫码用） */
+  const token = routeToken || new URLSearchParams(location.search).get('s') || '';
+  const visitorId = useRef(visitorIdFor(token)).current;
   const navigate = useNavigate();
   const toast = useToast();
   const [data, setData] = useState<PublicComic | null>(null);
@@ -19,15 +38,24 @@ export function SharePage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [exportMode, setExportMode] = useState<'all' | 'single' | 'multi'>('all');
+  const [exportSelected, setExportSelected] = useState<string[]>([]);
   const [reading, setReading] = useState(false);
   const [startChapterId, setStartChapterId] = useState<string | undefined>();
+  const [startPageIndex, setStartPageIndex] = useState(0);
+  const [pickMode, setPickMode] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const lastReport = useRef(0);
+  const reportTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingReport = useRef<{ chapterId: string; pageIndex: number } | null>(null);
+  const resume = data?.share?.resume || null;
 
   async function load(pwd?: string) {
     if (!token) return;
     setLoading(true);
     setError('');
     try {
-      const res = await api.getShared(token, pwd);
+      const res = await api.getShared(token, pwd, visitorId);
       setData(res);
       setPassword(pwd || '');
       setNeedPassword(false);
@@ -58,15 +86,52 @@ export function SharePage() {
     }
   }
 
-  function downloadCbz() {
-    const url = shareExportUrl(token!, 'cbz', undefined, password || undefined);
+  /** 阅读位置节流上报：同一访客的进度存服务端，重开链接可续读。
+   *  带尾随上报，保证「最后一页」不会被节流吞掉。 */
+  const reportProgress = useCallback(
+    (chapterId: string, pageIndex: number) => {
+      pendingReport.current = { chapterId, pageIndex };
+      const send = (p: { chapterId: string; pageIndex: number }) => {
+        lastReport.current = Date.now();
+        api.reportShareProgress(token, { visitorId, ...p }, password || undefined).catch(() => {});
+      };
+      const gap = Date.now() - lastReport.current;
+      if (gap < 2000) {
+        if (!reportTimer.current) {
+          reportTimer.current = setTimeout(() => {
+            reportTimer.current = null;
+            if (pendingReport.current) send(pendingReport.current);
+          }, 2000 - gap + 30);
+        }
+        return;
+      }
+      if (reportTimer.current) { clearTimeout(reportTimer.current); reportTimer.current = null; }
+      send({ chapterId, pageIndex });
+    },
+    [token, visitorId, password],
+  );
+
+  function downloadChapters(ids: string[], fmt = 'cbz') {
+    const url = shareExportUrl(token, fmt, ids.length ? ids : undefined, password || undefined);
     downloadUrl(url);
-    toast('已开始下载 CBZ');
+    toast(ids.length === 1 ? '已开始下载本话' : ids.length ? `已开始下载 ${ids.length} 话` : '已开始下载整本');
   }
 
-  function openChapter(chapterId?: string) {
+  function openExport(mode: 'all' | 'single' | 'multi', selected: string[] = []) {
+    setExportMode(mode);
+    setExportSelected(selected);
+    setExporting(true);
+  }
+
+  /** fromStart=true 从该话第 1 页开始；继续阅读时沿用上次的页码 */
+  function openChapter(chapterId?: string, fromStart = true) {
     setStartChapterId(chapterId);
+    setStartPageIndex(fromStart ? 0 : (resume?.pageIndex ?? 0));
     setReading(true);
+  }
+
+  function togglePick(id: string) {
+    setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   if (loading) {
@@ -130,11 +195,13 @@ export function SharePage() {
       chapters={chapters}
       shareToken={token || null}
       sharePassword={password || undefined}
+      initialMode={exportMode}
+      initialSelected={exportSelected}
       onClose={() => setExporting(false)}
     />
   ) : null;
 
-  /* 阅读视图：顶栏保留「返回封面」，去掉遮住画面的浮动下载按钮 */
+  /* 阅读视图：顶栏只留返回 / 封面 / 下载 / 保存本页，其余收进设置面板，尽量不挡画面 */
   if (reading) {
     return (
       <>
@@ -143,19 +210,19 @@ export function SharePage() {
           chapters={chapters}
           direction={data.direction}
           initialChapterId={startChapterId}
+          initialPageIndex={startPageIndex}
           readOnly
+          onProgress={reportProgress}
           onExit={() => setReading(false)}
           headerExtra={
             <>
               <button className="btn sm ghost" onClick={() => setReading(false)} title="返回封面">
                 <Icon name="book" size={15} /> 封面
               </button>
-              {canDownload ? (
-                <button className="btn sm ghost" onClick={() => setExporting(true)} title="下载到本地">
+              {canDownload && (
+                <button className="btn sm ghost" onClick={() => openExport('all')} title="下载到本地">
                   <Icon name="download" size={15} />
                 </button>
-              ) : (
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>仅在线阅读</span>
               )}
             </>
           }
@@ -165,7 +232,7 @@ export function SharePage() {
     );
   }
 
-  /* 落地页：封面 + 明确信息 + 大按钮 + 目录 */
+  /* 落地页：封面 + 明确信息 + 大按钮 + 目录（支持单话 / 多话 / 整本下载） */
   return (
     <div className="share-landing">
       <header className="share-topbar">
@@ -208,18 +275,36 @@ export function SharePage() {
               : '长期有效'}</span>
           </div>
           <div className="share-actions">
-            <button className="btn primary lg" onClick={() => openChapter()}>
-              <Icon name="play" size={17} /> 开始阅读
-            </button>
+            {resume ? (
+              <>
+                <button className="btn primary lg" onClick={() => openChapter(resume.chapterId, false)}>
+                  <Icon name="play" size={17} /> 继续阅读
+                  <span className="share-resume-tag">
+                    第 {resume.chapterIndex + 1} 话 · 第 {resume.pageIndex + 1} 页
+                  </span>
+                </button>
+                <button className="btn lg" onClick={() => openChapter(undefined, true)}>从头阅读</button>
+              </>
+            ) : (
+              <button className="btn primary lg" onClick={() => openChapter()}>
+                <Icon name="play" size={17} /> 开始阅读
+              </button>
+            )}
             {canDownload && (
               <>
-                <button className="btn lg" onClick={downloadCbz}>
-                  <Icon name="download" size={16} /> 下载 CBZ
+                <button className="btn lg" onClick={() => downloadChapters([])}>
+                  <Icon name="download" size={16} /> 下载整本
                 </button>
-                <button className="btn" onClick={() => setExporting(true)}>更多格式…</button>
+                <button className="btn" onClick={() => openExport('all')}>单话 / 多话 / 多格式…</button>
               </>
             )}
           </div>
+          {resume && (
+            <div className="share-hint">
+              上次读到 <b>第 {resume.chapterIndex + 1} 话 · 第 {resume.pageIndex + 1} 页</b>
+              （{new Date(resume.ts).toLocaleString('zh-CN')}），同一设备再打开会从这里继续。
+            </div>
+          )}
           {!canDownload && (
             <div className="share-hint">分享者没有开放下载权限，你可以直接在线阅读全部话数。</div>
           )}
@@ -227,16 +312,55 @@ export function SharePage() {
       </section>
 
       <section className="share-chapters">
-        <h2>目录 <span className="muted">共 {chapters.length} 话 · {totalPages} 页</span></h2>
+        <div className="share-chapters-head">
+          <h2>目录 <span className="muted">共 {chapters.length} 话 · {totalPages} 页</span></h2>
+          {canDownload && chapters.length > 1 && (
+            <button className="btn sm ghost" onClick={() => { setPickMode(!pickMode); setPicked([]); }}>
+              {pickMode ? '取消多选' : '☑ 多选下载'}
+            </button>
+          )}
+        </div>
+        {pickMode && canDownload && (
+          <div className="share-pick-bar">
+            <button className="btn sm" onClick={() => setPicked(chapters.map((c) => c.id))}>全选</button>
+            <button className="btn sm ghost" onClick={() => setPicked([])}>清空</button>
+            <span className="grow" />
+            <button className="btn sm primary" disabled={!picked.length}
+              onClick={() => downloadChapters(picked)}>
+              ⇩ 下载所选 {picked.length} 话
+            </button>
+            <button className="btn sm ghost" disabled={!picked.length}
+              onClick={() => openExport('multi', picked)}>更多格式…</button>
+          </div>
+        )}
         {chapters.length ? (
           <div className="share-chapter-list">
             {chapters.map((ch, i) => (
-              <button className="share-chapter" key={ch.id} onClick={() => openChapter(ch.id)}>
-                <span className="share-chapter-n">{i + 1}</span>
-                <span className="share-chapter-title">{ch.title}</span>
-                <span className="muted">{ch.pages?.length || 0} 页</span>
-                <Icon name="right" size={15} />
-              </button>
+              <div className="share-chapter-row" key={ch.id}>
+                {pickMode && canDownload && (
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(ch.id)}
+                    onChange={() => togglePick(ch.id)}
+                    aria-label={`选择 ${ch.title}`}
+                  />
+                )}
+                <button className="share-chapter" onClick={() => openChapter(ch.id, true)}>
+                  <span className="share-chapter-n">{i + 1}</span>
+                  <span className="share-chapter-title">{ch.title}</span>
+                  <span className="muted">{ch.pages?.length || 0} 页</span>
+                  <Icon name="right" size={15} />
+                </button>
+                {canDownload && !pickMode && (
+                  <button
+                    className="btn sm ghost share-chapter-dl"
+                    onClick={() => downloadChapters([ch.id])}
+                    title="只下载这一话（单话）"
+                  >
+                    <Icon name="download" size={14} /> 本话
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         ) : (

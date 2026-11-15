@@ -71,6 +71,55 @@ export function downloadUrl(url: string) {
   document.body.removeChild(a);
 }
 
+/** 保存一张图片到设备（阅读器「保存本页」用）。
+ *  网站走浏览器下载；桌面 / 手机壳里 <a download> 对图片 URL 无效，改交给宿主
+ *  saveImage(dataUrl) 写进本地磁盘 / 相册，任何结果都有返回值供上层提示。 */
+export async function saveImageToDevice(url: string, fileName: string): Promise<boolean> {
+  type Host = {
+    saveImage?: (d: string, n: string) => Promise<{ ok?: boolean }>;
+    imageToDataUrl?: (u: string) => Promise<string>;
+  };
+  const w = window as unknown as { cvApp?: Host; CVAndroid?: Host };
+  const host = w.cvApp || w.CVAndroid;
+  const name = fileName.replace(/[\\/:*?"<>|]/g, '_');
+  try {
+    let dataUrl = '';
+    if (host?.imageToDataUrl) dataUrl = await host.imageToDataUrl(url);
+    if (!dataUrl) {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = reject;
+        fr.readAsDataURL(blob);
+      });
+    }
+    if (host?.saveImage) {
+      const r = await host.saveImage(dataUrl, name);
+      return !!r?.ok;
+    }
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return true;
+  } catch {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return false;
+  }
+}
+
 /** 从文件名解析话数：'第03话' / 'ch03' / '003' -> 3 */
 export function guessChapterNumber(name: string): number | null {
   const m = name.match(/(\d+)/);
@@ -208,9 +257,12 @@ export function installNetworkCredential(): void {
   // 无凭据（本地 / 自托管）时也注册 Service Worker，
   // 这样「安装为应用」与桌面软件在任何部署形态下都可用，并获得离线外壳。
   if (!('serviceWorker' in navigator)) return;
-  const swUrl = code ? `/sw.js?sharecode=${encodeURIComponent(code)}` : '/sw.js';
+  // 项目站点部署在 /comic-vault/ 子路径下，SW 也必须注册在该路径，
+  // 否则 /sw.js 与根 scope 会 404（控制台报错，且无法为 <img> 补凭据）。
+  const swBase = import.meta.env.BASE_URL || '/';
+  const swUrl = code ? `${swBase}sw.js?sharecode=${encodeURIComponent(code)}` : `${swBase}sw.js`;
   navigator.serviceWorker
-    .register(swUrl, { scope: '/' })
+    .register(swUrl, { scope: swBase })
     .then((reg) => {
       if (!code) return;
       const send = () => {

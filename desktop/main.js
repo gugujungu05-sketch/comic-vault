@@ -15,7 +15,7 @@ const { spawn } = require('node:child_process');
 const http = require('node:http');
 const https = require('node:https');
 
-const VERSION = '3.4.0.9';
+const VERSION = '3.4.0.10';
 /** 只有旧版临时隧道地址才需要强制回退本机，固定云端地址不能被误清 */
 const OLD_TUNNEL_RE = /trycloudflare\.com|ngrok|loca\.lt|cloudflare-tunnel/i;
 /** 项目自己的公开入口：软件里所有「打开网站 / 分享链接」都用它，不再出现 workbuddy 网盘地址 */
@@ -408,6 +408,44 @@ ipcMain.handle('cv:save-temp-image', (_e, dataUrl, nameHint) => {
     return file;
   } catch { return ''; }
 });
+/* 保存一张图片到用户选择的位置（分享二维码 / 阅读器单页通用）。
+   接收 data:image/...;base64,... 直接落盘：Electron 里 <a download> 对 data URL
+   不会触发下载，曾经表现为「点『保存二维码』没反应」。 */
+ipcMain.handle('cv:save-image', async (e, dataUrl, nameHint) => {
+  const win = BrowserWindow.fromWebContents(e.sender) || mainWindow;
+  const m = String(dataUrl || '').match(/^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,(.+)$/i);
+  if (!m) return { ok: false, error: '图片数据无效' };
+  const kind = m[1].toLowerCase();
+  const ext = ({ png: 'png', webp: 'webp', gif: 'gif', bmp: 'bmp' })[kind] || 'jpg';
+  let picDir = app.getPath('pictures');
+  if (!fs.existsSync(picDir)) picDir = app.getPath('downloads');
+  const safe = String(nameHint || 'ComicVault-图片')
+    .replace(/[\\/:*?"<>|\r\n]/g, '_').slice(0, 80) || 'ComicVault-图片';
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    defaultPath: path.join(picDir, `${safe}.${ext}`),
+    filters: [{ name: '图片', extensions: [ext] }],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  try {
+    fs.writeFileSync(filePath, Buffer.from(m[2], 'base64'));
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/* 把服务器上的一张图片读成 data URL：file:// 页面直连 http 图片会受 CORS 限制，
+   交给主进程 net.fetch 取回，再交给 cv:save-image 落盘（阅读器「保存本页」用）。 */
+ipcMain.handle('cv:image-to-data-url', async (_e, url) => {
+  try {
+    const res = await net.fetch(String(url || ''), { credentials: 'include' });
+    if (!res.ok) return '';
+    const buf = Buffer.from(await res.arrayBuffer());
+    const mime = (res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+    return `data:${mime.startsWith('image/') ? mime : 'image/jpeg'};base64,${buf.toString('base64')}`;
+  } catch { return ''; }
+});
+
 /* 渲染进程用 pdf.js 导入 PDF：把 PDF 读成 base64（webSecurity 下 file:// 无法直接 fetch） */
 ipcMain.handle('cv:read-file-base64', (_e, p) => {
   try { return fs.readFileSync(String(p || '')).toString('base64'); } catch { return ''; }

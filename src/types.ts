@@ -42,6 +42,11 @@ export interface ShareLog {
   event: string;
   ip: string;
   ua: string;
+  /** 同一访客合并成一条记录：累计访问次数与最近阅读位置 */
+  visitorId?: string;
+  visits?: number;
+  position?: string;
+  chapterTitle?: string;
 }
 
 /** 协作条目：别名 / 标签 / 封面，都记录添加者，只有本人能删 */
