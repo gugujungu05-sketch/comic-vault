@@ -564,7 +564,7 @@ export function registerSocial(app, ctx) {
     });
   });
 
-  app.patch('/api/me', requireUser, (req, res) => {
+  const updateMe = (req, res) => {
     const u = req.user;
     const b = req.body || {};
     if (b.name !== undefined) u.name = String(b.name).trim().slice(0, 30) || u.name;
@@ -576,7 +576,10 @@ export function registerSocial(app, ctx) {
     }
     saveDbSoon();
     res.json({ user: publicUser(u) });
-  });
+  };
+  /* PATCH 给网站 / 桌面端；POST 给 Android（HttpURLConnection 对 PATCH 兼容性不稳） */
+  app.patch('/api/me', requireUser, updateMe);
+  app.post('/api/me', requireUser, updateMe);
 
   app.get('/api/users/:id', (req, res) => {
     const db = loadDb();

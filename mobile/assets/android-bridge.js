@@ -6,7 +6,7 @@
   if (!A) return;
   var j = function (s) { try { return JSON.parse(s); } catch (e) { return {}; } };
   window.CVAndroid = {
-    version: '3.4.0.7',
+    version: '3.4.0.8',
     platform: 'android',
     api: function (o) {
       return Promise.resolve().then(function () { return j(A.api(JSON.stringify(o))); });
@@ -14,8 +14,21 @@
     asset: function (p) { return A.asset(p); },
     getConfig: function () { return Promise.resolve(j(A.getConfig())); },
     setServer: function (u) { return Promise.resolve(A.setServer(u)); },
+    setMode: function (m) { return Promise.resolve({ ok: true }); },
     setTheme: function (t) { return Promise.resolve(A.setTheme(t)); },
     checkUpdate: function () { return Promise.resolve().then(function () { return j(A.checkUpdate()); }); },
+    /* 软件内下载新版 APK：Java 用系统下载管理器，旧宿主降级为浏览器打开 */
+    installUpdate: function (u) {
+      try {
+        if (typeof A.installUpdate !== 'function') {
+          A.openExternal(u);
+          return Promise.resolve({ ok: true, opened: true });
+        }
+        return Promise.resolve(j(A.installUpdate(u)));
+      } catch (e) {
+        return Promise.resolve({ ok: false, error: String(e) });
+      }
+    },
     siteUrl: function () { return Promise.resolve(A.siteUrl()); },
     openExternal: function (u) { return Promise.resolve(A.openExternal(u)); },
     openDownload: function () { return Promise.resolve(A.openDownload()); },

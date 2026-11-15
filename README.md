@@ -127,10 +127,10 @@ npm run build && npm start
 
 | 文件 | 适用 |
 |---|---|
-| `ComicVault-3.4.0.6-windows-x64-setup.exe` | Windows 64 位 · NSIS 安装版（推荐） |
-| `ComicVault-3.4.0.6-windows-x64-portable.exe` | Windows 64 位 · 免安装便携版 |
-| `ComicVault-3.4.0.6-linux-x64.AppImage` | Linux x64，chmod +x 后运行 |
-| `ComicVault-3.4.0.6-android.apk` | Android 6.0+，见方式三 |
+| `ComicVault-3.4.0.8-windows-x64-setup.exe` | Windows 64 位 · NSIS 安装版（推荐） |
+| `ComicVault-3.4.0.8-windows-x64-portable.exe` | Windows 64 位 · 免安装便携版 |
+| `ComicVault-3.4.0.8-linux-x64.AppImage` | Linux x64，chmod +x 后运行 |
+| `ComicVault-3.4.0.8-android.apk` | Android 6.0+，见方式三 |
 
 > Windows 32 位（x86）：Electron 45 起不再提供 win32-ia32 运行时，本版不提供，也不会把 x64 包误发给 32 位客户端。Apple / iOS 用网页版 PWA（Safari → 添加到主屏幕），内容始终自动最新。
 
@@ -142,7 +142,7 @@ npm run build && npm start
 
 ### 方式三：手机软件（Android / iPhone）
 
-**Android**：下载 `ComicVault-3.4.0.6-android.apk` 传到手机安装（系统提示「未知来源」时允许），首次打开用**同一个邮箱账号登录一次**即可。包内 `versionName` 与 Release 标注一致；Android 6.0 及以上可用。
+**Android**：下载 `ComicVault-3.4.0.8-android.apk` 传到手机安装（系统提示「未知来源」时允许），首次打开用**同一个邮箱账号登录一次**即可。包内 `versionName` 与 Release 标注一致；Android 6.0 及以上可用。
 
 **iPhone / iPad**：Linux 环境无法生成 iOS 原生安装包，用 Safari 打开同一网址 → 分享 → **添加到主屏幕**，效果等同独立 App。
 
@@ -386,7 +386,7 @@ git push                  # GitHub Pages 清单随 version.json 自动更新
 |---|---|---|---|
 | 界面 | 浏览器中的 SPA | 本地 `desktop/app/` 界面 | APK 内 `assets/app/` 本地界面 |
 | 数据 | 直连服务端 | IPC 直连同一 `/api` | Java 桥直连同一 `/api` |
-| 版本 | 2.7.0.11（随服务器） | 3.4.0.7 | 3.4.0.7 |
+| 版本 | 2.7.0.12（随服务器） | 3.4.0.8 | 3.4.0.8 |
 | 更新 | 刷新即最新 | 设置 → 检查更新 | 设置 → 检查更新 |
 | 软件下载页 | 有（网站提供安装包） | **无** | **无** |
 
@@ -400,6 +400,13 @@ git push                  # GitHub Pages 清单随 version.json 自动更新
 - **条漫模式**：阅读器新增「条漫」选项，图片宽度撑满、零间隙、上下连续滚动，长图不被切断；隐藏翻页按钮与页码，滚到话末直接显示「下一话」入口。
 - **上一话 / 下一话**：阅读器底栏与顶栏都有显式按钮，键盘 `[` `]`，读到话末继续前进自动进入下一话。
 - **分享落地页**：分享链接打开后先展示封面、标题、作者、简介、话数 / 页数、下载权限、有效期与目录，再点「开始阅读」；阅读中可返回封面，去掉了遮挡画面的浮动下载按钮。
+
+**v3.4.0.8 本轮修复**
+
+- **检查更新 → 下载新版本不再点了没反应**：Android 端补齐软件内下载，交给系统下载管理器下载 APK，完成后点通知按提示安装；旧版宿主不支持时自动降级为浏览器下载，不再只弹一条错误就没下文。桌面端新增「在浏览器打开下载」兜底按钮，下载失败会在面板显示具体原因，并说明大安装包（100MB+）的进度位置。
+- **浅色主题不再变回深色**：Android 端用 SharedPreferences 真正保存主题（此前 `getConfig()` 把主题写死成 `dark`、`setTheme()` 是空实现），界面侧再叠一层本地缓存双保险；重启软件、重新进设置页都保持所选的浅色。
+- **可以编辑个人资料了**：设置页账号面板与侧栏都新增「编辑个人资料」，可修改**昵称、个人简介、登录密码**，保存后立即生效；邮箱暂不支持自助更换。后端补了 `POST /api/me` 兼容 Android 网络栈。
+- **排序仍显示原始文件名**（本次未改动）：导入 / 加页的排序网格本来就显示 `001.jpg`、`003.png` 这类原始文件名（含扩展名），悬浮可看全名，已确认符合需求。
 
 **v3.4.0.7 本轮修复**
 
