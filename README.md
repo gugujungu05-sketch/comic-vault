@@ -78,7 +78,7 @@
 - **搜索**：公共书库支持书名、别名、作者、简介、标签的关键词搜索与 5 种排序；广场支持正文、作者、评论、附件名、附带漫画的全文搜索。
 - **上传记录与动态流**：公共书库右侧时间线显示谁在何时给哪本漫画加了哪一话、多少页；首页动态流汇总公告、新书、上传、广场新帖，公告置顶。
 - **公告权限**：只单独授予一个账号（`publicUser.canAnnounce`）。默认自动授予最早的管理员；也可用环境变量 `CV_ANNOUNCER_EMAIL` 指定邮箱。只能删除自己发布的公告，服务端二次鉴权。
-- **软件下载页 `/downloads`**：显示网站地址、当前服务端/客户端版本、更新说明、Windows 便携版/绿色版、Linux AppImage、Android APK（站内可直接下载）与资料库 zip 链接。
+- **软件下载页 `/downloads`**：按平台 / 架构分文件展示 Windows 64 位安装版与便携版、Linux x64 AppImage、Android APK、网页 / PWA，不提供合集包；点「直接下载」走常驻服务器直链并以附件下载，页面同时显示真实体积、SHA256 与版本说明。
 - **软件设置与自动更新**：桌面软件「文件 → 切换服务器…」窗口新增网站地址复制/打开、检查更新、打开下载页；手机 App 右下角 ⚙ 菜单可查看网站地址、切换服务器、检查更新。启动时静默检查客户端新版本（同版本只提示一次），网页 / PWA 内容随服务器实时更新，永远无需手动升级。
 - **合规批量导入**：公共书库「批量导入」接受用户粘贴的 JSON 清单，必须勾选「确认拥有合法授权」；图片直链仅允许公开 http/https，拒绝内网地址与超大文件。**本站不爬取、不搬运任何第三方网站的受版权保护内容**。
 - **示例漫画**：首次启动在后台生成 6 本本站自制示例漫画（代码绘制，可自由阅读），让分类 / 排行 / 搜索立刻有内容；完整生成后才入库，删除后不会重新生成。可用 `CV_DISABLE_SAMPLES=1` 关闭。
@@ -123,12 +123,16 @@ npm run build && npm start
 
 **现成成品**（本次已打包好，放在工作区根目录，双击即用，无需先跑脚本）：
 
+按平台 / 架构分文件，文件名带完整版本号，与 GitHub Release 标注一致（没有合集包）：
+
 | 文件 | 适用 |
 |---|---|
-| `漫画库-便携版.exe` | Windows，单文件免安装，可放 U 盘 |
-| `漫画库-Windows绿色版.zip` | Windows，解压后双击 `漫画库 ComicVault.exe` |
-| `漫画库 ComicVault-1.0.0.AppImage` | Linux，加可执行权限后运行 |
-| `漫画库-Android.apk` | Android 6.0+，见方式三 |
+| `ComicVault-3.4.0.6-windows-x64-setup.exe` | Windows 64 位 · NSIS 安装版（推荐） |
+| `ComicVault-3.4.0.6-windows-x64-portable.exe` | Windows 64 位 · 免安装便携版 |
+| `ComicVault-3.4.0.6-linux-x64.AppImage` | Linux x64，chmod +x 后运行 |
+| `ComicVault-3.4.0.6-android.apk` | Android 6.0+，见方式三 |
+
+> Windows 32 位（x86）：Electron 45 起不再提供 win32-ia32 运行时，本版不提供，也不会把 x64 包误发给 32 位客户端。Apple / iOS 用网页版 PWA（Safari → 添加到主屏幕），内容始终自动最新。
 
 软件提供独立窗口、原生菜单（返回首页 / 刷新 / 切换服务器 / 在浏览器中打开 / 关于）、窗口大小记忆、系统下载、断网时的可重试错误页（不白屏），登录状态长期保留。
 
@@ -138,7 +142,7 @@ npm run build && npm start
 
 ### 方式三：手机软件（Android / iPhone）
 
-**Android**：把工作区根目录的 `漫画库-Android.apk` 传到手机，点击安装（系统提示「未知来源」时允许），首次打开用**同一个邮箱账号登录一次**即可。Android 6.0 及以上可用。
+**Android**：下载 `ComicVault-3.4.0.6-android.apk` 传到手机安装（系统提示「未知来源」时允许），首次打开用**同一个邮箱账号登录一次**即可。包内 `versionName` 与 Release 标注一致；Android 6.0 及以上可用。
 
 **iPhone / iPad**：Linux 环境无法生成 iOS 原生安装包，用 Safari 打开同一网址 → 分享 → **添加到主屏幕**，效果等同独立 App。
 
@@ -282,7 +286,7 @@ data/
           DELETE /api/announcements/:id            删除自己发布的公告
           GET    /api/software                     软件下载清单与版本说明
           GET    /api/software/latest             自动更新检查（desktop|android|web）
-          GET    /files/ComicVault-android.apk     站内 Android 安装包
+          GET    /files/<安装包文件名>            站内安装包直链（附件下载，支持 Range）
 ```
 
 ---
@@ -347,18 +351,17 @@ git push                  # GitHub Pages 清单随 version.json 自动更新
 
 `npm run release`（`scripts/publish-release.cjs`）：
 
-- 扫描成品 → 复制进 `data/installers/`（已被 `.gitignore` 忽略，仓库不会变大）；
-- 计算**真实体积**与 **SHA256**，生成 `data/release.json` 与 `docs/release.json`；
-- 重建 `漫画库-安装包合集.zip` 并自动写安装说明；
+- 扫描四个成品（Windows x64 安装版 / 便携版、Linux x64 AppImage、Android APK）→ 复制进 `data/installers/`（已被 `.gitignore` 忽略，仓库不会变大）；
+- 计算**真实体积**与 **SHA256**，生成 `data/release.json`（服务端热读，含 `/files/` 本地直链）与 `docs/release.json`、`dist-pages/release.json`（公开镜像，直链指向 GitHub Release 资产文件）；
+- 包 id 带 `platform` / `arch`，服务端按客户端平台与架构严格匹配，绝不把 x64 包发给 32 位客户端；
 
-服务端 `server/discovery.js` **每次请求按 mtime 热读** `data/release.json`——所以**发新版不用改代码、不用重启服务**，网站「软件下载」页立刻显示最新文件名、体积、校验和、发布时间；标「本站直链」的从 `/files/` 直接下载，支持断点续传（Range）。
+服务端 `server/discovery.js` **每次请求按 mtime 热读** `data/release.json`——所以**发新版不用改代码、不用重启服务**，网站「软件下载」页立刻显示最新文件名、体积、校验和、发布时间；`/files/` 一律以 `Content-Disposition: attachment` 返回，点击即下载，支持断点续传（Range）。软件内「检查更新」拿到的是同一份清单里的**安装包绝对直链**，点「一键下载并安装」在软件内下载运行，不会打开浏览器。
 
 | 命令 | 用途 |
 |---|---|
 | `npm run release -- --dry-run` | 只预览，不写文件 |
-| `npm run release -- --apk-only` | 只更新 APK，秒级 |
-| `npm run release -- --no-bundle` | 跳过重建几百 MB 合集 |
-| `npm run release -- --manifest-only` | 只生成公开清单（CI 用） |
+| `npm run release -- --apk-only` | 只更新 APK，其余条目沿用现有清单，秒级 |
+| `npm run release -- --manifest-only` | 只生成公开镜像清单（GitHub Actions 用，不碰本地成品） |
 
 ## 四段版本号（主.次.修.构建）
 
@@ -383,7 +386,7 @@ git push                  # GitHub Pages 清单随 version.json 自动更新
 |---|---|---|---|
 | 界面 | 浏览器中的 SPA | 本地 `desktop/app/` 界面 | APK 内 `assets/app/` 本地界面 |
 | 数据 | 直连服务端 | IPC 直连同一 `/api` | Java 桥直连同一 `/api` |
-| 版本 | 2.7.0.9（随服务器） | 3.4.0.6 | 3.4.0.5 |
+| 版本 | 2.7.0.10（随服务器） | 3.4.0.6 | 3.4.0.6 |
 | 更新 | 刷新即最新 | 设置 → 检查更新 | 设置 → 检查更新 |
 | 软件下载页 | 有（网站提供安装包） | **无** | **无** |
 

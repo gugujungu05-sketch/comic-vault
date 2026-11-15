@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, discover } from '../lib/api';
+import { api, discover, absoluteUrl } from '../lib/api';
 import { Icon } from '../components/Icon';
 import { useErrorToast, useToast } from '../components/Toasts';
 import { copyText, formatDate, withShareCode } from '../lib/util';
@@ -50,8 +50,15 @@ export function DownloadsPage() {
     toast(ok ? 'SHA256 已复制，可用于校验下载文件' : '复制失败');
   }
 
+  /**
+   * 安装包地址绝对化。
+   * 历史 bug：/files/xxx.exe 在 GitHub Pages 上会被解析成 pages 域名的根路径而 404，
+   * 点「下载」看起来毫无反应。现在补成常驻后端的绝对地址并带上网关凭据，
+   * 配合服务端 Content-Disposition: attachment，点击即开始下载文件。
+   */
   function downloadUrl(url: string) {
-    return url.startsWith('/') ? withShareCode(url) : url;
+    if (!url.startsWith('/')) return url;
+    return absoluteUrl(url) || withShareCode(url);
   }
 
   return (
@@ -62,8 +69,8 @@ export function DownloadsPage() {
           <div className="page-sub">桌面端、手机端、网页 / PWA 全部连同一个服务器、同一个账号、同一份数据 · 安装包清单随发版自动更新</div>
         </div>
         <div className="row wrap" style={{ gap: 8 }}>
-          <a className="btn primary" href="https://github.com/gugujungu05-sketch/comic-vault/releases/latest" target="_blank" rel="noreferrer">
-            <Icon name="download" size={16} /> GitHub 直达下载
+          <a className="btn" href="https://github.com/gugujungu05-sketch/comic-vault/releases/latest" target="_blank" rel="noreferrer">
+            <Icon name="link" size={16} /> GitHub Release（备用）
           </a>
         </div>
       </div>
@@ -121,13 +128,12 @@ export function DownloadsPage() {
       <section className="panel" style={{ marginTop: 18 }}>
         <div className="panel-title"><Icon name="download" size={17} /> 安装包清单</div>
         <div className="dl-note">
-          下面的文件名、体积与 SHA256 由 <code>npm run release</code> 从真实成品自动计算；
-          标着「本站直链」的可直接下载，服务端会热读清单，<b>发新版不用改代码、不用重启</b>。
-          体积大的合集也可从<a href={info?.driveUrl || '#'} target="_blank" rel="noreferrer">资料库</a>获取。
+          按平台与架构分文件，不提供合集包。下面的文件名、体积与 SHA256 由发版脚本从真实成品自动计算；
+          点「直接下载」即走常驻服务器直链开始下载，服务端热读清单，<b>发新版不用改代码、不用重启</b>。
+          同一份安装包也同步在 <a href={info?.driveUrl || '#'} target="_blank" rel="noreferrer">GitHub Release</a> 上。
         </div>
         <div className="dl-list">
           {(info?.software || []).map((s) => {
-            const internal = s.url.startsWith('/');
             const href = downloadUrl(s.url);
             return (
               <article className="dl-card" key={s.id}>
@@ -154,12 +160,8 @@ export function DownloadsPage() {
                   {s.id === 'pwa' ? (
                     <Link className="btn sm" to="/"><Icon name="globe" size={14} /> 打开网页版</Link>
                   ) : (
-                    <a
-                      className="btn sm primary"
-                      href={href}
-                      {...(internal ? { download: '' } : { target: '_blank', rel: 'noreferrer' })}
-                    >
-                      <Icon name="download" size={14} /> {internal ? '直接下载' : '前往下载'}
+                    <a className="btn sm primary" href={href} download={s.file || ''} rel="noreferrer">
+                      <Icon name="download" size={14} /> 直接下载
                     </a>
                   )}
                 </div>
@@ -172,7 +174,7 @@ export function DownloadsPage() {
       <section className="panel" style={{ marginTop: 18 }}>
         <div className="panel-title"><Icon name="check" size={17} /> 安装与数据互通</div>
         <ol className="dl-steps">
-          <li>从资料库下载 zip 并解压，Windows 双击 exe、Linux 给 AppImage 加执行权限、Android 安装 APK。</li>
+          <li>按自己的系统选一个安装包：Windows 64 位选安装版或便携版，双击 exe；Linux 给 AppImage 加执行权限；Android 安装 APK。</li>
           <li>打开软件后保持默认服务器地址（就是上面的网站地址），用同一个邮箱账号登录。</li>
           <li>书架、公共书库、广场、阅读进度即时同步；网页刷新或手机切换网络都不会丢数据。</li>
           <li>iOS 用 Safari 打开网站 → 分享 → 「添加到主屏幕」，即得到与原生 App 一样的全屏体验。</li>

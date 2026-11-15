@@ -1,16 +1,16 @@
 {
   "schema": 1,
   "version": "3.4.0.6",
-  "webVersion": "2.7.0.9",
+  "webVersion": "2.7.0.10",
   "versions": {
-    "web": "2.7.0.9",
+    "web": "2.7.0.10",
     "desktop": "3.4.0.6",
-    "android": "3.4.0.5"
+    "android": "3.4.0.6"
   },
   "buildVersion": "3.4.0",
-  "build": 13,
-  "releasedAt": 1794722891650,
-  "generatedAt": 1794722891650,
+  "build": 14,
+  "releasedAt": 1794723953076,
+  "generatedAt": 1794724308652,
   "driveUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
     "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
@@ -21,51 +21,49 @@
   "packages": [
     {
       "id": "windows-x64-setup",
-      "file": "ComicVault-3.4.0.6-windows-x64-setup.exe",
-      "label": "Windows 64 位 · 安装版",
       "platform": "win",
       "arch": "x64",
+      "file": "ComicVault-3.4.0.6-windows-x64-setup.exe",
       "sizeBytes": 121657475,
       "sha256": "dd9aa4d619053ab586800bad651e4cf7a76e06258eb17edc746bcf4e852ae69a",
-      "local": true,
+      "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.6/ComicVault-3.4.0.6-windows-x64-setup.exe",
-      "updatedAt": 1794722891650
+      "updatedAt": 1794722380401
     },
     {
       "id": "windows-x64-portable",
-      "file": "ComicVault-3.4.0.6-windows-x64-portable.exe",
-      "label": "Windows 64 位 · 便携版",
       "platform": "win",
       "arch": "x64",
+      "file": "ComicVault-3.4.0.6-windows-x64-portable.exe",
       "sizeBytes": 110737708,
       "sha256": "64c721f71f991a293fbdf1248834b12532be0211a00192cb73b71279fac247bc",
-      "local": true,
+      "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.6/ComicVault-3.4.0.6-windows-x64-portable.exe",
-      "updatedAt": 1794722891650
+      "updatedAt": 1794722475998
     },
     {
       "id": "linux-x64",
-      "file": "ComicVault-3.4.0.6-linux-x64.AppImage",
-      "label": "Linux 64 位 · AppImage",
       "platform": "linux",
       "arch": "x64",
+      "file": "ComicVault-3.4.0.6-linux-x64.AppImage",
       "sizeBytes": 126269426,
       "sha256": "c94a9f630280ec19ffca20b8b162b82e7eb74c1a3554abadd300b886d62c8deb",
-      "local": true,
+      "local": false,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.6/ComicVault-3.4.0.6-linux-x64.AppImage",
-      "updatedAt": 1794722891650
+      "updatedAt": 1794722521319
     },
     {
       "id": "android-apk",
-      "file": "ComicVault-3.4.0.5-android.apk",
-      "label": "Android · 安装包",
       "platform": "android",
       "arch": "universal",
-      "sizeBytes": 83222,
-      "sha256": "47aeb4225ff4c32cd7c42747d36e8c5aa9b2a5fcdc2acd1832d18db747041428",
+      "file": "ComicVault-3.4.0.6-android.apk",
+      "sizeBytes": 91414,
+      "sha256": "edb821f5533cebf3507e1e85b79cd5ff67db517626fe5e5e0acec934d2c55a2a",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.5/ComicVault-3.4.0.5-android.apk",
-      "updatedAt": 1794722891650
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.6/ComicVault-3.4.0.6-android.apk",
+      "updatedAt": 1794724229313
     }
-  ]
+  ],
+  "mirror": true,
+  "note": "公开镜像，安装包直链指向 GitHub Release 资产文件"
 }
