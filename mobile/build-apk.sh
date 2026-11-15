@@ -39,6 +39,9 @@ echo "==> [2a/7] 打包独立客户端界面到 assets"
 mkdir -p "$OUT/assets/app"
 cp -f "$HERE/../desktop/app/"*.html "$HERE/../desktop/app/"*.css "$HERE/../desktop/app/"*.js "$OUT/assets/app/"
 cp -f "$HERE/assets/android-bridge.js" "$OUT/assets/app/"
+# 离线二维码库：index.html 引用 vendor/qrcode.min.js，漏拷会让手机端分享二维码出不来
+mkdir -p "$OUT/assets/app/vendor"
+cp -f "$HERE/../desktop/app/vendor/qrcode.min.js" "$OUT/assets/app/vendor/"
 python3 - "$OUT/assets/app" <<'PYBRIDGE'
 import io, os, sys
 d = sys.argv[1]
