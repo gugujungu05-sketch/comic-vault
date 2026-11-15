@@ -16,8 +16,14 @@ const http = require('node:http');
 const https = require('node:https');
 
 const VERSION = '3.4.0.5';
-const OLD_TUNNEL_RE = /workbuddy\.host|a3375579f1d0038dc/i;
-const DRIVE_ZIP_URL = 'https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ';
+/** 只有旧版临时隧道地址才需要强制回退本机，固定云端地址不能被误清 */
+const OLD_TUNNEL_RE = /trycloudflare\.com|ngrok|loca\.lt|cloudflare-tunnel/i;
+/** 项目自己的公开入口：软件里所有「打开网站 / 分享链接」都用它，不再出现 workbuddy 网盘地址 */
+const PUBLIC_SITE = 'https://gugujungu05-sketch.github.io/comic-vault/';
+const RELEASES_URL = 'https://github.com/gugujungu05-sketch/comic-vault/releases/latest';
+/** 默认云端后端：与网站同一份数据，登录态 / 导入 / 分享链接因此天然互通 */
+const CLOUD_SERVER = 'https://a3375579f1d0038dc.app.workbuddy.host/?sharecode=HDZTNNHTBW';
+const DRIVE_ZIP_URL = RELEASES_URL;
 const APP_DIR = path.join(__dirname, 'app');
 const IMG_RE = /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)$/i;
 const ARCHIVE_RE = /\.(zip|cbz|rar|cbr|7z|cb7|tar|tgz|gz)$/i;
@@ -82,7 +88,7 @@ function stopLocalServer() {
 
 /* ------------------------------ 配置 ------------------------------ */
 function readConfig() {
-  const base = { mode: 'local', server: '', theme: 'dark', bounds: null };
+  const base = { mode: 'remote', server: CLOUD_SERVER, theme: 'dark', bounds: null, authToken: '' };
   let cfg;
   try { cfg = Object.assign(base, JSON.parse(fs.readFileSync(configPath, 'utf8')) || {}); }
   catch { return base; }
@@ -135,10 +141,19 @@ async function apiFetch(url, { method = 'GET', headers = {}, body } = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), body ? 180000 : 30000);
   try {
-    const res = await net.fetch(url, { method, headers, body, credentials: 'include', signal: ctl.signal });
+    // 登录态不再只依赖 Electron 的 httpOnly cookie：token 落在 config.json，
+    // 每次请求显式带上，重启软件 / 内置服务换端口都不会掉登录。
+    const authHeaders = { ...headers };
+    const savedToken = readConfig().authToken;
+    if (savedToken) authHeaders['x-cv-token'] = savedToken;
+    const res = await net.fetch(url, { method, headers: authHeaders, body, credentials: 'include', signal: ctl.signal });
     const text = await res.text();
     let data = text;
     try { data = JSON.parse(text); } catch { /* 非 JSON 原样返回 */ }
+    if (res.ok && data && typeof data === 'object' && typeof data.token === 'string' && data.token) {
+      writeConfig({ authToken: data.token });
+    }
+    if (res.ok && /\/api\/auth\/logout/.test(String(url))) writeConfig({ authToken: '' });
     return { status: res.status, data };
   } catch (err) {
     if (ctl.signal.aborted) return { status: 0, data: { error: '请求超时，服务器没有响应' } };
@@ -244,8 +259,8 @@ function buildMenu() {
       { label: '检查更新…', click: () => send('check-update') },
     ] },
     { label: '帮助', submenu: [
-      { label: '在浏览器打开网站', click: () => shell.openExternal(serverUrl()) },
-      { label: '复制网站地址', click: () => clipboard.writeText(serverUrl()) },
+      { label: '在浏览器打开网站', click: () => shell.openExternal(PUBLIC_SITE) },
+      { label: '复制网站地址', click: () => clipboard.writeText(PUBLIC_SITE) },
       { type: 'separator' },
       { label: `关于 漫画库 v${VERSION}`, click: showAbout },
     ] },
@@ -259,7 +274,7 @@ function showAbout() {
     detail: '独立界面与原生能力的客户端，不是网站的浏览器壳。\n\n' +
       '· 拖拽 / 原生文件对话框批量导入\n· 独立阅读窗口（键盘翻页、双页、缩放）\n' +
       '· 系统菜单、托盘常驻、快捷键\n· 通过 API 与网站、手机端共用同一份数据\n\n' +
-      `服务器：${serverUrl()}`,
+      `服务：${readConfig().mode === 'local' ? '本机模式（数据保存在这台设备）' : 'ComicVault 云端（与网站 / 手机实时互通）'}`,
   }).catch(() => {});
 }
 function buildTray() {
@@ -300,6 +315,7 @@ async function uploadViaHttp(url, method, contentType, body) {
         'Content-Type': contentType,
         'Content-Length': body.length,
         ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        ...(readConfig().authToken ? { 'x-cv-token': readConfig().authToken } : {}),
       },
       timeout: 180000,
     }, (res) => {
@@ -448,7 +464,8 @@ ipcMain.handle('cv:thumb', (_e, p) => {
 ipcMain.handle('cv:get-config', () => {
   const c = readConfig();
   return { mode: c.mode, server: c.server, theme: c.theme, version: VERSION, platform: process.platform,
-    local: `http://127.0.0.1:${hostPort}`, dataDir: path.join(app.getPath('userData'), 'data') };
+    publicSite: PUBLIC_SITE, local: `http://127.0.0.1:${hostPort}`,
+    dataDir: path.join(app.getPath('userData'), 'data') };
 });
 /* mode=local 用内置服务；mode=remote 连接自建/托管站点 */
 ipcMain.handle('cv:set-mode', (_e, mode) => {
@@ -465,7 +482,8 @@ ipcMain.handle('cv:set-server', (_e, raw) => {
 /** 软件内直接更新：下载对应平台安装包并运行安装（绿色版则保存到下载目录） */
 ipcMain.handle('cv:update-install', async (e, downloadUrl) => {
   const win = BrowserWindow.fromWebContents(e.sender) || mainWindow;
-  const url = String(downloadUrl || '');
+  let url = String(downloadUrl || '');
+  if (url.startsWith('/')) url = endpoint(url);
   if (!/^https?:/i.test(url)) return { ok: false, error: '下载地址不合法' };
   const dlWin = win;
   try {
@@ -507,17 +525,31 @@ ipcMain.handle('cv:update-install', async (e, downloadUrl) => {
   }
 });
 ipcMain.handle('cv:set-theme', (_e, theme) => { writeConfig({ theme: theme === 'light' ? 'light' : 'dark' }); return { ok: true }; });
-ipcMain.handle('cv:site-url', () => serverUrl());
+ipcMain.handle('cv:site-url', () => PUBLIC_SITE);
+/** 分享链接与二维码统一用项目自己的公开域名（200 直达的 ?s= 入口） */
+ipcMain.handle('cv:share-base', () => PUBLIC_SITE);
 ipcMain.handle('cv:open-external', (_e, url) => { if (/^https?:/i.test(String(url))) shell.openExternal(String(url)); return { ok: true }; });
-ipcMain.handle('cv:open-download', () => { shell.openExternal(DRIVE_ZIP_URL); return { ok: true }; });
+ipcMain.handle('cv:open-download', async () => {
+  // 全流程留在软件内：只把安装包地址交给界面，由「一键下载并安装」完成。
+  try {
+    const info = await apiFetch(endpoint('/api/software/latest', { channel: 'desktop', current: VERSION }));
+    const raw = info.data?.installerUrl || info.data?.downloadUrl;
+    const url = raw ? (String(raw).startsWith('/') ? endpoint(String(raw)) : String(raw)) : '';
+    return { ok: !!url, installerUrl: url };
+  } catch { return { ok: false, installerUrl: '' }; }
+});
 
 ipcMain.handle('cv:check-update', async () => {
   try {
     const info = await apiFetch(endpoint('/api/software/latest', { channel: 'desktop', current: VERSION }));
     let serverVersion = '';
     try { const rt = await apiFetch(endpoint('/api/runtime')); serverVersion = rt.data?.version || ''; } catch { /* 忽略 */ }
-    return { ok: info.status === 200, current: VERSION, ...(info.data || {}), serverVersion,
-      error: info.status !== 200 ? (info.data?.error || '检查失败') : undefined };
+    const d = info.data || {};
+    const abs = (u) => (typeof u === 'string' && u.startsWith('/') ? endpoint(u) : u);
+    return { ok: info.status === 200, current: VERSION, ...d,
+      installerUrl: abs(d.installerUrl), downloadUrl: abs(d.downloadUrl), apkUrl: abs(d.apkUrl),
+      serverVersion,
+      error: info.status !== 200 ? (d.error || '检查失败') : undefined };
   } catch (err) { return { ok: false, current: VERSION, error: err.message || '检查失败' }; }
 });
 

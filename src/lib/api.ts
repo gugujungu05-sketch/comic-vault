@@ -76,6 +76,22 @@ export function setApiBase(url: string): void {
   } catch { /* 忽略 */ }
 }
 
+/**
+ * 生成「别人一定能打开」的分享落地页链接。
+ *
+ * GitHub Pages 是纯静态托管：/comic-vault/s/:token 这类深链必然返回 404（HTTP
+ * 状态码层面，404.html 兜底也改不掉，微信/扫码预览会直接判定打不开）；这是平台
+ * 限制，前端无法根治。因此分享链接统一指向固定后端同源入口——它是真实 Express
+ * 服务，SPA fallback 会返回 200 + 完整分享落地页，并且自带网关访问凭据，任何人
+ * 点开/扫码都能直接在线阅读与下载，不需要登录、不需要跨站 cookie。
+ */
+export function shareLandingUrl(token: string): string {
+  const base = (getApiBase() || DEFAULT_API_BASE).replace(/\/+$/, '');
+  const cred = apiCredential || DEFAULT_API_CREDENTIAL;
+  const url = `${base}/comic-vault/?s=${encodeURIComponent(token)}`;
+  return `${url}&sharecode=${encodeURIComponent(cred)}`;
+}
+
 /** 探测单个后端；成功返回该 base，失败返回 null */
 async function probeBackend(base: string, timeoutMs: number): Promise<string | null> {
   try {

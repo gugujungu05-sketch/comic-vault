@@ -153,11 +153,15 @@ function issueSession(req, res, userId) {
     maxAge: SESSION_MS,
     path: '/',
   });
+  // 桌面客户端把 token 存到配置里，下次启动用 x-cv-token 直接恢复登录态：
+  // 不依赖 Electron 是否保留 httpOnly cookie，也不受内置服务随机端口影响。
+  return token;
 }
 
 /** 每个请求解析登录态 */
 export function attachUser(req, _res, next) {
-  const token = parseCookies(req.headers.cookie)[COOKIE];
+  const token = parseCookies(req.headers.cookie)[COOKIE] ||
+    String(req.headers['x-cv-token'] || '').trim() || null;
   req.sessionToken = token || null;
   req.user = null;
   if (token) {
@@ -392,8 +396,8 @@ export function registerSocial(app, ctx) {
       }
     }
     saveDbSoon();
-    issueSession(req, res, u.id);
-    res.json({ user: publicUser(u), first });
+    const sessionToken = issueSession(req, res, u.id);
+    res.json({ user: publicUser(u), first, token: sessionToken });
   });
 
   app.post('/api/auth/login', (req, res) => {
@@ -403,8 +407,8 @@ export function registerSocial(app, ctx) {
     if (!u || !checkPassword(u, req.body?.password)) {
       return res.status(401).json({ error: '邮箱或密码不正确' });
     }
-    issueSession(req, res, u.id);
-    res.json({ user: publicUser(u) });
+    const sessionToken = issueSession(req, res, u.id);
+    res.json({ user: publicUser(u), token: sessionToken });
   });
 
   app.post('/api/auth/send-code', async (req, res) => {
@@ -451,8 +455,8 @@ export function registerSocial(app, ctx) {
       }
     }
     saveDbSoon();
-    issueSession(req, res, u.id);
-    res.json({ user: publicUser(u), created });
+    const sessionToken = issueSession(req, res, u.id);
+    res.json({ user: publicUser(u), created, token: sessionToken });
   });
 
   /* ---------- 邮箱验证：注册时可跳过，之后在设置里补做 ---------- */

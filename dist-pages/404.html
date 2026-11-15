@@ -2,12 +2,33 @@
 <html>
 <head><meta charset="utf-8"><title>漫画库</title>
 <script>
-/* GitHub Pages SPA 兜底：把任意深链转回应用入口 */
+/* GitHub Pages SPA 兜底：GitHub 对任意深链都返回 404 状态，这里把分享深链
+   与其余应用内路由统一转回 200 可达的入口页，保证历史二维码/链接也能打开。 */
 (function () {
   var base = '/comic-vault/';
-  var path = location.pathname.replace(base, '');
+  var path = location.pathname;
   var search = location.search || '';
-  location.replace(base + '?cvroute=' + encodeURIComponent(path) + search);
+  var hash = location.hash || '';
+
+  // 分享链接：/s/<token> 或 /comic-vault/s/<token> → 入口 ?s=<token>
+  var m = path.match(/\/s\/([^/?#]+)/);
+  if (m) {
+    var q = new URLSearchParams(search.replace(/^\?/, ''));
+    q.set('s', decodeURIComponent(m[1]));
+    location.replace(base + '?' + q.toString() + hash);
+    return;
+  }
+
+  // 其他应用内深链：还原成 SPA 路由
+  var rest = path.replace(/^\/comic-vault\/?/, '').replace(/^\/+/, '');
+  if (rest) {
+    var q2 = new URLSearchParams(search.replace(/^\?/, ''));
+    q2.set('cvroute', rest);
+    location.replace(base + '?' + q2.toString() + hash);
+    return;
+  }
+
+  location.replace(base + search + hash);
 })();
 </script></head>
 <body style="background:#0f1115"></body>
