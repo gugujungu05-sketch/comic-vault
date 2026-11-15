@@ -619,11 +619,15 @@ function EditMetaDialog({
     ageRating: comic.ageRating || '',
   });
   const [busy, setBusy] = useState(false);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverPreview, setCoverPreview] = useState('');
   const errorToast = useErrorToast();
 
   async function save() {
     setBusy(true);
     try {
+      /* 先上传新封面，再保存文字信息：两步都成功才算编辑完成 */
+      if (coverFile) await api.uploadCover(comic.id, coverFile, coverFile.name);
       const updated = await api.update(comic.id, {
         title: form.title,
         author: form.author,
@@ -663,6 +667,34 @@ function EditMetaDialog({
         </>
       }
     >
+      <div className="field">
+        <label>封面</label>
+        <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          {coverPreview || comic.coverUrl ? (
+            <img src={coverPreview || comic.coverUrl || undefined} alt="封面" style={{ width: 64, height: 88, objectFit: 'cover', borderRadius: 6 }} />
+          ) : (
+            <div style={{ width: 64, height: 88, borderRadius: 6, background: 'var(--panel-2, #1b2130)', display: 'grid', placeItems: 'center', fontSize: 26 }}>📖</div>
+          )}
+          <label className="btn sm" style={{ cursor: 'pointer' }}>
+            ＋ 更换封面
+            <input
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                setCoverFile(f);
+                setCoverPreview(URL.createObjectURL(f));
+                e.target.value = '';
+              }}
+            />
+          </label>
+          <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+            {coverFile ? `已选择：${coverFile.name}（保存时上传）` : '支持 JPG / PNG / WebP，不更换请留空'}
+          </span>
+        </div>
+      </div>
       <div className="field">
         <label>标题</label>
         <input className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />

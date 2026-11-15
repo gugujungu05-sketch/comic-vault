@@ -29,7 +29,7 @@
     view: 'library', user: null, server: '', theme: 'dark',
     comics: [], community: [], categories: [], boards: [], posts: [],
     comic: null, q: '', board: 'all', category: 'all', update: null, busy: false,
-    importPaths: null, importSel: new Set(), importIntoChapter: '',
+    importPaths: null, importSel: new Set(), importIntoChapter: '', comicCoverPick: null,
     sourcesList: [], sourceId: '', srcResults: [], srcComic: null, srcChecked: new Set(),
     subs: [],
     selecting: false, selComics: new Set(),
@@ -648,6 +648,7 @@
       ${progressHtml}
       <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:6px">
         <button class="btn primary" data-action="import-into-current">＋ 导入页面到本书（可多选 / 排序）</button>
+        <button class="btn" data-action="edit-comic">✎ 编辑漫画信息</button>
         <button class="btn" data-action="add-chapter">＋ 新建一话</button>
         <button class="btn" data-action="add-pages" data-id="${esc(chapters[0]?.id || '')}">↑ 追加页面到第一话（可排序）</button>
         <span class="spacer"></span>
@@ -669,6 +670,26 @@
             <button class="btn sm danger" data-action="del-chapter" data-id="${esc(ch.id)}">删除</button>
           </td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">还没有话，点「新建一话」开始</div>'}`;
+  }
+  /* ------------------------------ 漫画整本编辑 ------------------------------ */
+  function openComicEditor(c) {
+    state.comicCoverPick = null;
+    const cover = coverUrl(c);
+    openModal(`<h3>编辑漫画信息</h3>
+      <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <div id="ceCoverBox">${cover ? `<img src="${esc(cover)}" style="width:72px;height:100px;object-fit:cover;border-radius:8px" />` : '<div style="width:72px;height:100px;border-radius:8px;display:grid;place-items:center;background:var(--panel-2,#1b2130);font-size:28px">📖</div>'}</div>
+        <div style="flex:1;min-width:160px">
+          <button class="btn sm" data-action="pick-comic-cover">＋ 更换封面</button>
+          <p class="muted" style="font-size:11px;margin:6px 0 0" id="ceCoverHint">支持 JPG / PNG / WebP；不更换请留空</p>
+        </div>
+      </div>
+      <label class="field"><span>漫画标题</span><input class="input" id="ceTitle" value="${esc(c.title || '')}" /></label>
+      <label class="field"><span>作者</span><input class="input" id="ceAuthor" value="${esc(c.author || '')}" /></label>
+      <label class="field"><span>简介</span><textarea class="textarea" id="ceDesc" rows="4" placeholder="写点内容介绍…">${esc(c.description || '')}</textarea></label>
+      <div class="modal-actions">
+        <button class="btn" data-action="close-modal">取消</button>
+        <button class="btn primary" data-action="save-comic">保存</button>
+      </div>`);
   }
   /* ------------------------------ 分享（与网站同一套接口） ------------------------------ */
   /** 重新拉取详情并刷新分享面板，保证 token / 设置是服务端最新值 */
@@ -1147,17 +1168,31 @@
     openModal(`<h3>${intoChapter ? '追加页面' : '导入漫画'} · ${paths.length} 个文件</h3>
       <div class="imp-tools"><span class="muted" id="impCount"></span>
         <span class="spacer"></span>
+        <button class="btn sm primary" id="impAddMore" type="button">＋ 继续添加图片</button>
         <button class="btn sm" id="impAll" type="button">全选</button>
         <button class="btn sm" id="impInvert" type="button">反选</button>
         <button class="btn sm" id="impSort" type="button">按名称排序</button>
         <button class="btn sm" id="impReverse" type="button">倒序</button></div>
       <div class="imp-grid" id="impGrid"></div>
-      <p class="muted" style="font-size:11px;margin:10px 0 0">一次可选多个文件；点格子勾选或取消，<b>拖动格子或点 ↑↓ 可手动调整页序</b>，编号就是导入后的页序。手机端如一次只能选一个，可反复点「选择文件」继续累加。</p>
+      <p class="muted" style="font-size:11px;margin:10px 0 0">一次可选多个文件；点格子勾选或取消，<b>拖动格子或点 ↑↓ 可手动调整页序</b>，编号就是导入后的页序。点「继续添加图片」可再选一批，新图片会追加到本列表一起排序、编号连续；手机端一次只能选一个时反复点即可。</p>
       ${targetBlock}
       <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
         <button class="btn primary" data-action="do-import">开始导入</button></div>
       <span id="busyLabel" class="muted" style="font-size:11px"></span>`, true);
     renderImportGrid();
+    const addMore = $('#impAddMore');
+    if (addMore) addMore.onclick = async () => {
+      let more = [];
+      try { more = (Host.pickImport ? await Host.pickImport() : await Host.pickFiles()) || []; }
+      catch { return toast('选择图片失败', true); }
+      try { more = await Host.resolvePaths(more); } catch { /* 已是文件列表 */ }
+      if (!more || !more.length) return;
+      const before = (state.importPaths || []).length;
+      state.importPaths = [...(state.importPaths || []), ...more];
+      more.forEach((p) => state.importSel.add(keyOf(p)));
+      renderImportGrid();
+      toast(`已追加 ${state.importPaths.length - before} 张，与之前的图片一起排序`);
+    };
     const targetSel = $('#impTarget');
     if (targetSel) {
       const syncTitle = () => {
@@ -1533,6 +1568,38 @@
         renderUpdates(); toast('已取消订阅');
       }
       else if (a === 'upload-avatar') await uploadAvatar();
+      else if (a === 'edit-comic') openComicEditor(state.comicData || {});
+      else if (a === 'pick-comic-cover') {
+        let pick = [];
+        try { pick = await Host.pickFiles(); } catch { /* 忽略 */ }
+        if (pick && pick.length) {
+          state.comicCoverPick = pick[0];
+          const hint = $('#ceCoverHint');
+          if (hint) hint.textContent = `已选择 ${nameOf(pick[0])}，点「保存」后生效`;
+          toast('封面已选择，点保存生效');
+        }
+      }
+      else if (a === 'save-comic') {
+        const body = {
+          title: String($('#ceTitle')?.value || '').trim() || '未命名漫画',
+          author: String($('#ceAuthor')?.value || '').trim(),
+          description: String($('#ceDesc')?.value || '').trim(),
+        };
+        busy(true, '保存中…');
+        try {
+          await api('POST', `/api/comics/${state.comic}`, { body });
+          const f = state.comicCoverPick;
+          if (f) {
+            await api('POST', `/api/comics/${state.comic}/cover`, {
+              files: [typeof f === 'string' ? { path: f, name: base(f), field: 'file' } : { id: f.id, name: nameOf(f), field: 'file' }],
+            });
+            state.comicCoverPick = null;
+          }
+          closeModal();
+          await renderComic();
+          toast('漫画信息已保存');
+        } catch (err) { toast(err.message, true); } finally { busy(false); }
+      }
       else if (a === 'edit-profile') openProfileEditor();
       else if (a === 'profile-save') await saveProfile();
       else if (a === 'set-mode') {

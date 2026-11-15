@@ -114,6 +114,10 @@ function devManifest(): Plugin {
 }
 
 export default defineConfig({
+  /** GitHub Pages 部署在 /comic-vault/ 子路径下：资源必须带这个前缀，
+   *  否则引导脚本会去请求 /assets/* 而 404，页面整片白屏。
+   *  常驻后端同时以 / 和 /comic-vault/ 挂载 dist，两个入口都能取到资源。 */
+  base: '/comic-vault/',
   plugins: [react(), credentialBootstrap(), devManifest()],
   resolve: {
     alias: {

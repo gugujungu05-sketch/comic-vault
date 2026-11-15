@@ -572,7 +572,13 @@ export function ImportDialog({
               <span className={`sort-mode ${manualOrder ? 'custom' : ''}`}>
                 {manualOrder ? '自定义顺序' : '智能自然排序'}
               </span>
-              <div className="row" style={{ gap: 6, marginLeft: 'auto' }}>
+              <div className="row" style={{ gap: 6, marginLeft: 'auto', flexWrap: 'wrap' }}>
+                <button className="chip sm active" type="button" onClick={() => photoRef.current?.click()}>
+                  <Icon name="image" size={13} /> ＋ 继续添加图片
+                </button>
+                <button className="chip sm" type="button" onClick={() => imgRef.current?.click()}>
+                  <Icon name="file" size={13} /> ＋ 继续添加文件
+                </button>
                 <button className="chip sm" type="button" onClick={sortByName}>按名称排序</button>
                 <button className="chip sm" type="button" onClick={reverseOrder}>反转</button>
                 {manualOrder && (
@@ -622,7 +628,7 @@ export function ImportDialog({
               </div>
             )}
             <div className="sort-hint">
-              三个「选择」按钮都可一次多选；拖动行或用 ↑↓ 调整顺序，导入时按此顺序排列页面。
+              点「继续添加图片 / 文件」可随时再选一批，新图片会<b>追加到当前列表一起排序</b>，不会另起一批、编号连续；拖动行或用 ↑↓ 调整顺序，导入时按此顺序排列页面。
             </div>
           </div>
 
