@@ -672,7 +672,7 @@ app.get('/api/comics/:id', (req, res) => {
   });
 });
 
-app.patch('/api/comics/:id', (req, res) => {
+const updateComicMeta = (req, res) => {
   const comic = getComic(req.params.id);
   if (!comic) return res.status(404).json({ error: '漫画不存在' });
   const body = req.body || {};
@@ -694,7 +694,10 @@ app.patch('/api/comics/:id', (req, res) => {
   }
   saveDbSoon();
   res.json(summarize(comic));
-});
+};
+app.patch('/api/comics/:id', updateComicMeta);
+/* Android 的 HttpURLConnection 对 PATCH 兼容性不稳，提供等价 POST 别名 */
+app.post('/api/comics/:id', updateComicMeta);
 
 app.delete('/api/comics/:id', async (req, res) => {
   const db = loadDb();

@@ -7,7 +7,7 @@
  *
  * 重要：/api/ 数据请求永不缓存，保证软件与网站看到的始终是同一份实时数据。
  */
-const CACHE = 'cv-shell-v2';
+const CACHE = 'cv-shell-v3';
 let CODE = null;
 
 self.addEventListener('message', (event) => {
@@ -41,7 +41,9 @@ self.addEventListener('activate', (event) => {
 function isShellAsset(pathname) {
   return (
     pathname.startsWith('/assets/') ||
+    pathname.startsWith('/comic-vault/assets/') ||
     pathname.startsWith('/icons/') ||
+    pathname.startsWith('/comic-vault/icons/') ||
     /\.(?:js|css|woff2?|png|svg|ico|webp)$/i.test(pathname)
   );
 }

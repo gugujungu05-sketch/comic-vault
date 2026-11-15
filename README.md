@@ -127,10 +127,10 @@ npm run build && npm start
 
 | 文件 | 适用 |
 |---|---|
-| `ComicVault-3.4.0.8-windows-x64-setup.exe` | Windows 64 位 · NSIS 安装版（推荐） |
-| `ComicVault-3.4.0.8-windows-x64-portable.exe` | Windows 64 位 · 免安装便携版 |
-| `ComicVault-3.4.0.8-linux-x64.AppImage` | Linux x64，chmod +x 后运行 |
-| `ComicVault-3.4.0.8-android.apk` | Android 6.0+，见方式三 |
+| `ComicVault-3.4.0.9-windows-x64-setup.exe` | Windows 64 位 · NSIS 安装版（推荐） |
+| `ComicVault-3.4.0.9-windows-x64-portable.exe` | Windows 64 位 · 免安装便携版 |
+| `ComicVault-3.4.0.9-linux-x64.AppImage` | Linux x64，chmod +x 后运行 |
+| `ComicVault-3.4.0.9-android.apk` | Android 6.0+，见方式三 |
 
 > Windows 32 位（x86）：Electron 45 起不再提供 win32-ia32 运行时，本版不提供，也不会把 x64 包误发给 32 位客户端。Apple / iOS 用网页版 PWA（Safari → 添加到主屏幕），内容始终自动最新。
 
@@ -142,7 +142,7 @@ npm run build && npm start
 
 ### 方式三：手机软件（Android / iPhone）
 
-**Android**：下载 `ComicVault-3.4.0.8-android.apk` 传到手机安装（系统提示「未知来源」时允许），首次打开用**同一个邮箱账号登录一次**即可。包内 `versionName` 与 Release 标注一致；Android 6.0 及以上可用。
+**Android**：下载 `ComicVault-3.4.0.9-android.apk` 传到手机安装（系统提示「未知来源」时允许），首次打开用**同一个邮箱账号登录一次**即可。包内 `versionName` 与 Release 标注一致；Android 6.0 及以上可用。
 
 **iPhone / iPad**：Linux 环境无法生成 iOS 原生安装包，用 Safari 打开同一网址 → 分享 → **添加到主屏幕**，效果等同独立 App。
 
@@ -386,7 +386,7 @@ git push                  # GitHub Pages 清单随 version.json 自动更新
 |---|---|---|---|
 | 界面 | 浏览器中的 SPA | 本地 `desktop/app/` 界面 | APK 内 `assets/app/` 本地界面 |
 | 数据 | 直连服务端 | IPC 直连同一 `/api` | Java 桥直连同一 `/api` |
-| 版本 | 2.7.0.12（随服务器） | 3.4.0.8 | 3.4.0.8 |
+| 版本 | 2.7.0.13（随服务器） | 3.4.0.9 | 3.4.0.9 |
 | 更新 | 刷新即最新 | 设置 → 检查更新 | 设置 → 检查更新 |
 | 软件下载页 | 有（网站提供安装包） | **无** | **无** |
 
@@ -400,6 +400,12 @@ git push                  # GitHub Pages 清单随 version.json 自动更新
 - **条漫模式**：阅读器新增「条漫」选项，图片宽度撑满、零间隙、上下连续滚动，长图不被切断；隐藏翻页按钮与页码，滚到话末直接显示「下一话」入口。
 - **上一话 / 下一话**：阅读器底栏与顶栏都有显式按钮，键盘 `[` `]`，读到话末继续前进自动进入下一话。
 - **分享落地页**：分享链接打开后先展示封面、标题、作者、简介、话数 / 页数、下载权限、有效期与目录，再点「开始阅读」；阅读中可返回封面，去掉了遮挡画面的浮动下载按钮。
+
+**v3.4.0.9 本轮修复**
+
+- **网站白屏终于修好**：根因是构建产物把 JS/CSS 写成 `/assets/...`，而 GitHub Pages 站点挂在 `/comic-vault/` 下，资源全部 404、脚本没跑起来。现在构建 `base` 改为 `/comic-vault/`，引导脚本加载 `/comic-vault/assets/...`；同时刷新 Service Worker 缓存版本，两个入口（Pages / 常驻后端）都能正常渲染。
+- **导入排序能「继续添加图片」**：网站排序面板与桌面 / 手机导入网格都新增按钮，随时再选一批，新图片**追加到当前列表一起排序**、编号连续、保留已勾选，不会另起一批。
+- **漫画整本可编辑**：网站编辑弹窗补齐封面上传；桌面 / 手机漫画详情新增「编辑漫画信息」，可改**标题、作者、简介、封面**，导入后的新漫画也能马上编辑。后端补 `POST /api/comics/:id` 兼容 Android。
 
 **v3.4.0.8 本轮修复**
 
