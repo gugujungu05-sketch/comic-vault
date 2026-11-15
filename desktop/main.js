@@ -15,7 +15,7 @@ const { spawn } = require('node:child_process');
 const http = require('node:http');
 const https = require('node:https');
 
-const VERSION = '3.4.0.5';
+const VERSION = '3.4.0.6';
 /** 只有旧版临时隧道地址才需要强制回退本机，固定云端地址不能被误清 */
 const OLD_TUNNEL_RE = /trycloudflare\.com|ngrok|loca\.lt|cloudflare-tunnel/i;
 /** 项目自己的公开入口：软件里所有「打开网站 / 分享链接」都用它，不再出现 workbuddy 网盘地址 */
@@ -528,6 +528,21 @@ ipcMain.handle('cv:set-theme', (_e, theme) => { writeConfig({ theme: theme === '
 ipcMain.handle('cv:site-url', () => PUBLIC_SITE);
 /** 分享链接与二维码统一用项目自己的公开域名（200 直达的 ?s= 入口） */
 ipcMain.handle('cv:share-base', () => PUBLIC_SITE);
+/** 分享落地页配置：主链接走常驻服务器（200 + 可看可下载），备用走 GitHub Pages 静态入口 */
+ipcMain.handle('cv:share-config', () => {
+  let base = CLOUD_SERVER, cred = '';
+  try {
+    const u = new URL(CLOUD_SERVER);
+    base = u.origin;
+    cred = u.searchParams.get('sharecode') || '';
+  } catch { /* 保持原值 */ }
+  return {
+    landing: `${base}/comic-vault/?s=`,
+    backup: `${PUBLIC_SITE}?s=`,
+    credential: cred,
+    downloadBase: base,
+  };
+});
 ipcMain.handle('cv:open-external', (_e, url) => { if (/^https?:/i.test(String(url))) shell.openExternal(String(url)); return { ok: true }; });
 ipcMain.handle('cv:open-download', async () => {
   // 全流程留在软件内：只把安装包地址交给界面，由「一键下载并安装」完成。
@@ -541,7 +556,10 @@ ipcMain.handle('cv:open-download', async () => {
 
 ipcMain.handle('cv:check-update', async () => {
   try {
-    const info = await apiFetch(endpoint('/api/software/latest', { channel: 'desktop', current: VERSION }));
+    const info = await apiFetch(endpoint('/api/software/latest', {
+      channel: 'desktop', current: VERSION,
+      platform: process.platform, arch: process.arch,
+    }));
     let serverVersion = '';
     try { const rt = await apiFetch(endpoint('/api/runtime')); serverVersion = rt.data?.version || ''; } catch { /* 忽略 */ }
     const d = info.data || {};

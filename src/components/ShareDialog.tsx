@@ -143,6 +143,22 @@ export function ShareDialog({
     a.click();
   }
 
+  /** 直接把二维码图片写进剪贴板，方便粘贴到微信 / QQ；不支持时回退为图片地址 */
+  async function copyQr() {
+    const img = document.getElementById('cv-share-qr') as HTMLImageElement | null;
+    if (!img?.src) return;
+    try {
+      const blob = await (await fetch(img.src)).blob();
+      const Ctor = (window as unknown as { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
+      if (!Ctor || !navigator.clipboard?.write) throw new Error('unsupported');
+      await navigator.clipboard.write([new Ctor({ 'image/png': blob })]);
+      toast('二维码已复制，可直接粘贴', 'ok');
+    } catch {
+      const ok = await copyText(img.src);
+      toast(ok ? '已复制二维码图片地址' : '当前环境不支持复制图片，请点「保存二维码」', ok ? 'ok' : 'err');
+    }
+  }
+
   const selectedCount = scope === 'all' ? chapters.length : selected.length;
   const selectedPages =
     scope === 'all'
@@ -244,9 +260,14 @@ export function ShareDialog({
               <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
                 <div>
                   <QrCode text={link} size={148} id="cv-share-qr" />
-                  <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={downloadQr}>
-                    <Icon name="download" size={13} /> 保存二维码
-                  </button>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                    <button className="btn sm ghost" onClick={downloadQr}>
+                      <Icon name="download" size={13} /> 保存二维码
+                    </button>
+                    <button className="btn sm ghost" onClick={copyQr}>
+                      <Icon name="copy" size={13} /> 复制二维码
+                    </button>
+                  </div>
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.9 }}>
                   <div>

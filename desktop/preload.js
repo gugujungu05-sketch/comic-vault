@@ -2,7 +2,7 @@
 /** 本地界面专用桥：只暴露最小 API，页面拿不到 Node 能力 */
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const VERSION = '3.4.0.5';
+const VERSION = '3.4.0.6';
 
 contextBridge.exposeInMainWorld('cvApp', {
   version: VERSION,
@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld('cvApp', {
   siteUrl: () => ipcRenderer.invoke('cv:site-url'),
   openExternal: (url) => ipcRenderer.invoke('cv:open-external', url),
   openDownload: () => ipcRenderer.invoke('cv:open-download'),
+  /* 分享落地页与二维码：主/备用链接前缀 + 网关凭据 */
+  shareConfig: () => ipcRenderer.invoke('cv:share-config'),
 
   /* 独立阅读窗口 */
   openReader: (comicId, chapterId) => ipcRenderer.invoke('cv:open-reader', comicId, chapterId),
