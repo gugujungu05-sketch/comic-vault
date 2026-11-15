@@ -27,7 +27,7 @@
       "arch": "x64",
       "sizeBytes": 121657475,
       "sha256": "dd9aa4d619053ab586800bad651e4cf7a76e06258eb17edc746bcf4e852ae69a",
-      "local": false,
+      "local": true,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.6/ComicVault-3.4.0.6-windows-x64-setup.exe",
       "updatedAt": 1794722891650
     },
@@ -39,7 +39,7 @@
       "arch": "x64",
       "sizeBytes": 110737708,
       "sha256": "64c721f71f991a293fbdf1248834b12532be0211a00192cb73b71279fac247bc",
-      "local": false,
+      "local": true,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.6/ComicVault-3.4.0.6-windows-x64-portable.exe",
       "updatedAt": 1794722891650
     },
@@ -51,7 +51,7 @@
       "arch": "x64",
       "sizeBytes": 126269426,
       "sha256": "c94a9f630280ec19ffca20b8b162b82e7eb74c1a3554abadd300b886d62c8deb",
-      "local": false,
+      "local": true,
       "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.6/ComicVault-3.4.0.6-linux-x64.AppImage",
       "updatedAt": 1794722891650
     },
