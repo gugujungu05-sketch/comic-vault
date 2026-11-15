@@ -127,6 +127,7 @@ export function ReaderView({
   const [help, setHelp] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [saveChoice, setSaveChoice] = useState(false);
   const [swipeHint, setSwipeHint] = useState(false);
   const [scrollRatio, setScrollRatio] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -289,6 +290,11 @@ export function ReaderView({
   }, [chapter, pageIndex]);
 
   async function saveCurrentPage() {
+    /* 双页对开且当前是两页：先问用户要合并下载还是单页下载，避免只存到一张 */
+    if (mode === 'double' && currentPages.length === 2 && currentPages[1]?.url) {
+      setSaveChoice(true);
+      return;
+    }
     const p = currentPages[0] || chapter?.pages[pageIndex];
     if (!p?.url) {
       toast('这一页还没有图片', 'err');
@@ -297,6 +303,52 @@ export function ReaderView({
     const name = `${title}-${chapter?.title || '漫画'}-第${pageIndex + 1}页`;
     const ok = await saveImageToDevice(p.url, name);
     toast(ok ? '本页图片已保存' : '已打开图片，可长按保存', ok ? 'ok' : 'err');
+  }
+
+  /** 单页下载：把对开的两页分别保存为两张原图 */
+  async function saveSpreadAsSingle() {
+    setSaveChoice(false);
+    let okAll = true;
+    for (let i = 0; i < currentPages.length; i++) {
+      const p = currentPages[i];
+      if (!p?.url) continue;
+      const name = `${title}-${chapter?.title || '漫画'}-第${pageIndex + i + 1}页`;
+      const ok = await saveImageToDevice(p.url, name);
+      if (!ok) okAll = false;
+    }
+    toast(okAll ? `已分别保存 ${currentPages.length} 张单页` : '部分图片未保存，可长按保存', okAll ? 'ok' : 'err');
+  }
+
+  /** 合并下载：按当前双页对开的顺序把两页横向拼成一张长图 */
+  async function saveSpreadAsMerged() {
+    setSaveChoice(false);
+    try {
+      const imgs = await Promise.all(currentPages.map((p) => new Promise<HTMLImageElement>((resolve, reject) => {
+        const im = new Image();
+        im.crossOrigin = 'anonymous';
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = p.url || '';
+      })));
+      const h = Math.max(...imgs.map((im) => im.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = imgs.reduce((n, im) => n + im.width, 0);
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('canvas 不可用');
+      let x = 0;
+      for (const im of imgs) {
+        ctx.drawImage(im, x, Math.floor((h - im.height) / 2));
+        x += im.width;
+      }
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      const name = `${title}-${chapter?.title || '漫画'}-第${pageIndex + 1}至${pageIndex + currentPages.length}页-双页合并`;
+      const ok = await saveImageToDevice(dataUrl, name);
+      toast(ok ? '双页合并图已保存' : '已打开图片，可长按保存', ok ? 'ok' : 'err');
+    } catch {
+      toast('合并保存失败，已改为分别保存两张', 'err');
+      await saveSpreadAsSingle();
+    }
   }
 
   /** 切换上一话 / 下一话。翻页绝不弹出工具栏 */
@@ -391,8 +443,13 @@ export function ReaderView({
     }
   }
 
-  /** 明确的一次轻点：只有画面正中间矩形才切换工具栏；两侧翻页但绝不弹按键 */
+  /** 明确的一次轻点：面板打开时点面板外画面只收起面板（不翻页）；正中间矩形才切换工具栏 */
   function handleTap(clientX: number, clientY: number, el: HTMLElement) {
+    if (panel || help) {
+      setPanel(null);
+      setHelp(false);
+      return;
+    }
     const rect = el.getBoundingClientRect();
     const x = (clientX - rect.left) / Math.max(1, rect.width);
     const y = (clientY - rect.top) / Math.max(1, rect.height);
@@ -837,6 +894,27 @@ export function ReaderView({
           onClose={() => setEditing(false)}
           onDone={(updated) => { setEditing(false); onPagesChanged?.(updated); }}
         />
+      )}
+
+      {saveChoice && (
+        <div className="backdrop" onClick={() => setSaveChoice(false)}>
+          <div className="modal" style={{ width: 'min(400px, 92vw)' }}>
+            <div className="modal-head"><Icon name="download" /><h3>保存本页</h3></div>
+            <div className="modal-body">
+              <div className="rp-note" style={{ marginTop: 0 }}>
+                当前是双页对开显示（第 {pageIndex + 1}、{pageIndex + 2} 页），想怎么保存？
+              </div>
+              <div className="row" style={{ marginTop: 14, gap: 8 }}>
+                <button className="btn primary" onClick={saveSpreadAsMerged}>
+                  <Icon name="download" size={15} /> 合并下载（拼成一张）
+                </button>
+                <button className="btn" onClick={saveSpreadAsSingle}>
+                  <Icon name="download" size={15} /> 单页下载（存两张）
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {help && (

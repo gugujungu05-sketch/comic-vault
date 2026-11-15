@@ -849,6 +849,19 @@ app.put('/api/comics/:id/chapters/reorder', (req, res) => {
 
 /* ------------------------------ 页面 ------------------------------ */
 
+/** 每章节上传互斥：允许多个请求同时传输，但落盘 + 插入页序严格串行，防止 insertAt 竞态 */
+const chapterLocks = new Map();
+async function withChapterLock(key, fn) {
+  const prev = chapterLocks.get(key) || Promise.resolve();
+  const p = prev.catch(() => {}).then(fn);
+  chapterLocks.set(key, p);
+  try {
+    return await p;
+  } finally {
+    if (chapterLocks.get(key) === p) chapterLocks.delete(key);
+  }
+}
+
 app.post('/api/comics/:id/chapters/:chapterId/pages', upload.array('files', 300), async (req, res) => {
   const comic = getComic(req.params.id);
   const chapter = getChapter(comic, req.params.chapterId);
@@ -856,7 +869,14 @@ app.post('/api/comics/:id/chapters/:chapterId/pages', upload.array('files', 300)
     for (const f of req.files || []) await cleanupTmp(f);
     return res.status(404).json({ error: '章节不存在' });
   }
-  const insertAt = Number.isInteger(req.body?.index) ? Number(req.body.index) : chapter.pages.length;
+  try {
+    const result = await withChapterLock(`${comic.id}/${chapter.id}`, async () => {
+  const insertAt = (() => {
+    const raw = req.body?.index;
+    const n = Number(raw);
+    // multipart 下 req.body.index 是字符串，必须显式转数字
+    return Number.isInteger(n) ? n : chapter.pages.length;
+  })();
   const all = req.files || [];
   const valid = all.filter((f) => f.mimetype?.startsWith('image/') || IMAGE_RE.test(f.originalname || ''));
   for (const f of all) if (!valid.includes(f)) await cleanupTmp(f);
@@ -892,7 +912,7 @@ app.post('/api/comics/:id/chapters/:chapterId/pages', upload.array('files', 300)
     });
   }
   saveDbSoon();
-  res.json({
+  return {
     chapter: {
       ...chapter,
       pages: chapter.pages.map((p) => ({
@@ -902,7 +922,13 @@ app.post('/api/comics/:id/chapters/:chapterId/pages', upload.array('files', 300)
       })),
     },
     added: added.length,
-  });
+  };
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('[upload] 请求失败:', err.message);
+    res.status(500).json({ error: err.message || '上传失败' });
+  }
 });
 
 app.delete('/api/comics/:id/chapters/:chapterId/pages/:pageId', async (req, res) => {

@@ -74,7 +74,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.12";
+    private static final String APP_VERSION = "3.4.0.13.0";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";
@@ -551,7 +551,7 @@ public class MainActivity extends Activity {
         }
 
         /** 打开系统多选文件选择器：可从「浏览其他应用中的文件」进入 Kotatsu 等漫画来源。
-         *  setType("*/*") 配合 EXTRA_MIME_TYPES 才能把压缩包 / PDF 等非图片格式一起列出来。 */
+         *  MIME 设为通配符并配合 EXTRA_MIME_TYPES，才能把压缩包、PDF 等非图片格式一起列出来。 */
         @JavascriptInterface public String pickFiles() {
             runOnUiThread(() -> {
                 try {

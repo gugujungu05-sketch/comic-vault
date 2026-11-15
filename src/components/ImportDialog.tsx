@@ -338,16 +338,18 @@ export function ImportDialog({
           cid = comic.id;
         }
         const remoteDone = groups.slice(0, remoteGroupCount).reduce((n, g) => n + g.items.length, 0);
-        for (let i = 0; i < localGroups.length; i++) {
+        const comicIdFinal: string = cid; // 已在上面确保创建
+        // 跨章节 2 路并发上传（同章节内批次仍串行保页序），多话导入明显提速
+        const uploadOne = async (i: number) => {
           const g = localGroups[i];
           const gi = remoteGroupCount + i;
-          const chapters = await api.addChapter(cid, {
+          const chapters = await api.addChapter(comicIdFinal, {
             title: titles[gi] || g.title || `第 ${gi + 1} 话`,
             number: gi + 1,
           });
           const chapter = chapters[chapters.length - 1];
           await api.uploadPages(
-            cid,
+            comicIdFinal,
             chapter.id,
             g.items.map((it) => ({ name: it.name, blob: it.blob })),
             undefined,
@@ -356,7 +358,17 @@ export function ImportDialog({
               setProgress({ done: remoteDone + before + done, total });
             },
           );
-        }
+        };
+        const LANES = 2;
+        let laneCursor = 0;
+        await Promise.all(Array.from({ length: Math.min(LANES, localGroups.length) }, async () => {
+          for (;;) {
+            const i = laneCursor;
+            laneCursor += 1;
+            if (i >= localGroups.length) return;
+            await uploadOne(i);
+          }
+        }));
       }
       toast(`导入完成，共 ${total} 页`);
       onDone(cid!);

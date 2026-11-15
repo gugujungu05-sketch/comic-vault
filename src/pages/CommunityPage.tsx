@@ -4,6 +4,7 @@ import { api, discover, social } from '../lib/api';
 import { useSession } from '../lib/session';
 import { Modal } from '../components/Modal';
 import { Icon } from '../components/Icon';
+import { ImportDialog } from '../components/ImportDialog';
 import { useErrorToast, useToast } from '../components/Toasts';
 import { formatDate } from '../lib/util';
 import type {
@@ -46,6 +47,7 @@ export function CommunityPage() {
   const [editing, setEditing] = useState<CommunityComic | null>(null);
   const [showPublish, setShowPublish] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
 
   const loadComics = useCallback(async () => {
     setLoading(true);
@@ -135,6 +137,9 @@ export function CommunityPage() {
           <div className="page-sub">所有人都能上传话、补标签、加别名与封面；但只能删除自己上传的那一条</div>
         </div>
         <div className="row" style={{ marginLeft: 'auto' }}>
+          <button className="btn" onClick={() => { if (requireLogin()) setShowUpload(true); }}>
+            <Icon name="download" size={16} /> 上传漫画
+          </button>
           <button className="btn" onClick={() => { if (requireLogin()) setShowImport(true); }}>
             <Icon name="upload" size={16} /> 批量导入
           </button>
@@ -299,6 +304,23 @@ export function CommunityPage() {
           categories={categories}
           onClose={() => setEditing(null)}
           onChanged={async () => { await refreshAll(); setEditing(null); }}
+        />
+      )}
+      {showUpload && (
+        <ImportDialog
+          onClose={() => setShowUpload(false)}
+          onDone={async (cid) => {
+            setShowUpload(false);
+            try {
+              await api.update(cid, { scope: 'community', visibility: 'public' });
+              const cat = category !== 'all' ? category : 'other';
+              await discover.setCategory(cid, cat).catch(() => {});
+              toast('已上传并发布到公共书库');
+            } catch (err) {
+              errorToast(err, '已上传到书架，但发布到公共书库失败，可在漫画详情页手动发布');
+            }
+            await refreshAll();
+          }}
         />
       )}
       {showPublish && (

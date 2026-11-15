@@ -340,9 +340,9 @@ export const api = {
     index?: number,
     onProgress?: (done: number, total: number) => void,
   ) => {
-    // 小批量 + 真实字节进度：批次调小让进度更早、更细地推进；
-    // 用 XHR 上报每批上传比例，避免整批传完才跳进度（表现为卡在 0%）。
-    const BATCH = 6;
+    // 批次加大到 8 + XHR 真实字节进度；同章节批次保持串行，
+    // 跨章节的并发由上层（多话导入）负责，服务端另有每章节锁保证页序。
+    const BATCH = 8;
     let last: Chapter = { id: chapterId, title: '', number: 0, pages: [] };
     return (async () => {
       for (let i = 0; i < files.length; i += BATCH) {

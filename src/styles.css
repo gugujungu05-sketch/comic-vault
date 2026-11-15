@@ -858,6 +858,16 @@ textarea {
 /* 设置面板：分组标签 / 说明文字 / 操作提示 */
 .rp-label { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
 .rp-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin-top: 8px; }
+/* 阅读器设置面板内控件：任何主题下都保证清晰可读（不依赖 --muted 的低对比色） */
+.reader-panel .chip {
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  font-weight: 600;
+}
+.reader-panel .chip.active { color: var(--text); font-weight: 700; }
+.reader-panel .btn.ghost { color: var(--text); }
+.reader-panel .rp-note,
+.reader-panel .rp-tip { color: color-mix(in srgb, var(--text) 78%, var(--muted)); }
+.reader-panel .rp-tip strong { color: var(--text); }
 .rp-tip {
   color: var(--muted); font-size: 12px; line-height: 1.85;
   padding: 10px 12px; border-radius: 10px;
