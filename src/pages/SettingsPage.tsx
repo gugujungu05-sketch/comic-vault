@@ -5,6 +5,7 @@ import { useSession } from '../lib/session';
 import type { Announcement, Stats, UpdateInfo } from '../types';
 import { Icon } from '../components/Icon';
 import { formatBytes, withShareCode, copyText } from '../lib/util';
+import { THEMES, normalizeTheme } from '../lib/themes';
 import { useErrorToast, useToast } from '../components/Toasts';
 
 type InstallPromptEvent = Event & {
@@ -33,9 +34,7 @@ export function SettingsPage() {
   const [annContent, setAnnContent] = useState('');
   const [annBusy, setAnnBusy] = useState(false);
   const [direction, setDirection] = useState<'ltr' | 'rtl'>('ltr');
-  const [theme, setTheme] = useState<'dark' | 'light'>(
-    () => (localStorage.getItem('cv-theme') as 'dark' | 'light') || 'dark',
-  );
+  const [theme, setTheme] = useState<string>(() => normalizeTheme(localStorage.getItem('cv-theme')));
 
   useEffect(() => {
     api.stats().then(setStats).catch(() => {});
@@ -101,7 +100,7 @@ export function SettingsPage() {
     }
   }
 
-  function changeTheme(next: 'dark' | 'light') {
+  function changeTheme(next: string) {
     setTheme(next);
     document.documentElement.dataset.theme = next;
     localStorage.setItem('cv-theme', next);
@@ -280,15 +279,26 @@ export function SettingsPage() {
         <div className="chapter-item" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 10 }}>
           <div>
             <div className="chapter-title">外观主题</div>
-            <div className="chapter-sub">深色适合夜间阅读，浅色适合白天</div>
+            <div className="chapter-sub">阅读器界面会跟随主题一起变化</div>
           </div>
-          <div className="row">
-            <button className={`chip ${theme === 'dark' ? 'active' : ''}`} onClick={() => changeTheme('dark')}>
-              深色
-            </button>
-            <button className={`chip ${theme === 'light' ? 'active' : ''}`} onClick={() => changeTheme('light')}>
-              浅色
-            </button>
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            {THEMES.map((t) => (
+              <button
+                key={t.id}
+                className={`chip ${theme === t.id ? 'active' : ''}`}
+                onClick={() => changeTheme(t.id)}
+                title={t.label}
+              >
+                <span
+                  style={{
+                    display: 'inline-block', width: 12, height: 12, borderRadius: 4,
+                    background: `linear-gradient(135deg, ${t.swatch[0]} 55%, ${t.swatch[1]} 55%)`,
+                    marginRight: 6, border: '1px solid var(--border)', verticalAlign: '-2px',
+                  }}
+                />
+                {t.label}
+              </button>
+            ))}
           </div>
         </div>
 

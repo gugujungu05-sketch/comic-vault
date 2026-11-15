@@ -290,6 +290,14 @@ export interface ActivityItem {
   count: number;
 }
 
+export interface AnnouncementComment {
+  id: string;
+  by: string;
+  byName: string;
+  text: string;
+  at: number;
+}
+
 export interface Announcement {
   id: string;
   title: string;
@@ -298,6 +306,8 @@ export interface Announcement {
   byName: string;
   at: number;
   pinned: boolean;
+  editedAt?: number;
+  comments?: AnnouncementComment[];
 }
 
 export interface SoftwareItem {

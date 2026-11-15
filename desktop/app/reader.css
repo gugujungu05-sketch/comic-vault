@@ -1,18 +1,57 @@
+/* 漫画库 · 独立阅读器样式：颜色全部走主题变量，与主界面 / 网站主题一致 */
+:root {
+  --r-bg: #07090c;
+  --r-bar: rgba(12, 17, 23, .93);
+  --r-line: #222c38;
+  --r-panel: #1c2530;
+  --r-panel-hover: #26313f;
+  --r-btn-line: #3a4756;
+  --r-text: #e6ecf3;
+  --r-muted: #8b98a9;
+  --r-accent: #45c8a0;
+  color-scheme: dark;
+}
+:root[data-theme='light'] {
+  --r-bg: #eef1f5; --r-bar: rgba(255, 255, 255, .95); --r-line: #d8e0e8;
+  --r-panel: #fff; --r-panel-hover: #eef3f7; --r-btn-line: #c2cedb;
+  --r-text: #1a2430; --r-muted: #63707f; --r-accent: #129877;
+  color-scheme: light;
+}
+:root[data-theme='sea'] {
+  --r-bg: #060e16; --r-bar: rgba(10, 22, 33, .93); --r-line: #223b52;
+  --r-panel: #122230; --r-panel-hover: #17293a; --r-btn-line: #2d4963;
+  --r-text: #e3eef7; --r-muted: #8aa3b8; --r-accent: #3fa7d6;
+}
+:root[data-theme='forest'] {
+  --r-bg: #060d09; --r-bar: rgba(11, 23, 16, .93); --r-line: #22402e;
+  --r-panel: #12211a; --r-panel-hover: #172a20; --r-btn-line: #2e523c;
+  --r-text: #e5f2ea; --r-muted: #93b3a1; --r-accent: #3ecf8e;
+}
+:root[data-theme='sunset'] {
+  --r-bg: #0e0906; --r-bar: rgba(26, 17, 12, .93); --r-line: #3e2b1f;
+  --r-panel: #221711; --r-panel-hover: #2b1d15; --r-btn-line: #523826;
+  --r-text: #f7ede4; --r-muted: #b99f8c; --r-accent: #ff8a5c;
+}
+:root[data-theme='sakura'] {
+  --r-bg: #0d0810; --r-bar: rgba(23, 16, 29, .93); --r-line: #3d2c4d;
+  --r-panel: #221830; --r-panel-hover: #2b2038; --r-btn-line: #523a68;
+  --r-text: #f5e9f4; --r-muted: #b297b5; --r-accent: #ff7eb3;
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  background: #07090c; color: #e6ecf3; overflow: hidden;
+  background: var(--r-bg); color: var(--r-text); overflow: hidden;
   font: 13px/1.5 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', sans-serif;
 }
 .r-top, .r-bottom {
   position: fixed; left: 0; right: 0; z-index: 10;
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  background: rgba(12, 17, 23, .93); border-color: #222c38;
+  background: var(--r-bar); border-color: var(--r-line);
   backdrop-filter: blur(10px);
   transition: transform .3s ease, opacity .3s ease;
 }
-.r-top { top: 0; border-bottom: 1px solid #222c38; }
-.r-bottom { bottom: 0; border-top: 1px solid #222c38; }
+.r-top { top: 0; border-bottom: 1px solid var(--r-line); }
+.r-bottom { bottom: 0; border-top: 1px solid var(--r-line); }
 /* 无操作 2.6 秒后自动隐藏上下工具栏，阅读更沉浸 */
 body.idle { cursor: none; }
 body.idle .r-top { transform: translateY(-100%); opacity: 0; }
@@ -21,14 +60,33 @@ body.idle .r-hint { opacity: 0; }
 .r-title { font-weight: 700; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .r-select {
   margin-left: auto; max-width: 210px; padding: 5px 8px; border-radius: 6px;
-  background: #1c2530; border: 1px solid #27313d; color: inherit;
+  background: var(--r-panel); border: 1px solid var(--r-line); color: inherit;
 }
+.r-scope { margin-left: 0; max-width: 128px; font-size: 12px; }
 .r-btn {
   min-width: 32px; min-height: 32px; padding: 5px 9px; border-radius: 6px;
-  border: 1px solid #27313d; background: #1c2530; color: inherit; cursor: pointer;
+  border: 1px solid var(--r-btn-line); background: var(--r-panel); color: var(--r-text); cursor: pointer;
+  font-size: 12px; white-space: nowrap;
 }
-.r-btn:hover { border-color: #45c8a0; }
-.r-zoom { font-size: 11px; color: #8b98a9; min-width: 38px; text-align: center; }
+.r-btn:hover { border-color: var(--r-accent); background: var(--r-panel-hover); }
+.r-btn.active { border-color: var(--r-accent); color: var(--r-accent); }
+.r-zoom { font-size: 11px; color: var(--r-muted); min-width: 38px; text-align: center; }
+
+/* 沉浸态角落只留一个明确的菜单按钮，点它才显示按键；白色画面上也清晰 */
+.r-peek {
+  position: fixed; right: 12px; top: 56px; z-index: 12;
+  width: 34px; height: 34px; border-radius: 50%;
+  display: none; place-items: center; cursor: pointer;
+  font-size: 17px; line-height: 1; color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(12, 16, 24, 0.92);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+body.idle .r-peek { display: grid; }
+
+/* 从右往左阅读：底部按键与箭头镜像调换，前进在左、后退在右 */
+body.rtl .r-bottom { flex-direction: row-reverse; }
+body.rtl #slider { transform: scaleX(-1); }
 .r-stage {
   position: absolute; inset: 49px 0 49px 0; display: flex; align-items: center;
   justify-content: center; gap: 4px; overflow: auto; padding: 12px;
@@ -44,35 +102,49 @@ body.idle .r-hint { opacity: 0; }
 }
 .r-stage.spread img { max-width: 50%; }
 /* 条漫：宽度撑满、零间隙、上下连续滚动，长图不被切断 */
-.r-stage.webtoon { display: block; padding: 0; overflow-y: auto; overflow-x: hidden; background: #000; }
+.r-stage.webtoon { display: block; padding: 0; overflow-y: auto; overflow-x: hidden; background: var(--r-bg); }
 .r-stage.webtoon img {
   display: block; width: 100%; height: auto; max-width: none; max-height: none;
   object-fit: initial; box-shadow: none; margin: 0;
 }
 .r-webtoon-edge {
   display: block; width: 100%; padding: 20px 14px; border: 0; cursor: pointer;
-  background: #12161e; color: #45c8a0; font-size: 14px; font-weight: 700;
-  text-align: center; border-top: 1px solid #222c38;
+  background: var(--r-panel); color: var(--r-accent); font-size: 14px; font-weight: 700;
+  text-align: center; border-top: 1px solid var(--r-line);
 }
-.r-webtoon-edge:hover { background: #1a222c; }
-.r-webtoon-edge.done { color: #67748d; font-weight: 500; cursor: default; }
-.r-loading, .r-empty { color: #8b98a9; }
+.r-webtoon-edge:hover { background: var(--r-panel-hover); }
+.r-webtoon-edge.done { color: var(--r-muted); font-weight: 500; cursor: default; }
+.r-loading, .r-empty { color: var(--r-muted); }
 .r-hint {
   position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
-  font-size: 11px; color: #677483; pointer-events: none; opacity: .8;
+  font-size: 11px; color: var(--r-text); pointer-events: none; opacity: .92;
+  padding: 5px 12px; border-radius: 999px;
+  background: var(--r-bar);
+  border: 1px solid var(--r-btn-line);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  transition: opacity .25s;
 }
-#slider { flex: 1; accent-color: #45c8a0; min-width: 80px; }
-#pageInfo { font-size: 12px; color: #8b98a9; white-space: nowrap; min-width: 74px; text-align: center; }
+#slider { flex: 1; accent-color: var(--r-accent); min-width: 80px; }
+#pageInfo { font-size: 12px; color: var(--r-muted); white-space: nowrap; min-width: 74px; text-align: center; }
 body.mobile .r-hint { display: none; }
 body.mobile .r-title { max-width: 26vw; }
 body.mobile .r-select { max-width: 110px; }
 body.mobile .r-btn { min-height: 40px; min-width: 40px; }
-/* 手机端顶栏只保留返回 / 标题 / 上一话 / 章节 / 下一话 / 条漫，避免挤压 */
-body.mobile .r-top { gap: 3px; padding: 0 6px; }
+/* 手机端顶栏只保留返回 / 标题 / 上一话 / 章节 / 下一话 / 条漫 / 存本页，避免挤压；
+   方向与「设置应用范围」换到第二行，文字不再被压扁截断 */
+body.mobile .r-top { gap: 3px; padding: 4px 6px; flex-wrap: wrap; align-content: center; }
 body.mobile #btnZoomIn, body.mobile #btnZoomOut, body.mobile #zoomLabel,
 body.mobile #btnFull, body.mobile #btnSpread { display: none; }
-body.mobile .r-select { max-width: 92px; }
+body.mobile .r-select { max-width: 92px; margin-left: 0; }
 body.mobile .r-title { max-width: 20vw; }
+/* 强制第二行：方向与范围各占一半，文字完整 */
+body.mobile .r-top::after { content: ''; flex-basis: 100%; height: 0; order: 19; }
+body.mobile #btnDir, body.mobile #prefScope {
+  order: 20; flex: 1 1 44%; max-width: none; min-width: 0; height: 34px;
+  font-size: 12px; text-align: center;
+}
+body.mobile .r-stage { inset: 92px 0 52px 0; }
+body.mobile .r-peek { top: 100px; }
 body.mobile .r-bottom { gap: 5px; padding: 6px 8px; }
 body.mobile #slider { display: none; }
 

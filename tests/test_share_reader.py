@@ -204,6 +204,12 @@ def main():
             ck('桌面阅读窗口有「条漫」按钮', dp.locator('#btnWebtoon').count() == 1)
             ck('桌面阅读窗口有「上一话/下一话」按钮',
                dp.locator('#btnPrevChapter').count() == 1 and dp.locator('#btnNextChapter').count() == 1)
+            ck('桌面阅读窗口默认沉浸（工具栏隐藏）', 'idle' in (dp.locator('body').get_attribute('class') or ''))
+            ck('桌面阅读窗口有角落唤出按钮', dp.locator('#btnPeek').count() == 1)
+            # 新交互：只有点角落菜单 / 画面正中才显示按键
+            dp.locator('#btnPeek').click()
+            dp.wait_for_timeout(150)
+            ck('点角落按钮后工具栏显示', 'idle' not in (dp.locator('body').get_attribute('class') or ''))
             dp.locator('#btnWebtoon').click()
             dp.wait_for_timeout(300)
             ck('桌面阅读窗口条漫模式生效', dp.locator('.r-stage.webtoon').count() == 1)

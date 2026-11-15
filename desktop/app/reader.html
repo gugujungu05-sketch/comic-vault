@@ -16,14 +16,21 @@
     <button class="r-btn" id="btnNextChapter" title="下一话 ]">»</button>
     <button class="r-btn" id="btnWebtoon" title="条漫：宽度撑满、上下连续滚动">条漫</button>
     <button class="r-btn" id="btnSpread" title="单页 / 双页">单页</button>
+    <button class="r-btn" id="btnDir" title="切换阅读方向（从左往右 / 从右往左）">从左往右</button>
+    <select class="r-select r-scope" id="prefScope" title="阅读设置应用范围">
+      <option value="all">设置：全部</option>
+      <option value="comic">设置：仅这本</option>
+      <option value="chapter">设置：仅本话</option>
+    </select>
     <button class="r-btn" id="btnZoomOut" title="缩小">−</button>
     <span class="r-zoom" id="zoomLabel">100%</span>
     <button class="r-btn" id="btnZoomIn" title="放大">＋</button>
-    <button class="r-btn" id="btnSave" title="保存本页图片">⇩</button>
+    <button class="r-btn" id="btnSave" title="保存本页图片">⇩ 存本页</button>
     <button class="r-btn" id="btnFull" title="全屏">⛶</button>
   </header>
+  <button class="r-peek" id="btnPeek" title="显示阅读菜单" aria-label="显示阅读菜单">☰</button>
   <div class="r-stage" id="stage"><div class="r-loading">正在载入页面…</div></div>
-  <div class="r-hint" id="hint">← / → 翻页 · 空格下一页 · +/- 缩放 · Esc 退出全屏</div>
+  <div class="r-hint" id="hint">轻点画面正中唤出菜单 · 左右滑动翻页 · ← / → 翻页</div>
   <footer class="r-bottom">
     <button class="r-btn" id="btnPrev">‹ 上一页</button>
     <span id="pageInfo">— / —</span>

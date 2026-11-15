@@ -1,5 +1,5 @@
 import type {
-  ActivityItem, Announcement, Category, Chapter, Comic, ComicSummary, CommunityComic,
+  ActivityItem, Announcement, AnnouncementComment, Category, Chapter, Comic, ComicSummary, CommunityComic,
   ImportComicItem, ImportResult, MetaEntry, PlazaAttachment, PlazaBoard, PlazaPost,
   RankingItem, Settings, ShareLog, SoftwareInfo, Stats, Sticker, UpdateInfo,
   UploadRecord, User,
@@ -878,6 +878,24 @@ export const discover = {
 
   deleteAnnouncement: (id: string) =>
     request<{ ok: boolean }>(`/api/announcements/${id}`, { method: 'DELETE' }),
+
+  updateAnnouncement: (id: string, body: { title: string; content: string }) =>
+    request<{ announcement: Announcement }>(`/api/announcements/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+
+  announcementDetail: (id: string) =>
+    request<{ announcement: Announcement; canAnnounce: boolean; canManage: boolean }>(
+      `/api/announcements/${id}`,
+    ),
+
+  commentAnnouncement: (id: string, text: string) =>
+    request<{ comment: AnnouncementComment }>(`/api/announcements/${id}/comments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    }),
+
+  deleteAnnouncementComment: (id: string, cid: string) =>
+    request<{ ok: boolean }>(`/api/announcements/${id}/comments/${cid}`, { method: 'DELETE' }),
 
   software: () => request<SoftwareInfo>('/api/software'),
 

@@ -9,9 +9,65 @@
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   let comic = null, chapterId = '', comicId = '', pages = [];
-  let index = 0, spread = false, webtoon = false, zoom = 100;
+  let index = 0, spread = false, webtoon = false, zoom = 100, rtl = false;
   let lastReport = 0;
   let isNovel = false, novelText = '', novelRatio = 0, fontSize = 19;
+  /* 阅读方式记忆：支持「全部 / 仅这本 / 仅本话」三种作用范围 */
+  const PREFS_KEY = 'cv-reader-prefs';
+  const SCOPE_KEY = 'cv-reader-scope';
+  const DEF_PREFS = { spread: false, webtoon: false, zoom: 100 };
+  let prefScope = 'all';
+  function readPart(k) { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch { return {}; } }
+  function prefKey(scope) {
+    if (scope === 'chapter') return `${PREFS_KEY}:chapter:${chapterId}`;
+    if (scope === 'comic') return `${PREFS_KEY}:comic:${comicId}`;
+    return PREFS_KEY;
+  }
+  /** 记忆优先级：本话 > 整本 > 全部；direction 缺省时沿用漫画自身方向 */
+  function loadPrefs() {
+    try { const s = localStorage.getItem(SCOPE_KEY); prefScope = (s === 'comic' || s === 'chapter') ? s : 'all'; } catch {}
+    const g = readPart(PREFS_KEY), c = readPart(`${PREFS_KEY}:comic:${comicId}`), ch = readPart(`${PREFS_KEY}:chapter:${chapterId}`);
+    return { ...g, ...c, ...ch };
+  }
+  function savePrefs() {
+    try {
+      localStorage.setItem(SCOPE_KEY, prefScope);
+      const snapshot = { spread, webtoon, zoom, rtl, direction: rtl ? 'rtl' : 'ltr' };
+      localStorage.setItem(prefKey(prefScope), JSON.stringify(snapshot));
+      /* 方向始终写一份全局，保证跨漫画一致 */
+      if (prefScope !== 'all') localStorage.setItem(PREFS_KEY, JSON.stringify({ ...readPart(PREFS_KEY), direction: snapshot.direction }));
+    } catch {}
+  }
+  function applyPrefs(p) {
+    spread = p.spread === undefined ? !!DEF_PREFS.spread : !!p.spread;
+    webtoon = p.webtoon === undefined ? !!DEF_PREFS.webtoon : !!p.webtoon;
+    zoom = Math.min(200, Math.max(50, Number(p.zoom) || DEF_PREFS.zoom));
+    if (p.direction === 'ltr' || p.direction === 'rtl') rtl = p.direction === 'rtl';
+    else if (typeof p.rtl === 'boolean') rtl = p.rtl;
+    syncDirUI();
+  }
+  function changeScope(next) {
+    prefScope = next;
+    try {
+      localStorage.removeItem(`${PREFS_KEY}:chapter:${chapterId}`);
+      localStorage.removeItem(`${PREFS_KEY}:comic:${comicId}`);
+    } catch {}
+    savePrefs();
+    toastR(next === 'all' ? '设置应用到全部' : next === 'comic' ? '设置应用到这本' : '设置应用到本话');
+  }
+  function syncDirUI() {
+    const b = $('#btnDir');
+    if (b) { b.textContent = rtl ? '从右往左' : '从左往右'; b.classList.toggle('active', rtl); }
+    document.body.classList.toggle('rtl', rtl);
+    const s = $('#prefScope'); if (s) s.value = prefScope;
+    /* 底栏靠 row-reverse 镜像位置；这里只把文字/箭头方向跟着翻，语义恒定 */
+    const prev = $('#btnPrev'), next = $('#btnNext');
+    if (prev) prev.innerHTML = rtl ? '上一页 ›' : '‹ 上一页';
+    if (next) next.innerHTML = rtl ? '‹ 下一页' : '下一页 ›';
+    const prevCh = $('#btnPrevChapter'), nextCh = $('#btnNextChapter');
+    if (prevCh) { prevCh.textContent = rtl ? '»' : '«'; prevCh.title = '上一话 ['; }
+    if (nextCh) { nextCh.textContent = rtl ? '«' : '»'; nextCh.title = '下一话 ]'; }
+  }
 
   /** 把阅读进度同步到服务器（书架/详情页显示"上次读到"，节流 4 秒） */
   function reportProgress(force = false) {
@@ -29,6 +85,13 @@
   const asset = (p) => { try { return Host.asset(p); } catch { return p; } };
 
   async function init() {
+    /* 阅读器跟随主界面 / 网站所选主题（localStorage 同源共享） */
+    try {
+      const t = localStorage.getItem('cv-theme') || '';
+      if (['dark', 'light', 'sea', 'forest', 'sunset', 'sakura'].includes(t)) {
+        document.documentElement.dataset.theme = t;
+      }
+    } catch { /* 隐私模式下忽略 */ }
     const qs = new URLSearchParams(location.search);
     comicId = qs.get('comic') || '';
     chapterId = qs.get('chapter') || '';
@@ -40,6 +103,9 @@
     try { comic = await api('GET', `/api/comics/${comicId}`); }
     catch (err) { $('#stage').innerHTML = `<div class="r-empty">${esc(err.message)}</div>`; return; }
     const chapters = comic.chapters || [];
+    /* 方向默认值沿用漫画自身设置；用户记忆过的方向优先 */
+    const gdir = readPart(PREFS_KEY)['direction'];
+    if (!gdir && (comic.direction === 'ltr' || comic.direction === 'rtl')) rtl = comic.direction === 'rtl';
     isNovel = comic.kind === 'novel';
     if (isNovel) {
       webtoon = true; // 小说天然上下滑动连续阅读
@@ -53,10 +119,14 @@
     $('#chapterSel').innerHTML = chapters.map((c) =>
       `<option value="${esc(c.id)}" ${c.id === chapterId ? 'selected' : ''}>${esc(c.title)}</option>`).join('');
     $('#rTitle').textContent = comic.title || '阅读器';
+    applyPrefs(loadPrefs());
+    if (isNovel) webtoon = true;   // 小说强制连续阅读
     loadChapter(chapterId);
   }
   async function loadChapter(id) {
     chapterId = id;
+    /* 仅本话范围：切到别的话时按那一话的记忆重新应用 */
+    if (prefScope === 'chapter') applyPrefs(loadPrefs());
     const ch = (comic.chapters || []).find((c) => c.id === id);
     pages = ch?.pages || [];
     index = 0;
@@ -162,20 +232,28 @@
     reportProgress();
   }
 
+  /* 底部按键语义恒定：上一页 / 下一页按内容顺序；视觉位置与箭头由 CSS 的 row-reverse + syncDirUI 镜像 */
   $('#btnPrev').onclick = () => go(-1);
   $('#btnNext').onclick = () => go(1);
   $('#btnPrevChapter').onclick = () => goChapter(-1);
   $('#btnNextChapter').onclick = () => goChapter(1);
-  $('#btnWebtoon').onclick = () => { if (isNovel) return; webtoon = !webtoon; $('#stage').scrollTop = 0; draw(); };
+  $('#btnDir').onclick = () => {
+    rtl = !rtl;
+    syncDirUI();
+    savePrefs();
+    toastR(rtl ? '已切换：从右往左 RTL' : '已切换：从左往右 LTR');
+  };
+  $('#prefScope').onchange = (e) => changeScope(e.target.value);
+  $('#btnWebtoon').onclick = () => { if (isNovel) return; webtoon = !webtoon; $('#stage').scrollTop = 0; savePrefs(); draw(); };
   $('#btnZoomIn').onclick = () => {
     if (isNovel) { fontSize = Math.min(30, fontSize + 1); try { localStorage.setItem('cv-novel-font', String(fontSize)); } catch {} draw(); return; }
-    zoom = Math.min(200, zoom + 10); draw();
+    zoom = Math.min(200, zoom + 10); savePrefs(); draw();
   };
   $('#btnZoomOut').onclick = () => {
     if (isNovel) { fontSize = Math.max(14, fontSize - 1); try { localStorage.setItem('cv-novel-font', String(fontSize)); } catch {} draw(); return; }
-    zoom = Math.max(50, zoom - 10); draw();
+    zoom = Math.max(50, zoom - 10); savePrefs(); draw();
   };
-  $('#btnSpread').onclick = () => { if (webtoon) { webtoon = false; } spread = !spread; draw(); };
+  $('#btnSpread').onclick = () => { if (webtoon) { webtoon = false; } spread = !spread; savePrefs(); draw(); };
   $('#chapterSel').onchange = (e) => loadChapter(e.target.value);
   $('#slider').oninput = (e) => {
     index = Number(e.target.value);
@@ -267,38 +345,85 @@
     if (Math.abs(approx - index) >= 2) { index = approx; reportProgress(); }
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown' || e.key === 'ArrowDown') { e.preventDefault(); go(1); }
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === 'ArrowUp') { e.preventDefault(); go(-1); }
-    else if (e.key === '[') { goChapter(-1); }
-    else if (e.key === ']') { goChapter(1); }
+    /* RTL：方向键与翻页语义镜像 */
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown' || e.key === 'ArrowDown') { e.preventDefault(); go(rtl ? -1 : 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === 'ArrowUp') { e.preventDefault(); go(rtl ? 1 : -1); }
+    else if (e.key === '[') { goChapter(rtl ? 1 : -1); }
+    else if (e.key === ']') { goChapter(rtl ? -1 : 1); }
     else if (e.key === 'Home') { index = 0; $('#stage').scrollTop = 0; draw(); }
     else if (e.key === 'End') { index = Math.max(0, pages.length - 1); draw(); }
-    else if (e.key === '+' || e.key === '=') { zoom = Math.min(200, zoom + 10); draw(); }
-    else if (e.key === '-') { zoom = Math.max(50, zoom - 10); draw(); }
-    else if (e.key.toLowerCase() === 'd') { spread = !spread; draw(); }
-    else if (e.key.toLowerCase() === 'w') { webtoon = !webtoon; $('#stage').scrollTop = 0; draw(); }
+    else if (e.key === '+' || e.key === '=') { zoom = Math.min(200, zoom + 10); savePrefs(); draw(); }
+    else if (e.key === '-') { zoom = Math.max(50, zoom - 10); savePrefs(); draw(); }
+    else if (e.key.toLowerCase() === 'd') { spread = !spread; savePrefs(); draw(); }
+    else if (e.key.toLowerCase() === 'w') { webtoon = !webtoon; $('#stage').scrollTop = 0; savePrefs(); draw(); }
+    else if (e.key.toLowerCase() === 'r') { rtl = !rtl; syncDirUI(); savePrefs(); }
     else if (e.key === 'Escape' && Host.closeReader && document.fullscreenElement) Host.toggleFullscreen?.();
   });
-  /* 触摸滑动（手机）：条漫模式交给系统上下滚动 */
-  let sx = 0, sy = 0;
-  $('#stage').addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; });
-  $('#stage').addEventListener('touchend', (e) => {
-    if (webtoon) return;
-    const dx = e.changedTouches[0].clientX - sx;
-    const dy = e.changedTouches[0].clientY - sy;
-    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.3) go(dx < 0 ? 1 : -1);
-  });
 
-  /* 沉浸模式：无操作 2.6 秒自动隐藏工具栏 */
+  /* ---------- 工具栏显隐：只由明确点击驱动，滑动 / 触碰 / 滚轮 / 翻页都不弹 ---------- */
   let idleT = null;
-  function wake() {
+  let uiShown = false;
+  function hideUi() {
+    uiShown = false;
+    document.body.classList.add('idle');
+    clearTimeout(idleT);
+  }
+  function showUi() {
+    uiShown = true;
     document.body.classList.remove('idle');
     clearTimeout(idleT);
-    idleT = setTimeout(() => { if (pages.length) document.body.classList.add('idle'); }, 2600);
+    idleT = setTimeout(hideUi, 4200);
   }
-  ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel'].forEach((ev) =>
-    document.addEventListener(ev, wake, { passive: true }));
-  wake();
+  function toggleUi() { uiShown ? hideUi() : showUi(); }
+
+  /** 明确的一次轻点：画面正中间矩形才切换菜单，左右区域翻页但绝不弹按键 */
+  function handleTap(clientX, clientY, el) {
+    const rect = el.getBoundingClientRect();
+    const x = (clientX - rect.left) / Math.max(1, rect.width);
+    const y = (clientY - rect.top) / Math.max(1, rect.height);
+    if (x > 0.32 && x < 0.68 && y > 0.2 && y < 0.8) { toggleUi(); return; }
+    if (webtoon || isNovel) return;
+    const leftSide = x < 0.5;
+    go(rtl ? (leftSide ? 1 : -1) : (leftSide ? -1 : 1));
+  }
+
+  let tapStart = null;
+  let suppressUntil = 0;
+  const stage = $('#stage');
+  stage.addEventListener('click', (e) => {
+    if (e.target.closest('[data-ch]')) return;       // webtoon 上下话按钮
+    if (Date.now() < suppressUntil) return;           // 触摸合成 click 屏蔽
+    handleTap(e.clientX, e.clientY, stage);
+  });
+  stage.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    if (t) tapStart = { x: t.clientX, y: t.clientY, t: Date.now(), moved: false };
+  }, { passive: true });
+  stage.addEventListener('touchmove', (e) => {
+    if (!tapStart) return;
+    const t = e.touches[0];
+    if (t && (Math.abs(t.clientX - tapStart.x) > 10 || Math.abs(t.clientY - tapStart.y) > 10)) tapStart.moved = true;
+  }, { passive: true });
+  stage.addEventListener('touchend', (e) => {
+    const s = tapStart; tapStart = null;
+    if (!s) return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    suppressUntil = Date.now() + 500;
+    const dx = t.clientX - s.x, dy = t.clientY - s.y;
+    const dist = Math.hypot(dx, dy), dur = Date.now() - s.t;
+    const swipe = Math.abs(dx) >= 55 && Math.abs(dx) > Math.abs(dy) * 1.3 && dur <= 900;
+    if (s.moved || swipe) {
+      if (swipe && !webtoon && !isNovel) go(rtl ? (dx < 0 ? -1 : 1) : (dx < 0 ? 1 : -1));
+      return;   /* 滑动 / 滚动：绝不弹出按键 */
+    }
+    if (dist <= 14 && dur <= 500) handleTap(t.clientX, t.clientY, stage);
+  }, { passive: true });
+  stage.addEventListener('touchcancel', () => { tapStart = null; }, { passive: true });
+
+  /* 角落菜单按钮：点它才显示按键 */
+  $('#btnPeek').onclick = () => showUi();
+  hideUi();   /* 默认沉浸：一进来就是纯画面 */
 
   init();
 })();

@@ -15,6 +15,8 @@
   --radius-sm: 10px;
   --shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
   --header-h: 60px;
+  /* 阅读器底色：随主题变化（页面 / 阅读器沉浸底色） */
+  --reader-bg: #08090d;
   color-scheme: dark;
 }
 
@@ -27,7 +29,69 @@
   --text: #141824;
   --muted: #6b7488;
   --shadow: 0 12px 30px rgba(24, 32, 56, 0.12);
+  --reader-bg: #e9ebf2;
   color-scheme: light;
+}
+
+/* ---- 更多主题：深海之蓝 / 松林绿 / 暮色暖橘 / 樱粉物语 ---- */
+:root[data-theme='sea'] {
+  --bg: #0a141e;
+  --bg-soft: #0e1c2a;
+  --surface: #12202e;
+  --surface-2: #172a3a;
+  --border: #213950;
+  --text: #e3eef7;
+  --muted: #8aa3b8;
+  --accent: #3fa7d6;
+  --accent-2: #5eead4;
+  --shadow: 0 12px 32px rgba(2, 14, 26, 0.45);
+  --reader-bg: #060e16;
+  color-scheme: dark;
+}
+
+:root[data-theme='forest'] {
+  --bg: #0b1410;
+  --bg-soft: #0f1c15;
+  --surface: #132218;
+  --surface-2: #182c20;
+  --border: #21402e;
+  --text: #e5f2ea;
+  --muted: #93b3a1;
+  --accent: #3ecf8e;
+  --accent-2: #a3e635;
+  --shadow: 0 12px 32px rgba(3, 18, 10, 0.45);
+  --reader-bg: #060d09;
+  color-scheme: dark;
+}
+
+:root[data-theme='sunset'] {
+  --bg: #160f0b;
+  --bg-soft: #1f1510;
+  --surface: #251913;
+  --surface-2: #2e1f17;
+  --border: #3e2b1f;
+  --text: #f7ede4;
+  --muted: #b99f8c;
+  --accent: #ff8a5c;
+  --accent-2: #ffc857;
+  --shadow: 0 12px 32px rgba(20, 8, 2, 0.45);
+  --reader-bg: #0e0906;
+  color-scheme: dark;
+}
+
+:root[data-theme='sakura'] {
+  --bg: #160f1a;
+  --bg-soft: #1d1424;
+  --surface: #241a2e;
+  --surface-2: #2e213a;
+  --border: #3d2c4d;
+  --text: #f5e9f4;
+  --muted: #b297b5;
+  --accent: #ff7eb3;
+  --accent-2: #c084fc;
+  --shadow: 0 12px 32px rgba(18, 6, 24, 0.45);
+  --reader-bg: #0d0810;
+  color-scheme: dark;
 }
 
 * {
@@ -620,10 +684,10 @@ textarea {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: #08090d;
+  background: var(--reader-bg, #08090d);
   display: flex;
   flex-direction: column;
-  color: #f2f4fa;
+  color: var(--text, #f2f4fa);
   animation: fadeIn 0.3s ease both;
 }
 .reader.light-bg { background: #f2f3f7; color: #12141a; }
@@ -639,7 +703,10 @@ textarea {
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.72), transparent);
+  /* 实底磨砂：白色 / 浅色漫画画面上按键依然清晰 */
+  background: linear-gradient(180deg, rgba(9, 12, 18, 0.94), rgba(9, 12, 18, 0.78));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
   transition: transform 0.25s, opacity 0.25s;
 }
 .reader-top.hidden { transform: translateY(-100%); opacity: 0; pointer-events: none; }
@@ -651,7 +718,9 @@ textarea {
   right: 0;
   z-index: 5;
   padding: 10px 14px 14px;
-  background: linear-gradient(0deg, rgba(0, 0, 0, 0.72), transparent);
+  background: linear-gradient(0deg, rgba(9, 12, 18, 0.94), rgba(9, 12, 18, 0.78));
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
   transition: transform 0.25s, opacity 0.25s;
 }
 .reader-bottom.hidden { transform: translateY(100%); opacity: 0; pointer-events: none; }
@@ -728,29 +797,73 @@ textarea {
 .reader-nav.prev { left: 0; }
 .reader-nav.next { right: 0; }
 
-/* ---------- 分享（只读）阅读：沉浸式，按键收进设置面板，不压画面 ---------- */
+/* ---------- 阅读器：沉浸式，按键收进设置面板，不压画面 ---------- */
 .r-advanced-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .reader-readonly .r-advanced-group { display: none; }
-.reader-readonly .reader-top {
-  gap: 8px; padding: 8px 10px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent);
-}
-.reader-readonly .reader-bottom {
-  padding: 6px 10px 8px;
-  background: linear-gradient(0deg, rgba(0, 0, 0, 0.55), transparent);
-}
+.reader-readonly .reader-top { gap: 8px; padding: 8px 10px; }
+.reader-readonly .reader-bottom { padding: 6px 10px 8px; }
 .reader-readonly .reader-info { max-width: 44vw; font-size: 13px; }
-/* 沉浸态只在角落留一个半透明小点，用来唤出菜单 */
+
+/* 阅读器内所有按键 / 文字：深色实底 + 白色描边，白色画面上也一眼可见 */
+.reader-top .btn,
+.reader-bottom .btn,
+.reader-top .select,
+.reader-bottom .select,
+.reader-top .reader-info,
+.reader-bottom .reader-pageno,
+.reader-top .chip,
+.reader-bottom .chip {
+  color: #f4f7fc;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+}
+.reader-top .btn.ghost,
+.reader-bottom .btn.ghost,
+.reader-top .select,
+.reader-bottom .select {
+  background: rgba(22, 27, 38, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.reader-top .btn.ghost:hover,
+.reader-bottom .btn.ghost:hover {
+  background: rgba(40, 48, 64, 0.95);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+.reader-top .btn.primary,
+.reader-bottom .btn.primary { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); }
+.reader-bottom .select { color-scheme: dark; }
+.reader-bottom .slider { background: rgba(255, 255, 255, 0.28); }
+.reader-pageno { font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+/* 沉浸态角落只留一个明确的菜单按钮：点它才显示按键 */
 .reader-peek {
   position: absolute; top: 10px; right: 12px; z-index: 6;
-  width: 30px; height: 30px; border-radius: 50%;
+  width: 34px; height: 34px; border-radius: 50%;
   display: grid; place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(18, 20, 26, 0.34); color: #fff;
-  backdrop-filter: blur(6px); cursor: pointer; opacity: 0.42;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(12, 16, 24, 0.9); color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px); cursor: pointer; opacity: 0.82;
   transition: opacity 0.2s, transform 0.2s;
 }
 .reader-peek:hover { opacity: 1; transform: scale(1.08); }
+
+/* 从右往左阅读：底部整排按键与箭头镜像调换（前进在左、后退在右） */
+.reader-bottom.rtl .row { flex-direction: row-reverse; }
+.reader-bottom.rtl .btn.sm,
+.reader-bottom.rtl .select,
+.reader-bottom.rtl .reader-pageno { direction: rtl; }
+.reader-bottom.rtl .slider { transform: scaleX(-1); }
+
+/* 设置面板：分组标签 / 说明文字 / 操作提示 */
+.rp-label { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+.rp-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin-top: 8px; }
+.rp-tip {
+  color: var(--muted); font-size: 12px; line-height: 1.85;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.rp-tip strong { color: var(--text); }
 
 .reader-panel {
   position: absolute;
@@ -759,7 +872,7 @@ textarea {
   left: 0;
   width: min(340px, 86vw);
   z-index: 8;
-  background: rgba(14, 16, 22, 0.96);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
   backdrop-filter: blur(12px);
   border-right: 1px solid var(--border);
   display: flex;
@@ -994,10 +1107,11 @@ textarea {
   z-index: 6;
   padding: 10px 18px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  background: rgba(12, 16, 24, 0.92);
   backdrop-filter: blur(8px);
-  border: 1px solid var(--border);
-  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.55);
+  color: #fff;
   font-size: 13px;
   letter-spacing: 0.5px;
   pointer-events: none;

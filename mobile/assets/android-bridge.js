@@ -6,7 +6,7 @@
   if (!A) return;
   var j = function (s) { try { return JSON.parse(s); } catch (e) { return {}; } };
   window.CVAndroid = {
-    version: '3.4.0.10',
+    version: '3.4.0.12',
     platform: 'android',
     api: function (o) {
       return Promise.resolve().then(function () { return j(A.api(JSON.stringify(o))); });

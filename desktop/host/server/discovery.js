@@ -614,6 +614,71 @@ export function registerDiscovery(app) {
     res.json({ ok: true });
   });
 
+  /* ---- 公告编辑（只能改自己发的） ---- */
+  app.patch('/api/announcements/:id', requireAnnouncer, (req, res) => {
+    const d = loadDb();
+    const item = d.announcements.find((n) => n.id === req.params.id);
+    if (!item) return res.status(404).json({ error: '公告不存在' });
+    if (item.by !== req.user.id) return res.status(403).json({ error: '只能编辑自己发布的公告' });
+    const title = String(req.body?.title ?? item.title).trim().slice(0, 80);
+    const content = String(req.body?.content ?? item.content).trim().slice(0, 2000);
+    if (!title || !content) return res.status(400).json({ error: '标题和内容不能为空' });
+    item.title = title;
+    item.content = content;
+    item.editedAt = now();
+    saveDbSoon();
+    res.json({ announcement: item });
+  });
+
+  /* ---- 公告详情（含评论） ---- */
+  app.get('/api/announcements/:id', (req, res) => {
+    const d = loadDb();
+    const item = d.announcements.find((n) => n.id === req.params.id);
+    if (!item) return res.status(404).json({ error: '公告不存在' });
+    res.json({
+      announcement: { ...item, comments: (item.comments || []).slice().reverse() },
+      canAnnounce: !!req.user?.canAnnounce,
+      canManage: !!req.user && req.user.id === item.by,
+    });
+  });
+
+  /* ---- 公告评论 ---- */
+  app.post('/api/announcements/:id/comments', requireUser, (req, res) => {
+    const d = loadDb();
+    const item = d.announcements.find((n) => n.id === req.params.id);
+    if (!item) return res.status(404).json({ error: '公告不存在' });
+    const text = String(req.body?.text || '').trim().slice(0, 500);
+    if (!text) return res.status(400).json({ error: '请输入评论内容' });
+    item.comments = item.comments || [];
+    if (item.comments.length >= 200) item.comments.shift();
+    const c = {
+      id: newId('cmt'),
+      by: req.user.id,
+      byName: req.user.name,
+      text,
+      at: now(),
+    };
+    item.comments.push(c);
+    saveDbSoon();
+    res.json({ comment: c });
+  });
+
+  app.delete('/api/announcements/:id/comments/:cid', requireUser, (req, res) => {
+    const d = loadDb();
+    const item = d.announcements.find((n) => n.id === req.params.id);
+    if (!item) return res.status(404).json({ error: '公告不存在' });
+    const idx = (item.comments || []).findIndex((c) => c.id === req.params.cid);
+    if (idx < 0) return res.status(404).json({ error: '评论不存在' });
+    const c = item.comments[idx];
+    /* 评论作者或公告作者可删 */
+    if (c.by !== req.user.id && item.by !== req.user.id) {
+      return res.status(403).json({ error: '没有权限删除这条评论' });
+    }
+    item.comments.splice(idx, 1);
+    saveDbSoon();
+    res.json({ ok: true });
+  });
+
   /* ---- 软件下载清单与自动更新 ---- */
 
   app.get('/api/software', (_req, res) => {

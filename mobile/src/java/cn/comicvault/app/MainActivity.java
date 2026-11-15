@@ -66,12 +66,15 @@ public class MainActivity extends Activity {
     private static final String PREFS = "cv_config";
     private static final String KEY_URL = "server_url";
     private static final String KEY_THEME = "theme";
+    /** 支持的主题集合（与网站 / 桌面端保持一致） */
+    private static final java.util.Set<String> VALID_THEMES = new java.util.HashSet<>(java.util.Arrays.asList(
+            "dark", "light", "sea", "forest", "sunset", "sakura"));
     private static final String DEFAULT_URL =
             "https://a3375579f1d0038dc.app.workbuddy.host/?sharecode=HDZTNNHTBW";
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.10";
+    private static final String APP_VERSION = "3.4.0.12";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";
@@ -451,7 +454,7 @@ public class MainActivity extends Activity {
 
                 HttpURLConnection conn = (HttpURLConnection) new URL(b.build().toString()).openConnection();
                 conn.setConnectTimeout(10000);
-                conn.setReadTimeout(files != null && files.length() > 0 ? 90000 : 20000);
+                conn.setReadTimeout(files != null && files.length() > 0 ? 600000 : 20000);
                 conn.setRequestMethod(method);
                 conn.setRequestProperty("Accept", "application/json");
                 String cookie = CookieManager.getInstance().getCookie(currentUrl);
@@ -480,12 +483,15 @@ public class MainActivity extends Activity {
                         String id = f.optString("id", "");
                         String name = f.optString("name", "page.jpg")
                                 .replace("\"", "_").replace("\r", "").replace("\n", "");
+                        /* 服务端有的接口收单个 file、有的收多个 files，按前端指定的字段名上传 */
+                        String field = f.optString("field", "files");
+                        if (field == null || field.trim().isEmpty()) field = "files";
                         Uri u = pickedUris.get(id);
                         if (u == null) continue;
                         java.io.InputStream is = getContentResolver().openInputStream(u);
                         if (is == null) continue;
                         os.write(("--" + boundary + "\r\n"
-                                + "Content-Disposition: form-data; name=\"files\"; filename=\"" + name + "\"\r\n"
+                                + "Content-Disposition: form-data; name=\"" + field + "\"; filename=\"" + name + "\"\r\n"
                                 + "Content-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
                         byte[] buf = new byte[16384];
                         int n;
@@ -544,19 +550,23 @@ public class MainActivity extends Activity {
             return b.build().toString();
         }
 
-        /** 打开系统多选文件选择器：可从「浏览其他应用中的文件」进入 Kotatsu 等漫画来源 */
+        /** 打开系统多选文件选择器：可从「浏览其他应用中的文件」进入 Kotatsu 等漫画来源。
+         *  setType("*/*") 配合 EXTRA_MIME_TYPES 才能把压缩包 / PDF 等非图片格式一起列出来。 */
         @JavascriptInterface public String pickFiles() {
             runOnUiThread(() -> {
                 try {
                     Intent i = new Intent(Intent.ACTION_GET_CONTENT);
                     i.addCategory(Intent.CATEGORY_OPENABLE);
-                    i.setType("image/*");
+                    i.setType("*/*");
                     i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                     i.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
                     i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
-                            "image/*", "application/zip", "application/x-cbz",
-                            "application/pdf", "application/epub+zip",
-                            "application/octet-stream"});
+                            "image/*", "application/zip", "application/x-zip-compressed",
+                            "application/x-cbz", "application/vnd.comicbook+zip",
+                            "application/vnd.rar", "application/x-rar-compressed",
+                            "application/x-7z-compressed", "application/pdf",
+                            "application/epub+zip", "application/x-pdf",
+                            "application/octet-stream", "text/plain"});
                     startActivityForResult(i, REQ_PICK_IMPORT);
                 } catch (Exception e) {
                     notifyFilesPicked("[]");
@@ -594,7 +604,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface public String getConfig() {
             try {
                 String saved = prefs().getString(KEY_THEME, "dark");
-                if (!"light".equals(saved)) saved = "dark";
+                if (!VALID_THEMES.contains(saved)) saved = "dark";
                 return new JSONObject().put("server", currentUrl)
                         .put("mode", "remote")
                         .put("theme", saved).put("version", APP_VERSION).toString();
@@ -612,7 +622,7 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface public String setTheme(String theme) {
-            String t = "light".equals(theme) ? "light" : "dark";
+            String t = VALID_THEMES.contains(theme) ? theme : "dark";
             prefs().edit().putString(KEY_THEME, t).apply();
             return "{\"ok\":true,\"theme\":\"" + t + "\"}";
         }
@@ -1060,7 +1070,7 @@ public class MainActivity extends Activity {
             try {
                 getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignore) { /* 部分来源不支持持久化授权，会话内仍可读 */ }
-            String name = "page.jpg";
+            String name = "";
             android.database.Cursor cur = null;
             try {
                 cur = getContentResolver().query(u, null, null, null, null);
@@ -1070,10 +1080,48 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception ignore) { }
             finally { if (cur != null) try { cur.close(); } catch (Exception ignore) {} }
+            /* 兜底名称：解析不到 DISPLAY_NAME 时按 MIME 推断扩展名，
+               不能一律叫 page.jpg——否则 zip/pdf 会被错标成 jpg 无法识别格式。 */
+            if (name == null || name.trim().isEmpty()) {
+                String mime = "";
+                try { mime = getContentResolver().getType(u); } catch (Exception ignore) { }
+                name = "file." + extForMime(mime);
+            }
             String id = "f" + (pickedUris.size() + 1);
             pickedUris.put(id, u);
             arr.put(new JSONObject().put("id", id).put("name", name));
         } catch (Exception e) { /* 跳过无法读取的条目 */ }
+    }
+
+    /** 把一个 content:// URI 解析出展示名失败时，按 MIME/路径推断一个带正确扩展名的兜底名 */
+    private String guessName(Uri u) {
+        String mime = "";
+        try { mime = getContentResolver().getType(u); } catch (Exception ignore) { }
+        String seg = u.getLastPathSegment();
+        if (seg != null && seg.contains(".")) return seg.substring(Math.max(0, seg.lastIndexOf('/') + 1));
+        return "file." + extForMime(mime);
+    }
+
+    private static String extForMime(String mime) {
+        if (mime == null) return "jpg";
+        switch (mime) {
+            case "application/zip":
+            case "application/x-zip-compressed":
+            case "application/vnd.comicbook+zip":
+            case "application/x-cbz": return "zip";
+            case "application/vnd.rar":
+            case "application/x-rar-compressed": return "rar";
+            case "application/x-7z-compressed": return "7z";
+            case "application/pdf":
+            case "application/x-pdf": return "pdf";
+            case "application/epub+zip": return "epub";
+            case "text/plain": return "txt";
+            case "image/png": return "png";
+            case "image/webp": return "webp";
+            case "image/gif": return "gif";
+            case "image/jpeg": return "jpg";
+            default: return "jpg";
+        }
     }
 
     private void notifyFilesPicked(String json) {

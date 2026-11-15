@@ -5,12 +5,14 @@ import { PageEditor } from './PageEditor';
 import { saveImageToDevice } from '../lib/util';
 import { useToast } from './Toasts';
 
-type Mode = 'single' | 'double' | 'continuous' | 'webtoon';
-type Fit = 'contain' | 'width' | 'height' | 'original';
+type Mode = ReaderPrefs['mode'];
+type Fit = ReaderPrefs['fit'];
+type Scope = 'all' | 'comic' | 'chapter';
 
 const PREFS_KEY = 'cv-reader-prefs';
+const SCOPE_KEY = 'cv-reader-scope';
 
-const DEFAULT_PREFS: ReaderPrefs = {
+const BASE_PREFS: ReaderPrefs = {
   mode: 'single',
   fit: 'contain',
   direction: 'ltr',
@@ -20,14 +22,33 @@ const DEFAULT_PREFS: ReaderPrefs = {
   smartDouble: true,
 };
 
-function loadPrefs(): ReaderPrefs {
+function readPart(key: string): Partial<ReaderPrefs> {
   try {
-    const raw = localStorage.getItem(PREFS_KEY);
-    if (!raw) return DEFAULT_PREFS;
-    return { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<ReaderPrefs>) };
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as Partial<ReaderPrefs>) : {};
   } catch {
-    return DEFAULT_PREFS;
+    return {};
   }
+}
+
+function comicKeyOf(comicId?: string, title?: string) {
+  return comicId || `share:${title || ''}`;
+}
+
+function prefKey(scope: Scope, comicKey: string, chapterId: string) {
+  if (scope === 'chapter') return `${PREFS_KEY}:chapter:${chapterId}`;
+  if (scope === 'comic') return `${PREFS_KEY}:comic:${comicKey}`;
+  return PREFS_KEY;
+}
+
+/** 记忆优先级：本话 > 整本 > 全部；方向没被显式存过时沿用漫画自身方向 */
+function loadEffective(comicKey: string, chapterId: string, fallbackDirection: 'ltr' | 'rtl'): ReaderPrefs {
+  const g = readPart(PREFS_KEY);
+  const c = readPart(`${PREFS_KEY}:comic:${comicKey}`);
+  const ch = readPart(`${PREFS_KEY}:chapter:${chapterId}`);
+  const merged = { ...BASE_PREFS, ...g, ...c, ...ch };
+  const direction = ch.direction ?? c.direction ?? g.direction ?? fallbackDirection;
+  return { ...merged, direction };
 }
 
 const FILTER_LABEL: Record<ReaderFilter, string> = {
@@ -35,6 +56,13 @@ const FILTER_LABEL: Record<ReaderFilter, string> = {
   warm: '护眼',
   invert: '反色',
   gray: '黑白',
+};
+
+const MODE_LABEL: Record<Mode, string> = {
+  single: '单页',
+  double: '双页',
+  continuous: '上下滚动',
+  webtoon: '条漫',
 };
 
 export function ReaderView({
@@ -64,36 +92,53 @@ export function ReaderView({
   onPagesChanged?: (chapter: Chapter) => void;
 }) {
   const toast = useToast();
-  const prefs = useRef(loadPrefs()).current;
+  const comicKey = comicKeyOf(comicId, title);
   const [chapterIndex, setChapterIndex] = useState(() => {
     const i = chapters.findIndex((c) => c.id === initialChapterId);
     return i >= 0 ? i : 0;
   });
   const [pageIndex, setPageIndex] = useState(initialPageIndex);
-  const [direction, setDirection] = useState<'ltr' | 'rtl'>(initialDirection);
-  const [mode, setMode] = useState<Mode>(prefs.mode);
-  const [fit, setFit] = useState<Fit>(prefs.fit);
+
+  /* 阅读偏好：支持「全部漫画 / 仅这本 / 仅本话」三种记忆范围 */
+  const [prefScope, setPrefScope] = useState<Scope>(() => {
+    try {
+      const s = localStorage.getItem(SCOPE_KEY);
+      return s === 'comic' || s === 'chapter' ? s : 'all';
+    } catch {
+      return 'all';
+    }
+  });
+  const initialPrefs = useRef(
+    loadEffective(comicKey, chapters[chapterIndex]?.id || '', initialDirection),
+  ).current;
+  const [mode, setMode] = useState<Mode>(initialPrefs.mode);
+  const [fit, setFit] = useState<Fit>(initialPrefs.fit);
+  const [direction, setDirection] = useState<'ltr' | 'rtl'>(initialPrefs.direction);
+  const [filter, setFilter] = useState<ReaderFilter>(initialPrefs.filter);
+  const [brightness, setBrightness] = useState(initialPrefs.brightness);
+  const [contrast, setContrast] = useState(initialPrefs.contrast);
+  const [smartDouble, setSmartDouble] = useState(initialPrefs.smartDouble);
   const [zoom, setZoom] = useState(1);
-  /* 分享（只读）阅读默认沉浸：一进来就是纯画面，工具栏收起不挡内容 */
-  const [uiVisible, setUiVisible] = useState(!readOnly);
+
+  /* 沉浸式：默认隐藏工具栏。只有「轻点画面正中间」或角落菜单按钮才切换 */
+  const [uiVisible, setUiVisible] = useState(false);
+  const uiRef = useRef(false);
   const [panel, setPanel] = useState<'toc' | 'pages' | 'filter' | 'settings' | null>(null);
   const [help, setHelp] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [filter, setFilter] = useState<ReaderFilter>(prefs.filter);
-  const [brightness, setBrightness] = useState(prefs.brightness);
-  const [contrast, setContrast] = useState(prefs.contrast);
-  const [smartDouble, setSmartDouble] = useState(prefs.smartDouble);
   const [editing, setEditing] = useState(false);
   const [swipeHint, setSwipeHint] = useState(false);
   const [scrollRatio, setScrollRatio] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressUntil = useRef(0);
+  const touchStart = useRef<{ x: number; y: number; t: number; moved: boolean } | null>(null);
+  const saveFirst = useRef(true);
 
   const chapter = chapters[chapterIndex];
   const total = chapter?.pages.length || 0;
   const rtl = direction === 'rtl';
 
-  /** 智能双页：跨页大图独占一屏，不与下一页配对 */
   const currentWide = mode === 'double' && smartDouble && !!chapter?.pages[pageIndex]?.wide;
   const step = mode === 'double' ? (currentWide ? 1 : 2) : 1;
 
@@ -115,46 +160,119 @@ export function ReaderView({
     return parts.join(' ');
   }, [filter, brightness, contrast]);
 
-  /* 记住阅读偏好 */
+  /* ---------- 工具栏显隐：只由明确点击驱动 ---------- */
+  const clearHide = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+  }, []);
+  const scheduleHide = useCallback(() => {
+    clearHide();
+    hideTimer.current = setTimeout(() => {
+      uiRef.current = false;
+      setUiVisible(false);
+    }, 4200);
+  }, [clearHide]);
+  const showUi = useCallback(() => {
+    uiRef.current = true;
+    setUiVisible(true);
+    clearHide();
+    if (!panel) scheduleHide();
+  }, [clearHide, scheduleHide, panel]);
+  const hideUi = useCallback(() => {
+    uiRef.current = false;
+    setUiVisible(false);
+    clearHide();
+  }, [clearHide]);
+  const toggleUi = useCallback(() => {
+    if (uiRef.current) hideUi();
+    else showUi();
+  }, [hideUi, showUi]);
+
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        PREFS_KEY,
-        JSON.stringify({ mode, fit, direction, filter, brightness, contrast, smartDouble }),
-      );
-    } catch {
-      /* 忽略隐私模式下的写入失败 */
+    return () => clearHide();
+  }, [clearHide]);
+
+  /* 面板打开时不要自动收起，避免操作到一半菜单消失 */
+  useEffect(() => {
+    if (panel) clearHide();
+    else if (uiRef.current) scheduleHide();
+  }, [panel, clearHide, scheduleHide]);
+
+  /* ---------- 偏好持久化：只在设置真的变化时按当前作用范围写入 ---------- */
+  const lastSaved = useRef('');
+  useEffect(() => {
+    if (saveFirst.current) {
+      saveFirst.current = false;
+      /* 记录初始值，切话时不再重复写入 */
+      lastSaved.current = JSON.stringify({ prefScope, mode, fit, direction, filter, brightness, contrast, smartDouble });
+      return;
     }
-  }, [mode, fit, direction, filter, brightness, contrast, smartDouble]);
+    const snapshot: ReaderPrefs = { mode, fit, direction, filter, brightness, contrast, smartDouble };
+    const sig = JSON.stringify({ prefScope, ...snapshot });
+    if (sig === lastSaved.current) return;   /* 切话 / 无关渲染不写 */
+    lastSaved.current = sig;
+    try {
+      localStorage.setItem(SCOPE_KEY, prefScope);
+      localStorage.setItem(prefKey(prefScope, comicKey, chapter?.id || ''), JSON.stringify(snapshot));
+    } catch {
+      /* 隐私模式下忽略 */
+    }
+  }, [prefScope, mode, fit, direction, filter, brightness, contrast, smartDouble, comicKey, chapter?.id]);
+
+  /* 「仅本话」范围：切到另一话时，载入那一话自己的记忆 */
+  const lastChapterId = useRef(chapter?.id || '');
+  useEffect(() => {
+    const id = chapter?.id || '';
+    if (id === lastChapterId.current) return;
+    lastChapterId.current = id;
+    if (prefScope !== 'chapter') return;
+    const p = loadEffective(comicKey, id, initialDirection);
+    setMode(p.mode); setFit(p.fit); setDirection(p.direction);
+    setFilter(p.filter); setBrightness(p.brightness); setContrast(p.contrast);
+    setSmartDouble(p.smartDouble);
+  }, [chapter?.id, prefScope, comicKey, initialDirection]);
+
+  /** 切换作用范围：清掉更细粒度的旧覆盖，让新范围立即生效 */
+  function changeScope(next: Scope) {
+    try {
+      localStorage.removeItem(`${PREFS_KEY}:chapter:${chapter?.id || ''}`);
+      localStorage.removeItem(`${PREFS_KEY}:comic:${comicKey}`);
+      if (next === 'all') localStorage.removeItem(SCOPE_KEY);
+    } catch {
+      /* 忽略 */
+    }
+    setPrefScope(next);
+    toast(
+      next === 'all' ? '设置已应用到全部漫画' : next === 'comic' ? '设置已应用到这本漫画' : '设置已应用到当前这一话',
+      'ok',
+    );
+  }
 
   const chapterProgress = total ? Math.min(100, Math.round(((pageIndex + 1) / total) * 100)) : 0;
 
-  /* 保存阅读进度 */
   useEffect(() => {
     if (!chapter || !onProgress) return;
     const t = setTimeout(() => onProgress(chapter.id, pageIndex), 400);
     return () => clearTimeout(t);
   }, [chapter, pageIndex, onProgress]);
 
-  /* 手机端首次进入时，提示可以左右滑动翻页 */
+  /* 手机端首次进入提示：点中间唤出菜单、左右滑动翻页 */
   useEffect(() => {
-    const isTouch =
-      'ontouchstart' in window || window.matchMedia('(max-width: 720px)').matches;
+    const isTouch = 'ontouchstart' in window || window.matchMedia('(max-width: 720px)').matches;
     if (!isTouch) return;
     try {
-      if (localStorage.getItem('cv-swipe-hint')) return;
+      if (localStorage.getItem('cv-tap-hint')) return;
     } catch {
-      /* 隐私模式下忽略 */
+      return;
     }
     setSwipeHint(true);
     const t = setTimeout(() => {
       setSwipeHint(false);
       try {
-        localStorage.setItem('cv-swipe-hint', '1');
+        localStorage.setItem('cv-tap-hint', '1');
       } catch {
         /* 忽略 */
       }
-    }, 3200);
+    }, 3800);
     return () => clearTimeout(t);
   }, []);
 
@@ -170,51 +288,30 @@ export function ReaderView({
     }
   }, [chapter, pageIndex]);
 
-  /* UI 自动隐藏 */
-  const poke = useCallback(() => {
-    setUiVisible(true);
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setUiVisible(false), 2600);
-  }, []);
-
-  useEffect(() => {
-    /* 分享阅读保持沉浸：不在挂载时把工具栏弹出来 */
-    if (!readOnly) poke();
-    return () => {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-    };
-  }, [poke, readOnly]);
-
-  /* 分享阅读时鼠标移到画面中部不再误触发工具栏，只有靠近上下边缘才唤出 */
-  const onEdgeMove = useCallback((e: React.MouseEvent) => {
-    if (!readOnly) { poke(); return; }
-    const h = window.innerHeight;
-    if (e.clientY < 72 || e.clientY > h - 72) poke();
-  }, [poke, readOnly]);
-
   async function saveCurrentPage() {
     const p = currentPages[0] || chapter?.pages[pageIndex];
-    if (!p?.url) { toast('这一页还没有图片', 'err'); return; }
+    if (!p?.url) {
+      toast('这一页还没有图片', 'err');
+      return;
+    }
     const name = `${title}-${chapter?.title || '漫画'}-第${pageIndex + 1}页`;
     const ok = await saveImageToDevice(p.url, name);
     toast(ok ? '本页图片已保存' : '已打开图片，可长按保存', ok ? 'ok' : 'err');
   }
 
-  /** 显式切换上一话 / 下一话，并回到该话开头 */
+  /** 切换上一话 / 下一话。翻页绝不弹出工具栏 */
   const goChapter = useCallback((delta: number) => {
     const next = chapterIndex + delta;
     if (next < 0 || next >= chapters.length) return;
-    poke();
     setLoaded(false);
     setScrollRatio(0);
     setChapterIndex(next);
     setPageIndex(0);
     requestAnimationFrame(() => stageRef.current?.scrollTo?.(0, 0));
-  }, [chapterIndex, chapters.length, poke]);
+  }, [chapterIndex, chapters.length]);
 
   const goNext = useCallback(() => {
     if (!chapter) return;
-    poke();
     setLoaded(false);
     if (pageIndex + step <= total - 1) {
       setPageIndex(pageIndex + step);
@@ -222,13 +319,11 @@ export function ReaderView({
       setChapterIndex(chapterIndex + 1);
       setPageIndex(0);
     }
-  }, [chapter, pageIndex, step, total, chapterIndex, chapters.length, poke]);
+  }, [chapter, pageIndex, step, total, chapterIndex, chapters.length]);
 
   const goPrev = useCallback(() => {
     if (!chapter) return;
-    poke();
     setLoaded(false);
-    // 回退时按「上一屏」的真实跨度计算，跨页只退一页
     let back = step;
     if (mode === 'double' && smartDouble && chapter.pages[pageIndex - 1]?.wide) back = 1;
     if (pageIndex - back >= 0) {
@@ -241,9 +336,9 @@ export function ReaderView({
       setChapterIndex(chapterIndex - 1);
       setPageIndex(Math.max(0, prev.pages[last]?.wide || mode !== 'double' ? last : last - 1));
     }
-  }, [chapter, pageIndex, step, chapterIndex, chapters, mode, smartDouble, poke]);
+  }, [chapter, pageIndex, step, chapterIndex, chapters, mode, smartDouble]);
 
-  /* 键盘操作 */
+  /* 键盘操作：翻页不会弹出工具栏 */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -296,47 +391,64 @@ export function ReaderView({
     }
   }
 
-  function onStageClick(e: React.MouseEvent) {
-    if (mode === 'continuous' || mode === 'webtoon') return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = (e.clientX - rect.left) / Math.max(1, rect.width);
-    /* 点画面正中间唤出 / 收起工具栏：左右区域仍是翻页，不再靠两个大按钮盖住画面 */
-    if (x > 0.34 && x < 0.66 && readOnly) {
-      if (uiVisible) setUiVisible(false);
-      else poke();
+  /** 明确的一次轻点：只有画面正中间矩形才切换工具栏；两侧翻页但绝不弹按键 */
+  function handleTap(clientX: number, clientY: number, el: HTMLElement) {
+    const rect = el.getBoundingClientRect();
+    const x = (clientX - rect.left) / Math.max(1, rect.width);
+    const y = (clientY - rect.top) / Math.max(1, rect.height);
+    if (x > 0.32 && x < 0.68 && y > 0.2 && y < 0.8) {
+      toggleUi();
       return;
     }
+    if (mode === 'continuous' || mode === 'webtoon') return;
     const leftSide = x < 0.5;
     if (rtl) leftSide ? goNext() : goPrev();
     else leftSide ? goPrev() : goNext();
   }
 
-  /* 手机端：左右滑动翻页 */
-  const touchStart = useRef<{ x: number; y: number; t: number } | null>(null);
+  function onStageClick(e: React.MouseEvent) {
+    if (Date.now() < suppressUntil.current) return;
+    handleTap(e.clientX, e.clientY, e.currentTarget as HTMLElement);
+  }
 
+  /* 手机端：滑动只翻页/滚动，绝不唤出工具栏；轻点才走 handleTap */
   function onTouchBegin(e: React.TouchEvent) {
-    poke();
     const t = e.touches[0];
     if (!t) return;
-    touchStart.current = { x: t.clientX, y: t.clientY, t: Date.now() };
+    touchStart.current = { x: t.clientX, y: t.clientY, t: Date.now(), moved: false };
+  }
+
+  function onTouchMove(e: React.TouchEvent) {
+    const s = touchStart.current;
+    if (!s) return;
+    const t = e.touches[0];
+    if (!t) return;
+    if (Math.abs(t.clientX - s.x) > 10 || Math.abs(t.clientY - s.y) > 10) s.moved = true;
   }
 
   function onTouchFinish(e: React.TouchEvent) {
-    poke();
     const start = touchStart.current;
     touchStart.current = null;
-    // 连续滚动模式交给系统滚动，不拦截
-    if (!start || mode === 'continuous' || mode === 'webtoon') return;
+    if (!start) return;
     const t = e.changedTouches[0];
     if (!t) return;
+    /* 触摸产生的合成 click 一律屏蔽，改由这里精确判定，避免滑动后双击 */
+    suppressUntil.current = Date.now() + 500;
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
-    // 横向位移够大、且明显是横向手势、且动作够快，才算翻页
-    if (Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.4) return;
-    if (Date.now() - start.t > 900) return;
-    // 内容流向：LTR 向右流（左滑前进），RTL 向左流（左滑同样是前进）
-    if (dx < 0) rtl ? goNext() : goPrev();
-    else rtl ? goPrev() : goNext();
+    const dist = Math.hypot(dx, dy);
+    const dur = Date.now() - start.t;
+    const horizontalSwipe = Math.abs(dx) >= 45 && Math.abs(dx) > Math.abs(dy) * 1.4 && dur <= 900;
+    if (start.moved || horizontalSwipe) {
+      if (horizontalSwipe && mode !== 'continuous' && mode !== 'webtoon') {
+        if (dx < 0) rtl ? goNext() : goPrev();
+        else rtl ? goPrev() : goNext();
+      }
+      return; /* 滑动 / 滚动：不弹按键 */
+    }
+    if (dist <= 14 && dur <= 500) {
+      handleTap(t.clientX, t.clientY, stageRef.current || (e.currentTarget as HTMLElement));
+    }
   }
 
   function onContinuousScroll(e: React.UIEvent<HTMLDivElement>) {
@@ -353,9 +465,7 @@ export function ReaderView({
         <div className="empty" style={{ margin: 'auto', color: '#999' }}>
           没有可阅读的内容
           <div style={{ marginTop: 12 }}>
-            <button className="btn" onClick={onExit}>
-              返回
-            </button>
+            <button className="btn" onClick={onExit}>返回</button>
           </div>
         </div>
       </div>
@@ -368,123 +478,44 @@ export function ReaderView({
   return (
     <div
       className={`reader${readOnly ? ' reader-readonly' : ''}`}
-      onMouseMove={onEdgeMove}
       onTouchStart={onTouchBegin}
+      onTouchMove={onTouchMove}
       onTouchEnd={onTouchFinish}
-      onTouchCancel={() => {
-        touchStart.current = null;
-      }}
+      onTouchCancel={() => { touchStart.current = null; }}
     >
-      {/* 沉浸时只在角落留一个极小的唤出点，不再有一整排按键压在画面上 */}
-      {readOnly && !uiVisible && (
-        <button className="reader-peek" onClick={poke} title="显示阅读菜单" aria-label="显示阅读菜单">
+      {/* 沉浸态角落只留一个明确的菜单按钮：点它才显示按键 */}
+      {!uiVisible && (
+        <button className="reader-peek" onClick={showUi} title="显示阅读菜单" aria-label="显示阅读菜单">
           <Icon name="menu" size={16} />
         </button>
       )}
+
       <div className={`reader-top ${uiVisible ? '' : 'hidden'}`}>
         <button className="btn sm ghost" onClick={onExit} title="返回">
-          <Icon name="left" size={16} />
+          <Icon name="left" size={16} /> 返回
         </button>
         <div className="reader-info" style={{ maxWidth: 260 }}>
           {title}
           <span style={{ color: 'var(--muted)', fontWeight: 500 }}> · {chapter.title}</span>
         </div>
-
         <div className="row" style={{ marginLeft: 'auto', gap: 6 }}>
-          {readOnly && (
-            <>
-              <button className="btn sm ghost" onClick={saveCurrentPage} title="保存当前这一页图片">
-                <Icon name="download" size={15} /> 存本页
-              </button>
-              <button className="btn sm ghost" onClick={() => setPanel(panel === 'settings' ? null : 'settings')} title="阅读设置">
-                <Icon name="menu" size={15} /> 设置
-              </button>
-            </>
-          )}
-          <div className="r-advanced-group">
-          <button
-            className={`btn sm ${mode === 'single' ? 'primary' : 'ghost'}`}
-            onClick={() => setMode('single')}
-            title="单页"
-          >
-            单页
+          <button className="btn sm ghost" onClick={saveCurrentPage} title="保存当前这一页图片">
+            <Icon name="download" size={15} /> 存本页
           </button>
           <button
-            className={`btn sm ${mode === 'double' ? 'primary' : 'ghost'}`}
-            onClick={() => setMode('double')}
-            title="双页对开"
+            className={`btn sm ${panel === 'settings' ? 'primary' : 'ghost'}`}
+            onClick={() => setPanel(panel === 'settings' ? null : 'settings')}
+            title="阅读设置"
           >
-            双页
+            <Icon name="menu" size={15} /> 设置
           </button>
-          <button
-            className={`btn sm ${mode === 'continuous' ? 'primary' : 'ghost'}`}
-            onClick={() => setMode('continuous')}
-            title="上下滑动连续阅读（分页图上下排列）"
-          >
-            上下滚动
-          </button>
-          <button
-            className={`btn sm ${mode === 'webtoon' ? 'primary' : 'ghost'}`}
-            onClick={() => { setMode('webtoon'); setFit('width'); }}
-            title="条漫模式：宽度撑满、无缝、上下连续滚动"
-          >
-            条漫
-          </button>
-          <button className="btn sm ghost" onClick={() => setDirection(rtl ? 'ltr' : 'rtl')} title="切换阅读方向">
-            <Icon name={rtl ? 'left' : 'right'} size={15} /> {rtl ? 'RTL' : 'LTR'}
-          </button>
-          <select
-            className="select"
-            style={{ width: 110 }}
-            value={fit}
-            onChange={(e) => setFit(e.target.value as Fit)}
-            title="页面适配"
-          >
-            <option value="contain">适应屏幕</option>
-            <option value="width">适应宽度</option>
-            <option value="height">适应高度</option>
-            <option value="original">原始尺寸</option>
-          </select>
-          {fit === 'original' && (
-            <div className="row" style={{ gap: 4 }}>
-              <button className="btn sm ghost" onClick={() => setZoom((z) => Math.max(0.4, z - 0.2))}>
-                <Icon name="zoom" size={14} />
-              </button>
-              <span style={{ fontSize: 12, width: 40 }}>{Math.round(zoom * 100)}%</span>
-              <button className="btn sm ghost" onClick={() => setZoom((z) => Math.min(4, z + 0.2))}>
-                <Icon name="plus" size={14} />
-              </button>
-            </div>
-          )}
-          <button
-            className={`btn sm ${filter !== 'none' || brightness !== 1 || contrast !== 1 ? 'primary' : 'ghost'}`}
-            onClick={() => setPanel(panel === 'filter' ? null : 'filter')}
-            title="画面滤镜"
-          >
-            <Icon name="eye" size={15} />
-          </button>
-          <button className="btn sm ghost" onClick={() => setPanel(panel === 'toc' ? null : 'toc')} title="目录 (M)">
-            <Icon name="list" size={15} />
-          </button>
-          <button className="btn sm ghost" onClick={() => setPanel(panel === 'pages' ? null : 'pages')} title="页面导航 (P)">
-            <Icon name="grid" size={15} />
-          </button>
-          {!readOnly && comicId && (
-            <button className="btn sm ghost" onClick={() => setEditing(true)} title="旋转 / 裁剪当前页">
-              <Icon name="edit" size={15} />
-            </button>
-          )}
-          <button className="btn sm ghost" onClick={toggleFullscreen} title="全屏 (F)">
-            <Icon name="fullscreen" size={15} />
-          </button>
-          </div>
           {headerExtra}
         </div>
       </div>
 
       {swipeHint && (
         <div className="swipe-hint">
-          <span className="arrow">‹</span> 左右滑动翻页 <span className="arrow">›</span>
+          轻点画面正中唤出菜单 · 左右滑动翻页
         </div>
       )}
 
@@ -515,14 +546,8 @@ export function ReaderView({
               </button>
             )}
             {chapter.pages.map((p, i) => (
-              <img
-                key={p.id}
-                className="webtoon-page"
-                src={p.url}
-                alt={`第 ${i + 1} 页`}
-                loading={i < 3 ? 'eager' : 'lazy'}
-                draggable={false}
-              />
+              <img key={p.id} className="webtoon-page" src={p.url} alt={`第 ${i + 1} 页`}
+                loading={i < 3 ? 'eager' : 'lazy'} draggable={false} />
             ))}
             {chapterIndex < chapters.length - 1 ? (
               <button className="webtoon-edge" onClick={() => goChapter(1)}>
@@ -546,25 +571,22 @@ export function ReaderView({
         )}
       </div>
 
-      {/* 不再用两个占屏幕 2/3 宽的透明按钮盖住画面：点击画面左右区域即可翻页
-          （onStageClick），中间点一下唤出菜单，图片本身也能正常长按 / 点击。 */}
-
-      <div className={`reader-bottom ${uiVisible ? '' : 'hidden'}`}>
+      <div className={`reader-bottom ${uiVisible ? '' : 'hidden'} ${rtl ? 'rtl' : ''}`}>
         <div className="row" style={{ gap: 10 }}>
-          <button className="btn sm ghost" onClick={() => goChapter(-1)} disabled={chapterIndex === 0} title="上一话 [">
-            <Icon name="left" size={15} /> 上一话
+          <button className="btn sm ghost" onClick={() => goChapter(-1)} disabled={chapterIndex === 0} title="上一话">
+            <Icon name={rtl ? 'right' : 'left'} size={15} /> 上一话
           </button>
           {mode !== 'webtoon' && (
             <>
-              <button className="btn sm ghost" onClick={goPrev}>
-                <Icon name="left" size={15} />
+              <button className="btn sm ghost" onClick={goPrev} title="上一页">
+                <Icon name={rtl ? 'right' : 'left'} size={15} />
               </button>
-              <span style={{ fontSize: 13, fontWeight: 700, minWidth: 92, textAlign: 'center' }}>
+              <span className="reader-pageno">
                 {pageIndex + 1}
                 {mode === 'double' && !currentWide && pageIndex + 1 < total ? `–${pageIndex + 2}` : ''} / {total}
               </span>
-              <button className="btn sm ghost" onClick={goNext}>
-                <Icon name="right" size={15} />
+              <button className="btn sm ghost" onClick={goNext} title="下一页">
+                <Icon name={rtl ? 'left' : 'right'} size={15} />
               </button>
               <input
                 className="slider"
@@ -591,31 +613,24 @@ export function ReaderView({
                 style={{ width: 130 }}
                 title="拖动定位阅读进度"
               />
-              <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                上下滚动 {Math.round(scrollRatio * 100)}%
-              </span>
+              <span className="reader-pageno">上下滚动 {Math.round(scrollRatio * 100)}%</span>
             </>
           )}
           <span className="spacer" style={{ flex: 1 }} />
-          <button className="btn sm ghost" onClick={() => goChapter(1)} disabled={chapterIndex === chapters.length - 1} title="下一话 ]">
-            下一话 <Icon name="right" size={15} />
+          <button className="btn sm ghost" onClick={() => goChapter(1)} disabled={chapterIndex === chapters.length - 1} title="下一话">
+            下一话 <Icon name={rtl ? 'left' : 'right'} size={15} />
           </button>
           <select
             className="select"
             style={{ width: 150 }}
             value={chapterIndex}
-            onChange={(e) => {
-              setChapterIndex(Number(e.target.value));
-              setPageIndex(0);
-            }}
+            onChange={(e) => { setChapterIndex(Number(e.target.value)); setPageIndex(0); }}
           >
             {chapters.map((c, i) => (
-              <option key={c.id} value={i}>
-                {c.title}
-              </option>
+              <option key={c.id} value={i}>{c.title}</option>
             ))}
           </select>
-          <span style={{ fontSize: 12, color: 'var(--muted)' }}>{chapterProgress}%</span>
+          <span className="reader-pageno">{chapterProgress}%</span>
         </div>
       </div>
 
@@ -636,11 +651,7 @@ export function ReaderView({
                     key={c.id}
                     className="chapter-item"
                     style={{ cursor: 'pointer', borderColor: i === chapterIndex ? 'var(--accent)' : undefined }}
-                    onClick={() => {
-                      setChapterIndex(i);
-                      setPageIndex(0);
-                      setPanel(null);
-                    }}
+                    onClick={() => { setChapterIndex(i); setPageIndex(0); setPanel(null); }}
                   >
                     <div className="chapter-main">
                       <div className="chapter-title">{c.title}</div>
@@ -652,15 +663,9 @@ export function ReaderView({
             ) : panel === 'pages' ? (
               <div className="thumb-grid">
                 {chapter.pages.map((p, i) => (
-                  <button
-                    key={p.id}
-                    className={i === pageIndex ? 'active' : ''}
-                    onClick={() => {
-                      setPageIndex(i);
-                      setPanel(null);
-                    }}
-                    title={p.wide ? '跨页大图' : `第 ${i + 1} 页`}
-                  >
+                  <button key={p.id} className={i === pageIndex ? 'active' : ''}
+                    onClick={() => { setPageIndex(i); setPanel(null); }}
+                    title={p.wide ? '跨页大图' : `第 ${i + 1} 页`}>
                     <img src={p.thumbUrl || p.url} alt="" loading="lazy" />
                     <span className="n">{i + 1}</span>
                     {p.wide && <span className="wide-tag">跨页</span>}
@@ -670,132 +675,114 @@ export function ReaderView({
             ) : panel === 'settings' ? (
               <div style={{ display: 'grid', gap: 16 }}>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>阅读模式</div>
+                  <div className="rp-label">阅读模式</div>
                   <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                    {([
-                      ['single', '单页'],
-                      ['double', '双页'],
-                      ['continuous', '上下滚动'],
-                      ['webtoon', '条漫'],
-                    ] as [Mode, string][]).map(([k, label]) => (
-                      <button
-                        key={k}
-                        className={`chip ${mode === k ? 'active' : ''}`}
-                        type="button"
-                        onClick={() => { setMode(k); if (k === 'webtoon') setFit('width'); }}
-                      >
-                        {label}
+                    {(['single', 'double', 'continuous', 'webtoon'] as Mode[]).map((k) => (
+                      <button key={k} className={`chip ${mode === k ? 'active' : ''}`} type="button"
+                        onClick={() => { setMode(k); if (k === 'webtoon') setFit('width'); }}>
+                        {MODE_LABEL[k]}
                       </button>
                     ))}
                   </div>
                 </div>
+
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>画面与导航</div>
-                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                    <button className="btn sm ghost" onClick={() => setDirection(rtl ? 'ltr' : 'rtl')}>
-                      方向：{rtl ? '从右往左 RTL' : '从左往右 LTR'}
+                  <div className="rp-label">翻页方向</div>
+                  <div className="row" style={{ gap: 6 }}>
+                    <button className={`btn sm ${rtl ? 'ghost' : 'primary'}`} onClick={() => setDirection('ltr')}>
+                      ← 从左往右
                     </button>
-                    <button className="btn sm ghost" onClick={() => setPanel('filter')}>滤镜 / 亮度</button>
-                    <button className="btn sm ghost" onClick={() => setPanel('toc')}>目录</button>
-                    <button className="btn sm ghost" onClick={() => setPanel('pages')}>页面导航</button>
-                    <button className="btn sm ghost" onClick={toggleFullscreen}>全屏</button>
+                    <button className={`btn sm ${rtl ? 'primary' : 'ghost'}`} onClick={() => setDirection('rtl')}>
+                      从右往左 →
+                    </button>
+                  </div>
+                  <div className="rp-note">从右往左时，底部按键与箭头会跟着镜像调换。</div>
+                </div>
+
+                <div>
+                  <div className="rp-label">设置应用范围（会记住）</div>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    {([
+                      ['all', '全部漫画'],
+                      ['comic', '仅这本'],
+                      ['chapter', '仅本话'],
+                    ] as [Scope, string][]).map(([k, label]) => (
+                      <button key={k} className={`chip ${prefScope === k ? 'active' : ''}`} type="button"
+                        onClick={() => changeScope(k)}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="rp-note">
+                    {prefScope === 'all'
+                      ? '当前设置会记住并应用到所有漫画。'
+                      : prefScope === 'comic'
+                        ? '当前设置只记住并应用到这本漫画的所有话。'
+                        : '当前设置只记住并应用到当前这一话。'}
                   </div>
                 </div>
-                <div className="field">
-                  <label>页面适配</label>
+
+                <div>
+                  <div className="rp-label">页面适配</div>
                   <select className="select" value={fit} onChange={(e) => setFit(e.target.value as Fit)}>
                     <option value="contain">适应屏幕</option>
                     <option value="width">适应宽度</option>
                     <option value="height">适应高度</option>
                     <option value="original">原始尺寸</option>
                   </select>
+                  {fit === 'original' && (
+                    <div className="row" style={{ gap: 4, marginTop: 8 }}>
+                      <button className="btn sm ghost" onClick={() => setZoom((z) => Math.max(0.4, z - 0.2))}>
+                        <Icon name="zoom" size={14} /> 缩小
+                      </button>
+                      <span style={{ fontSize: 12, width: 44, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
+                      <button className="btn sm ghost" onClick={() => setZoom((z) => Math.min(4, z + 0.2))}>
+                        <Icon name="plus" size={14} /> 放大
+                      </button>
+                    </div>
+                  )}
                 </div>
+
+                <div>
+                  <div className="rp-label">更多功能</div>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    <button className="btn sm ghost" onClick={() => setPanel('filter')}>
+                      <Icon name="eye" size={15} /> 画面滤镜
+                    </button>
+                    <button className="btn sm ghost" onClick={() => setPanel('toc')}>
+                      <Icon name="list" size={15} /> 章节目录
+                    </button>
+                    <button className="btn sm ghost" onClick={() => setPanel('pages')}>
+                      <Icon name="grid" size={15} /> 页面导航
+                    </button>
+                    <button className="btn sm ghost" onClick={toggleFullscreen}>
+                      <Icon name="fullscreen" size={15} /> 全屏
+                    </button>
+                    {!readOnly && comicId && (
+                      <button className="btn sm ghost" onClick={() => { setEditing(true); setPanel(null); }}>
+                        <Icon name="edit" size={15} /> 旋转 / 裁剪
+                      </button>
+                    )}
+                    <button className="btn sm ghost" onClick={saveCurrentPage}>
+                      <Icon name="download" size={15} /> 存本页
+                    </button>
+                  </div>
+                </div>
+
                 <div className="row" style={{ justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontWeight: 700 }}>智能双页</div>
-                    <div style={{ color: 'var(--muted)', fontSize: 12 }}>识别跨页大图并让它独占一屏</div>
+                    <div className="rp-note">识别跨页大图并让它独占一屏</div>
                   </div>
                   <button className={`switch ${smartDouble ? 'on' : ''}`} onClick={() => setSmartDouble(!smartDouble)} aria-label="智能双页">
                     <span className="knob" />
                   </button>
                 </div>
-                <div style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.8 }}>
-                  点画面左右两侧翻页，点正中间显示 / 收起菜单。工具栏会自动隐藏，画面不再被按键挡住。
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: 'grid', gap: 14 }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>画面滤镜（W 键循环）</div>
-                  <div className="row" style={{ gap: 8 }}>
-                    {(Object.keys(FILTER_LABEL) as ReaderFilter[]).map((f) => (
-                      <button
-                        key={f}
-                        className={`chip ${filter === f ? 'active' : ''}`}
-                        onClick={() => setFilter(f)}
-                        type="button"
-                      >
-                        {FILTER_LABEL[f]}
-                      </button>
-                    ))}
-                  </div>
+
+                <div className="rp-tip">
+                  轻点画面<strong>正中间</strong>显示 / 收起菜单；左右区域点击翻页；滑动、滚轮、翻页都不会弹出按键。
                 </div>
 
-                <div className="field">
-                  <label>亮度 {Math.round(brightness * 100)}%</label>
-                  <input
-                    className="slider"
-                    type="range"
-                    min={50}
-                    max={150}
-                    step={5}
-                    value={Math.round(brightness * 100)}
-                    onChange={(e) => setBrightness(Number(e.target.value) / 100)}
-                  />
-                </div>
-                <div className="field">
-                  <label>对比度 {Math.round(contrast * 100)}%</label>
-                  <input
-                    className="slider"
-                    type="range"
-                    min={50}
-                    max={180}
-                    step={5}
-                    value={Math.round(contrast * 100)}
-                    onChange={(e) => setContrast(Number(e.target.value) / 100)}
-                  />
-                </div>
-
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>智能双页</div>
-                    <div style={{ color: 'var(--muted)', fontSize: 12 }}>
-                      识别跨页大图并让它独占一屏，避免对开错位
-                    </div>
-                  </div>
-                  <button
-                    className={`switch ${smartDouble ? 'on' : ''}`}
-                    onClick={() => setSmartDouble(!smartDouble)}
-                    aria-label="智能双页"
-                  >
-                    <span className="knob" />
-                  </button>
-                </div>
-
-                <button
-                  className="btn sm ghost"
-                  onClick={() => {
-                    setFilter('none');
-                    setBrightness(1);
-                    setContrast(1);
-                  }}
-                >
-                  <Icon name="refresh" size={14} /> 恢复默认画面
-                </button>
-              </div>
-            )}
-            {!readOnly && (
-              <div style={{ marginTop: 14 }}>
                 <div className="help-grid">
                   <div><span className="kbd">← →</span> 翻页</div>
                   <div><span className="kbd">空格</span> 下一页</div>
@@ -806,9 +793,35 @@ export function ReaderView({
                   <div><span className="kbd">P</span> 页面</div>
                   <div><span className="kbd">[ ]</span> 上一话 / 下一话</div>
                   <div><span className="kbd">F</span> 全屏</div>
-                  <div><span className="kbd">+/−</span> 缩放</div>
-                  <div><span className="kbd">Esc</span> 返回</div>
+                  <div><span className="kbd">?</span> 快捷键</div>
                 </div>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 14 }}>
+                <div>
+                  <div className="rp-label">画面滤镜（W 键循环）</div>
+                  <div className="row" style={{ gap: 8 }}>
+                    {(Object.keys(FILTER_LABEL) as ReaderFilter[]).map((f) => (
+                      <button key={f} className={`chip ${filter === f ? 'active' : ''}`}
+                        onClick={() => setFilter(f)} type="button">
+                        {FILTER_LABEL[f]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="field">
+                  <label>亮度 {Math.round(brightness * 100)}%</label>
+                  <input className="slider" type="range" min={50} max={150} step={5}
+                    value={Math.round(brightness * 100)} onChange={(e) => setBrightness(Number(e.target.value) / 100)} />
+                </div>
+                <div className="field">
+                  <label>对比度 {Math.round(contrast * 100)}%</label>
+                  <input className="slider" type="range" min={50} max={180} step={5}
+                    value={Math.round(contrast * 100)} onChange={(e) => setContrast(Number(e.target.value) / 100)} />
+                </div>
+                <button className="btn sm ghost" onClick={() => { setFilter('none'); setBrightness(1); setContrast(1); }}>
+                  <Icon name="refresh" size={14} /> 恢复默认画面
+                </button>
               </div>
             )}
           </div>
@@ -822,20 +835,14 @@ export function ReaderView({
           page={editingPage}
           direction={direction}
           onClose={() => setEditing(false)}
-          onDone={(updated) => {
-            setEditing(false);
-            onPagesChanged?.(updated);
-          }}
+          onDone={(updated) => { setEditing(false); onPagesChanged?.(updated); }}
         />
       )}
 
       {help && (
         <div className="backdrop" onClick={() => setHelp(false)}>
           <div className="modal" style={{ width: 'min(520px, 92vw)' }}>
-            <div className="modal-head">
-              <Icon name="menu" />
-              <h3>快捷键</h3>
-            </div>
+            <div className="modal-head"><Icon name="menu" /><h3>快捷键</h3></div>
             <div className="modal-body">
               <div className="help-grid">
                 <div><span className="kbd">← →</span> 上一页 / 下一页</div>
@@ -847,7 +854,7 @@ export function ReaderView({
                 <div><span className="kbd">P</span> 页面缩略图</div>
                 <div><span className="kbd">[ ]</span> 上一话 / 下一话</div>
                 <div><span className="kbd">F</span> 全屏</div>
-                <div><span className="kbd">+/−</span> 缩放（原始尺寸模式）</div>
+                <div><span className="kbd">+/−</span> 缩放</div>
                 <div><span className="kbd">Esc</span> 关闭面板 / 退出</div>
                 <div><span className="kbd">?</span> 显示本帮助</div>
               </div>

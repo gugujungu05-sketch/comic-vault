@@ -16,12 +16,11 @@ import SourcesPage from './pages/SourcesPage';
 import { SessionProvider, useSession } from './lib/session';
 import { social, detectApiBase, getApiBase, setApiCredential } from './lib/api';
 import { rememberShareCode, withShareCode } from './lib/util';
+import { normalizeTheme } from './lib/themes';
 import { Avatar } from './components/Avatar';
 
 function useTheme() {
-  const [theme, setTheme] = useState<'dark' | 'light'>(
-    () => (localStorage.getItem('cv-theme') as 'dark' | 'light') || 'dark',
-  );
+  const [theme, setTheme] = useState<string>(() => normalizeTheme(localStorage.getItem('cv-theme')));
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('cv-theme', theme);

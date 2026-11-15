@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Icon } from './Icon';
-import { QrCode } from './QrCode';
+import { QrCode, qrExportDataUrl, QR_EXPORT_SIZES, QR_EXPORT_FORMATS, type QrExportSize, type QrExportFormat } from './QrCode';
 import { api, shareLandingUrl } from '../lib/api';
 import type { Chapter, ComicSummary, ShareLog } from '../types';
 import { copyText, formatDate } from '../lib/util';
@@ -36,6 +36,9 @@ export function ShareDialog({
   );
   const [logs, setLogs] = useState<ShareLog[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
+  /* 二维码导出参数：尺寸 × 格式（有的平台限制图片大小） */
+  const [qrSize, setQrSize] = useState<QrExportSize>(512);
+  const [qrFormat, setQrFormat] = useState<QrExportFormat>('png');
 
   useEffect(() => {
     if (comic.share?.expiresAt) {
@@ -136,12 +139,14 @@ export function ShareDialog({
 
   async function downloadQr() {
     const img = document.getElementById('cv-share-qr') as HTMLImageElement | null;
-    if (!img?.src) { toast('二维码还在生成中，请稍后再试', 'err'); return; }
-    const name = `${comic.title}-分享二维码.png`.replace(/[\\/:*?"<>|]/g, '_');
+    if (!img?.src && !link) { toast('二维码还在生成中，请稍后再试', 'err'); return; }
+    const ext = qrFormat === 'png' ? 'png' : 'jpg';
+    const name = `${comic.title}-分享二维码-${qrSize}px.${ext}`.replace(/[\\/:*?"<>|]/g, '_');
     try {
-      /* 走 blob URL 再触发下载，比直接把 data URL 塞进 a[href] 兼容性更好，
-         某些浏览器 / 内嵌 WebView 对 data URL 的 download 属性是无反应的 */
-      const blob = await (await fetch(img.src)).blob();
+      /* 按所选尺寸/格式重新生成导出图（比直接抓预览图更可控），
+         再走 blob URL 触发下载——某些内嵌 WebView 对 data URL 的 download 无反应 */
+      const data = await qrExportDataUrl(link, qrSize, qrFormat);
+      const blob = await (await fetch(data)).blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -150,15 +155,9 @@ export function ShareDialog({
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-      toast('二维码已保存', 'ok');
+      toast('二维码已保存（静区与纠错已保证可扫描）', 'ok');
     } catch {
-      const a = document.createElement('a');
-      a.href = img.src;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      toast('已触发下载', 'ok');
+      toast('保存失败，请重试', 'err');
     }
   }
 
@@ -279,13 +278,39 @@ export function ShareDialog({
               <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
                 <div>
                   <QrCode text={link} size={148} id="cv-share-qr" />
-                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
                     <button className="btn sm ghost" onClick={downloadQr}>
                       <Icon name="download" size={13} /> 保存二维码
                     </button>
                     <button className="btn sm ghost" onClick={copyQr}>
                       <Icon name="copy" size={13} /> 复制二维码
                     </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                    <select
+                      id="cv-qr-size"
+                      className="select"
+                      style={{ fontSize: 12, padding: '4px 8px' }}
+                      value={qrSize}
+                      onChange={(e) => setQrSize(Number(e.target.value) as QrExportSize)}
+                      title="导出尺寸"
+                    >
+                      {QR_EXPORT_SIZES.map((s) => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      id="cv-qr-fmt"
+                      className="select"
+                      style={{ fontSize: 12, padding: '4px 8px' }}
+                      value={qrFormat}
+                      onChange={(e) => setQrFormat(e.target.value as QrExportFormat)}
+                      title="导出格式（平台限制图片大小时选 JPG 轻量）"
+                    >
+                      {QR_EXPORT_FORMATS.map((s) => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.9 }}>

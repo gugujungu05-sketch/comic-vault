@@ -28,6 +28,31 @@
   --shadow-2: 0 10px 26px rgba(30, 50, 70, .16);
   color-scheme: light;
 }
+/* ---- 更多主题（与网站一致）：深海之蓝 / 松林绿 / 暮色暖橘 / 樱粉物语 ---- */
+:root[data-theme='sea'] {
+  --bg: #0c1822; --side: #080f18; --panel: #122230; --panel-2: #16293a;
+  --line: #223b52; --text: #e3eef7; --muted: #8aa3b8;
+  --accent: #3fa7d6; --accent-2: #5eead4; --accent-soft: rgba(63, 167, 214, .14);
+  color-scheme: dark;
+}
+:root[data-theme='forest'] {
+  --bg: #0d1712; --side: #080f0c; --panel: #12211a; --panel-2: #172a20;
+  --line: #22402e; --text: #e5f2ea; --muted: #93b3a1;
+  --accent: #3ecf8e; --accent-2: #a3e635; --accent-soft: rgba(62, 207, 142, .14);
+  color-scheme: dark;
+}
+:root[data-theme='sunset'] {
+  --bg: #1a110c; --side: #120b07; --panel: #221711; --panel-2: #2b1d15;
+  --line: #3e2b1f; --text: #f7ede4; --muted: #b99f8c;
+  --accent: #ff8a5c; --accent-2: #ffc857; --accent-soft: rgba(255, 138, 92, .14);
+  color-scheme: dark;
+}
+:root[data-theme='sakura'] {
+  --bg: #17101d; --side: #100a14; --panel: #221830; --panel-2: #2b2038;
+  --line: #3d2c4d; --text: #f5e9f4; --muted: #b297b5;
+  --accent: #ff7eb3; --accent-2: #c084fc; --accent-soft: rgba(255, 126, 179, .14);
+  color-scheme: dark;
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {

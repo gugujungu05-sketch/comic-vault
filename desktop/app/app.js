@@ -80,13 +80,14 @@
     $('#buildInfo').textContent = `v${Host.version} · 独立客户端`;
     /* 主题先在同步阶段套用缓存值：避免启动时先闪一下深色；宿主配置读不到时也不回退 */
     let cachedTheme = '';
+    const THEME_IDS = ['dark', 'light', 'sea', 'forest', 'sunset', 'sakura'];
     try { cachedTheme = localStorage.getItem('cv-theme') || ''; } catch { /* 忽略 */ }
-    if (cachedTheme === 'light' || cachedTheme === 'dark') document.documentElement.dataset.theme = cachedTheme;
+    if (THEME_IDS.includes(cachedTheme)) document.documentElement.dataset.theme = cachedTheme;
     try {
       const cfg = await Host.getConfig();
       state.server = cfg.server || '';
       state.mode = cfg.mode || 'local';
-      state.theme = (cachedTheme === 'light' || cachedTheme === 'dark') ? cachedTheme : (cfg.theme || 'dark');
+      state.theme = THEME_IDS.includes(cachedTheme) ? cachedTheme : (THEME_IDS.includes(cfg.theme) ? cfg.theme : 'dark');
       document.documentElement.dataset.theme = state.theme;
       try { localStorage.setItem('cv-theme', state.theme); } catch { /* 忽略 */ }
     } catch {
@@ -745,6 +746,18 @@
           <img id="shareQr" alt="分享二维码" />
           <div class="muted" style="font-size:11px;text-align:center">扫码直接打开</div>
           <button id="shareQrDl" class="btn sm" type="button">保存二维码</button>
+          <div class="row" style="gap:6px;justify-content:center;flex-wrap:wrap">
+            <select id="qrSizeSel" class="select sm" title="导出尺寸">
+              <option value="512">标准 512px</option>
+              <option value="1024">高清 1024px</option>
+              <option value="256">轻量 256px</option>
+            </select>
+            <select id="qrFmtSel" class="select sm" title="导出格式（平台限制图片大小时选 JPG 轻量）">
+              <option value="png">PNG 无损</option>
+              <option value="jpg-high">JPG 高清</option>
+              <option value="jpg-small">JPG 轻量</option>
+            </select>
+          </div>
         </div>
         <div class="share-main">
           ${linkRow('主链接 · 可直接打开（推荐）', mainLink, 'shMain')}
@@ -831,34 +844,48 @@
     });
     const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
 
-    /* 保存二维码：优先交给宿主落盘。Electron / Android WebView 里 <a download>
-       指向 data URL 不会触发任何下载，这正是旧版「点保存二维码没反应」的根因。
-       旧宿主没有该能力时降级为浏览器下载，且任何结果都有可见提示。 */
-    async function qrPngDataUrl() {
+    /* 按所选尺寸 / 格式重新生成导出二维码。
+       可识别性保证：2 模块静区、纠错 M（25% 容错）、JPG 质量不低于 0.82。 */
+    async function qrExportDataUrl(size, format) {
+      const jpeg = format !== 'png';
+      if (QR && typeof QR.toDataURL === 'function') {
+        try {
+          return await QR.toDataURL(mainLink, {
+            width: size,
+            margin: 2,
+            errorCorrectionLevel: 'M',
+            color: { dark: '#241a45', light: '#ffffff' },
+            type: jpeg ? 'image/jpeg' : 'image/png',
+            rendererOpts: { quality: format === 'jpg-small' ? 0.82 : 0.92 },
+          });
+        } catch { /* 退回 canvas 转换 */ }
+      }
       const pic = $('#shareQr')?.src || '';
       if (!pic) return '';
-      if (/^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,/i.test(pic)) return pic;
-      /* SVG 兜底：画到 canvas 转 PNG，保证相册 / 图片查看器都能打开 */
       try {
         const image = new Image();
         image.src = pic;
         await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; });
         const cv = document.createElement('canvas');
-        cv.width = cv.height = 480;
+        cv.width = cv.height = size;
         const ctx = cv.getContext('2d');
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, 480, 480);
-        ctx.drawImage(image, 0, 0, 480, 480);
-        return cv.toDataURL('image/png');
+        ctx.fillRect(0, 0, size, size);
+        ctx.drawImage(image, 0, 0, size, size);
+        return jpeg ? cv.toDataURL('image/jpeg', format === 'jpg-small' ? 0.82 : 0.92) : cv.toDataURL('image/png');
       } catch { return ''; }
     }
     bind('#shareQrDl', async () => {
+      const size = Number($('#qrSizeSel')?.value || 512) || 512;
+      const format = $('#qrFmtSel')?.value || 'png';
       let pic = '';
-      try { pic = await qrPngDataUrl(); } catch { /* 下面统一提示 */ }
+      try { pic = await qrExportDataUrl(size, format); } catch { /* 下面统一提示 */ }
       if (!pic) return toast('二维码还没生成好，请稍后再试或升级客户端', true);
+      const ext = format === 'png' ? 'png' : 'jpg';
+      const name = `ComicVault-分享二维码-${size}px.${ext}`;
       if (Host.saveImage) {
         try {
-          const r = await Host.saveImage(pic, 'ComicVault-分享二维码');
+          const r = await Host.saveImage(pic, name.replace(/\.[^.]+$/, ''));
           if (r && r.ok) return toast(`已保存：${r.path || '图片'}`);
           if (r && r.canceled) return;
           if (r && !r.unsupported) return toast(r.error || '保存失败', true);
@@ -867,7 +894,7 @@
       if (!isMobile) {
         const a = document.createElement('a');
         a.href = pic;
-        a.download = 'ComicVault-分享二维码.png';
+        a.download = name;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -1120,39 +1147,50 @@
     return out;
   }
   /** 统一导入入口：压缩包走服务端 7z 解压（和网站一样），PDF 本地渲染，图片走本地网格 */
+  /** 归一化导入条目：桌面是磁盘路径字符串，Android 是 {id,name} 句柄。
+   *  分类一律按显示名判断；上传时句柄带 id、磁盘文件带 path，宿主各自解析。 */
+  function fileSpec(p, field = 'files') {
+    if (typeof p === 'string') return { path: p, name: base(p), field };
+    return { id: p.id, name: nameOf(p), field };
+  }
+  const FILE_NAME = (p) => nameOf(p);
+
   async function startImportFrom(rawPaths, opts = {}) {
     if (!rawPaths || !rawPaths.length) return;
-    let paths = rawPaths.filter((p) => typeof p === 'string');
+    // 关键：不能按「是否字符串」过滤——Android 系统选择器返回的是 {id,name} 句柄，
+    // 旧代码在这里把手机端选中的文件全部丢掉，导致「选完之后什么也不会发生」。
+    let paths = rawPaths.slice();
     const PDF_RE = /\.pdf$/i;
     const NOVEL_RE = /\.(txt|text|md|markdown|epub)$/i;
 
     // 小说 TXT / 文字 EPUB：一次上传，服务端自动分章生成目录（旧版会只导入 EPUB 封面一页）。
     // 图片型 EPUB 服务端返回 kind:'image'，退回下面的压缩包导入流程。
-    const novelPaths = paths.filter((p) => NOVEL_RE.test(p));
+    const novelPaths = paths.filter((p) => NOVEL_RE.test(FILE_NAME(p)));
     const imageEpubs = [];
     for (const p of novelPaths) {
-      busy(true, `解析 ${base(p)}…`);
+      busy(true, `解析 ${FILE_NAME(p)}…`);
       try {
-        const r = await api('POST', '/api/import/novel-file', {
-          files: [{ path: p, name: base(p), field: 'file' }],
-        });
+        const r = await api('POST', '/api/import/novel-file', { files: [fileSpec(p, 'file')] });
         if (r && r.kind === 'image') imageEpubs.push(p);
-        else toast(`${base(p)} 已导入，章节目录自动生成`);
-      } catch (err) { toast(`${base(p)} 导入失败：${err.message}`, true); }
+        else toast(`${FILE_NAME(p)} 已导入，章节目录自动生成`);
+      } catch (err) { toast(`${FILE_NAME(p)} 导入失败：${err.message}`, true); }
       finally { busy(false); }
     }
-    paths = paths.filter((p) => !NOVEL_RE.test(p));
+    paths = paths.filter((p) => !novelPaths.includes(p));
     if (novelPaths.length) renderLibrary();
 
     // 与网站 ImportDialog 完全一致的支持格式（图片 / 各类压缩包 / EPUB / PDF）
-    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|cb7|7z|r\d{2}|tar|tgz|gz|bz2|xz|epub|ace|arj|lzh|lha|cab|iso)$/i.test(p));
-    let images = paths.filter((p) => !archives.includes(p) && !PDF_RE.test(p));
-    const pdfs = paths.filter((p) => PDF_RE.test(p));
+    const archives = paths.filter((p) => /\.(zip|cbz|rar|cbr|cb7|7z|r\d{2}|tar|tgz|gz|bz2|xz|epub|ace|arj|lzh|lha|cab|iso)$/i.test(FILE_NAME(p)));
+    const pdfs = paths.filter((p) => PDF_RE.test(FILE_NAME(p)) && !archives.includes(p));
+    // PDF 只有磁盘路径才能本地渲染；Android 句柄直接交给服务端渲染
+    const pdfHandles = pdfs.filter((p) => typeof p !== 'string');
+    const pdfDisk = pdfs.filter((p) => typeof p === 'string');
+    let images = paths.filter((p) => !novelPaths.includes(p) && !archives.includes(p) && !pdfs.includes(p));
     const failedPdfs = [];
-    for (const p of pdfs) {
+    for (const p of pdfDisk) {
       try {
-        busy(true, `渲染 ${base(p)}…`);
-        const rendered = await pdfToImagePaths(p, (i, n) => busy(true, `渲染 ${base(p)}… ${i}/${n}`));
+        busy(true, `渲染 ${FILE_NAME(p)}…`);
+        const rendered = await pdfToImagePaths(p, (i, n) => busy(true, `渲染 ${FILE_NAME(p)}… ${i}/${n}`));
         if (rendered && rendered.length) images = images.concat(rendered);
         else failedPdfs.push(p);
       } catch (err) {
@@ -1160,7 +1198,7 @@
       } finally { busy(false); }
     }
     // 渲染能力不可用（如手机端）或渲染失败的 PDF，回退交给服务端（服务端会给出明确指引）
-    const archivesFinal = archives.concat(failedPdfs, imageEpubs);
+    const archivesFinal = archives.concat(failedPdfs, imageEpubs, pdfHandles);
     if (images.length) await startImport(images, opts);
     if (archivesFinal.length) await importArchives(archivesFinal);
   }
@@ -1171,17 +1209,16 @@
     if (!state.user) return toast('请先登录再导入', true);
     const packs = [];
     for (const p of paths) {
-      busy(true, `解析 ${base(p)}…`);
+      const label = FILE_NAME(p);
+      busy(true, `解析 ${label}…`);
       try {
-        const r = await api('POST', '/api/import/archive', {
-          files: [{ path: p, name: base(p), field: 'file' }],
-        });
+        const r = await api('POST', '/api/import/archive', { files: [fileSpec(p, 'file')] });
         if (r.sessionId && (r.files || []).length) {
-          packs.push({ path: p, sessionId: r.sessionId, files: r.files, meta: r.fields || {} });
+          packs.push({ path: p, label, sessionId: r.sessionId, files: r.files, meta: r.fields || {} });
         } else if (r.error) {
-          toast(`${base(p)}：${r.error}`, true);
+          toast(`${label}：${r.error}`, true);
         }
-      } catch (err) { toast(`${base(p)}：${err.message}`, true); }
+      } catch (err) { toast(`${label}：${err.message}`, true); }
       finally { busy(false); }
     }
     if (!packs.length) return toast('没有解析出可导入的页面', true);
@@ -1197,7 +1234,7 @@
         groupsMap.get(g).push(f.path);
       }
       const groups = [...groupsMap.entries()].map(([dir, list], i) => ({
-        title: dir || base(k.path).replace(/\.[^.]+$/, '') || `第 ${i + 1} 话`,
+        title: dir || k.label.replace(/\.[^.]+$/, '') || `第 ${i + 1} 话`,
         paths: list.sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'zh-CN', { numeric: true })),
       }));
       return { ...k, groups };
@@ -1209,11 +1246,11 @@
     openModal(`<h3>导入 · ${packs.length} 个文件 / ${totalPages} 页 / ${groupCount} 话</h3>
       <div class="imp-archive-groups" style="max-height:300px;overflow:auto">
         ${flat.map((row) => `<label class="field" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-          <span class="muted" style="font-size:11px;min-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(base(row.pack.path))}">${esc(base(row.pack.path))}</span>
+          <span class="muted" style="font-size:11px;min-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(row.pack.label)}">${esc(row.pack.label)}</span>
           <input class="input" data-arc-gi="${row.idx}" value="${esc(row.g.title)}" />
           <span class="muted" style="font-size:11px;white-space:nowrap">${row.g.paths.length} 页</span></label>`).join('')}
       </div>
-      <label class="field"><span>漫画标题</span><input class="input" id="arcTitle" value="${esc(meta.title || base(packs[0].path).replace(/\.[^.]+$/, ''))}" /></label>
+      <label class="field"><span>漫画标题</span><input class="input" id="arcTitle" value="${esc(meta.title || packs[0].label.replace(/\.[^.]+$/, ''))}" /></label>
       <label class="field"><span>作者（可选）</span><input class="input" id="arcAuthor" value="${esc(meta.author || '')}" /></label>
       <div class="modal-actions">
         <button class="btn" data-action="close-modal">取消</button>
@@ -1416,11 +1453,16 @@
     const chips = state.boards.map((b) => `<button class="chip ${state.board === b.id ? 'active' : ''}" data-action="board" data-id="${esc(b.id)}">${esc(b.name)} ${b.count ?? ''}</button>`).join('');
     const composer = state.user ? `<div class="panel"><textarea class="textarea" id="postText" placeholder="说点什么…"></textarea>
       <div class="row" style="margin-top:9px"><span class="spacer"></span><button class="btn primary" data-action="publish">发布</button></div></div>` : '<div class="panel muted">登录后可以发帖</div>';
+    const annItem = (a) => `<div class="ann-item" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <b style="cursor:pointer;text-decoration:underline dotted" data-action="ann-open" data-id="${esc(a.id)}" title="点开查看详情与评论">${esc(a.title)}</b>
+      <span class="muted" style="font-size:11px">${fmt(a.at)}${a.comments?.length ? ` · 💬 ${a.comments.length}` : ''}</span>
+      <div style="font-size:13px;margin-top:3px;white-space:pre-wrap;cursor:pointer" data-action="ann-open" data-id="${esc(a.id)}">${esc(a.content)}</div>
+      ${state.user && state.user.id === a.by ? `<div class="row" style="gap:6px;margin-top:5px">
+        <button class="btn sm" data-action="ann-edit" data-id="${esc(a.id)}">编辑</button>
+        <button class="btn sm ghost" data-action="ann-del" data-id="${esc(a.id)}">删除</button></div>` : ''}
+    </div>`;
     const annPanel = `
-      ${ann.length ? `<div class="panel"><h3>📢 公告</h3>${ann.slice(0, 5).map((a) => `
-        <div class="ann-item" style="padding:8px 0;border-bottom:1px solid var(--line)">
-          <b>${esc(a.title)}</b> <span class="muted" style="font-size:11px">${fmt(a.at)}</span>
-          <div style="font-size:13px;margin-top:3px;white-space:pre-wrap">${esc(a.content)}</div></div>`).join('')}</div>` : ''}
+      ${ann.length ? `<div class="panel"><h3>📢 公告</h3>${ann.slice(0, 5).map(annItem).join('')}</div>` : ''}
       ${canAnnounce ? `<div class="panel"><h3>发布公告</h3>
         <label class="field"><span>标题</span><input class="input" id="annTitle" placeholder="公告标题" /></label>
         <label class="field"><span>内容</span><textarea class="textarea" id="annBody" placeholder="公告内容…"></textarea></label>
@@ -1438,6 +1480,64 @@
     try {
       await api('POST', '/api/announcements', { body: { title, content } });
       toast('公告已发布');
+      if (state.view === 'settings') renderSettings(); else renderPlaza();
+    } catch (err) { toast(err.message, true); } finally { busy(false); }
+  }
+  /** 公告详情弹窗：全文 + 评论列表 + 评论输入框（与网站一致） */
+  async function openAnnDetail(id) {
+    busy(true, '载入中…');
+    try {
+      const r = await api('GET', `/api/announcements/${id}`);
+      const n = r.announcement, me = state.user;
+      const canManage = !!me && me.id === n.by;
+      const comments = n.comments || [];
+      openModal(`<h3>📢 ${esc(n.title)}</h3>
+        <div class="muted" style="font-size:11px;margin-bottom:10px">${esc(n.byName || '')} · ${fmt(n.at)}${n.editedAt ? ` · 编辑于 ${fmt(n.editedAt)}` : ''}</div>
+        <div style="white-space:pre-wrap;line-height:1.8">${esc(n.content)}</div>
+        <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px">
+          <b style="font-size:13px">💬 评论（${comments.length}）</b>
+          ${canManage ? `<div class="row" style="gap:6px;margin:8px 0">
+            <input class="input" id="annETitle" value="${esc(n.title)}" style="flex:1" placeholder="标题" />
+            <button class="btn sm primary" data-action="ann-save" data-id="${esc(n.id)}">保存修改</button></div>
+          <textarea class="textarea" id="annEBody" rows="3">${esc(n.content)}</textarea>` : ''}
+          <div id="annCmts" style="margin-top:10px">${comments.length ? comments.map((c) => `
+            <div style="padding:8px 0;border-bottom:1px solid var(--line)">
+              <b style="font-size:12px">${esc(c.byName)}</b>
+              <span class="muted" style="font-size:11px">${fmt(c.at)}</span>
+              ${me && (me.id === c.by || canManage) ? `<button class="btn sm ghost" style="float:right" data-action="ann-cmt-del" data-id="${esc(n.id)}" data-cid="${esc(c.id)}">删除</button>` : ''}
+              <div style="font-size:13px;margin-top:4px;white-space:pre-wrap">${esc(c.text)}</div>
+            </div>`).join('') : '<div class="muted sm-text">还没有评论</div>'}</div>
+          ${me ? `<div class="row" style="gap:8px;margin-top:10px">
+            <input class="input" id="annCmtText" placeholder="写下你的评论…" style="flex:1" />
+            <button class="btn sm primary" data-action="ann-cmt" data-id="${esc(n.id)}">评论</button></div>`
+          : '<div class="muted sm-text" style="margin-top:10px">登录后可以评论公告。</div>'}
+        </div>`, true);
+    } catch (err) { toast(err.message, true); } finally { busy(false); }
+  }
+  /** 编辑公告（公告账号，只能改自己的） */
+  async function openAnnEditor(id) {
+    busy(true, '载入中…');
+    try {
+      const r = await api('GET', `/api/announcements/${id}`);
+      const n = r.announcement;
+      if (!r.canManage) return toast('只能编辑自己发布的公告', true);
+      openModal(`<h3>编辑公告</h3>
+        <label class="field"><span>公告标题</span><input class="input" id="annETitle" value="${esc(n.title)}" /></label>
+        <label class="field"><span>公告内容</span><textarea class="textarea" id="annEBody" rows="5">${esc(n.content)}</textarea></label>
+        <div class="modal-actions">
+          <button class="btn" data-action="close-modal">取消</button>
+          <button class="btn primary" data-action="ann-save" data-id="${esc(n.id)}">保存修改</button>
+        </div>`, true);
+    } catch (err) { toast(err.message, true); } finally { busy(false); }
+  }
+  async function saveAnnouncement(id) {
+    const title = $('#annETitle')?.value.trim(), content = $('#annEBody')?.value.trim();
+    if (!title || !content) return toast('标题和内容不能为空', true);
+    busy(true, '保存中…');
+    try {
+      await api('PATCH', `/api/announcements/${id}`, { body: { title, content } });
+      closeModal();
+      toast('公告已更新');
       if (state.view === 'settings') renderSettings(); else renderPlaza();
     } catch (err) { toast(err.message, true); } finally { busy(false); }
   }
@@ -1466,8 +1566,13 @@
         : `<p class="muted" style="font-size:12px">当前账号无发布权限（仅站长可发），可在此查看站点公告。</p>`}
       <div style="margin-top:8px">${annList.length
         ? annList.slice(0, 8).map((a) => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">
-            <b>${esc(a.title)}</b> <span class="muted" style="font-size:11px">${fmt(a.at)}</span>
-            <div style="font-size:13px;margin-top:3px;white-space:pre-wrap">${esc(a.content)}</div></div>`).join('')
+            <b style="cursor:pointer;text-decoration:underline dotted" data-action="ann-open" data-id="${esc(a.id)}" title="点开查看详情与评论">${esc(a.title)}</b>
+            <span class="muted" style="font-size:11px">${fmt(a.at)}${a.comments?.length ? ` · 💬 ${a.comments.length}` : ''}</span>
+            <div style="font-size:13px;margin-top:3px;white-space:pre-wrap;cursor:pointer" data-action="ann-open" data-id="${esc(a.id)}">${esc(a.content)}</div>
+            ${canAnn && state.user && state.user.id === a.by ? `<div class="row" style="gap:6px;margin-top:5px">
+              <button class="btn sm" data-action="ann-edit" data-id="${esc(a.id)}">编辑</button>
+              <button class="btn sm ghost" data-action="ann-del" data-id="${esc(a.id)}">删除</button></div>` : ''}
+          </div>`).join('')
         : '<div class="muted sm-text">还没有发布过公告</div>'}</div>
     </div>`;
     $('#content').innerHTML = `${state.user ? `<div class="panel"><h3>账号</h3>
@@ -1492,8 +1597,11 @@
       <div class="kv" style="margin-top:10px"><span>服务版本</span><b>${esc(rt?.version || '—')}</b></div></div>
 
       <div class="panel"><h3>外观</h3>
-        <div class="row"><button class="btn ${state.theme === 'dark' ? 'primary' : ''}" data-action="theme" data-id="dark">深色</button>
-          <button class="btn ${state.theme === 'light' ? 'primary' : ''}" data-action="theme" data-id="light">浅色</button></div></div>
+        <div class="row" style="flex-wrap:wrap;gap:8px">
+          ${[['dark', '经典深色'], ['light', '清爽浅色'], ['sea', '深海之蓝'], ['forest', '松林绿'], ['sunset', '暮色暖橘'], ['sakura', '樱粉物语']]
+            .map(([tid, label]) => `<button class="btn ${state.theme === tid ? 'primary' : ''}" data-action="theme" data-id="${tid}">${label}</button>`).join('')}
+        </div>
+        <p class="muted" style="font-size:11px;margin:8px 0 0">阅读器窗口也会跟随所选主题。</p></div>
 
       <div class="panel"><div class="panel-title"><h3>检查更新</h3>
         <button class="btn primary" data-action="check-update">检查更新</button></div>
@@ -1612,6 +1720,27 @@
       else if (a === 'board') { state.board = id; renderPlaza(); }
       else if (a === 'publish') await publish();
       else if (a === 'announce') await publishAnnouncement();
+      else if (a === 'ann-open') await openAnnDetail(id);
+      else if (a === 'ann-edit') await openAnnEditor(id);
+      else if (a === 'ann-save') await saveAnnouncement(id);
+      else if (a === 'ann-del') {
+        if (!window.confirm('确定删除这条公告吗？删除后无法恢复。')) return;
+        busy(true, '删除中…');
+        try { await api('DELETE', `/api/announcements/${id}`); toast('公告已删除'); state.view === 'settings' ? renderSettings() : renderPlaza(); }
+        catch (err) { toast(err.message, true); } finally { busy(false); }
+      }
+      else if (a === 'ann-cmt') {
+        const text = $('#annCmtText')?.value.trim();
+        if (!text) return toast('请输入评论内容', true);
+        busy(true, '发送中…');
+        try { await api('POST', `/api/announcements/${id}/comments`, { body: { text } }); await openAnnDetail(id); }
+        catch (err) { toast(err.message, true); } finally { busy(false); }
+      }
+      else if (a === 'ann-cmt-del') {
+        busy(true, '删除中…');
+        try { await api('DELETE', `/api/announcements/${id}/comments/${el.dataset.cid}`); await openAnnDetail(id); }
+        catch (err) { toast(err.message, true); } finally { busy(false); }
+      }
       else if (a === 'close-modal') closeModal();
       else if (a === 'copy-code') {
         const code = $('#codeBig')?.textContent.trim() || '';
@@ -1722,7 +1851,8 @@
         else window.open(url, '_blank');
       }
       else if (a === 'theme') {
-        state.theme = id === 'light' ? 'light' : 'dark';
+        const THEMES = ['dark', 'light', 'sea', 'forest', 'sunset', 'sakura'];
+        state.theme = THEMES.includes(id) ? id : 'dark';
         document.documentElement.dataset.theme = state.theme;
         try { localStorage.setItem('cv-theme', state.theme); } catch { /* 忽略 */ }
         try { await Host.setTheme(state.theme); } catch { /* 旧宿主不支持时靠 localStorage 兜底 */ }

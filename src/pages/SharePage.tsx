@@ -221,7 +221,7 @@ export function SharePage() {
               </button>
               {canDownload && (
                 <button className="btn sm ghost" onClick={() => openExport('all')} title="下载到本地">
-                  <Icon name="download" size={15} />
+                  <Icon name="download" size={15} /> 下载
                 </button>
               )}
             </>

@@ -10,7 +10,6 @@ import {
   SEVENZ_ONLY_RE,
   IMPORT_ACCEPT,
   NOVEL_RE,
-  extractArchive,
   extractEpub,
   filesFromFileList,
   filesFromDataTransfer,
@@ -143,38 +142,53 @@ export function ImportDialog({
     for (const p of picks) {
       if (IMAGE_RE.test(p.name)) {
         next.push(p);
-      } else if (ARCHIVE_RE.test(p.name)) {
+      } else if (ARCHIVE_RE.test(p.name) || SEVENZ_ONLY_RE.test(p.name)) {
+        // 所有压缩包（含 zip/cbz）统一交给服务端 7-Zip 解压：
+        // 浏览器解压大包要先把整包读进内存再逐页回传，又慢又不稳；服务端一次上传即可。
         try {
-          const { items: got, meta } = await extractArchive(p.blob);
-          for (const g of got) {
-            next.push({ name: g.name, blob: g.blob, path: `${cleanName(p.name)}/${g.path}` });
+          const file = p.blob instanceof File ? p.blob : new File([p.blob], p.name);
+          const res = await api.importArchive(file);
+          for (const f of res.files) {
+            next.push({ name: f.name, blob: new Blob(), path: f.path, remote: true });
           }
-          if (meta) {
-            setMeta((m) => ({
-              title: m.title || meta.title || '',
-              author: m.author || meta.author || '',
-              artist: m.artist || meta.artist || '',
-              tags: m.tags || (meta.tags || []).join(', '),
-              description: m.description || meta.description || '',
-              direction: meta.direction || m.direction,
-              publisher: m.publisher || meta.publisher || '',
-              year: m.year || meta.year || '',
-              rating: m.rating || meta.rating || '',
-              ageRating: m.ageRating || meta.ageRating || '',
-            }));
-            if (meta.raw) setComicInfo(meta.raw);
-          }
-          if (!got.length) msgs.push(`${p.name} 中没有找到图片`);
+          setRemote((prev) => prev || { sessionId: res.sessionId });
+          const f = res.fields || {};
+          setMeta((m) => ({
+            title: m.title || f.title || '',
+            author: m.author || f.author || '',
+            artist: m.artist || f.artist || '',
+            tags: m.tags || (f.tags || []).join(', '),
+            description: m.description || f.description || '',
+            direction: f.direction || m.direction,
+            publisher: m.publisher || f.publisher || '',
+            year: m.year || f.year || '',
+            rating: m.rating || f.rating || '',
+            ageRating: m.ageRating || f.ageRating || '',
+          }));
+          if (res.meta) setComicInfo(res.meta);
+          msgs.push(`${p.name}：服务端已解压，共 ${res.files.length} 张图片`);
         } catch (err) {
           msgs.push(`${p.name} 解压失败：${(err as Error).message}`);
         }
       } else if (PDF_RE.test(p.name)) {
+        // PDF 优先交给服务端渲染（大文件明显更快）；失败时退回浏览器 pdf.js 渲染
         try {
-          const got = await pdfToImages(p.blob, cleanName(p.name), { targetWidth: pdfWidth });
-          for (const g of got) next.push({ name: g.name, blob: g.blob, path: g.path });
-          if (!got.length) msgs.push(`${p.name} 没有可渲染的页面`);
-        } catch (err) {
-          msgs.push(`${p.name} 解析失败：${(err as Error).message}`);
+          const file = p.blob instanceof File ? p.blob : new File([p.blob], p.name);
+          const res = await api.importArchive(file);
+          for (const f of res.files) {
+            next.push({ name: f.name, blob: new Blob(), path: f.path, remote: true });
+          }
+          setRemote((prev) => prev || { sessionId: res.sessionId });
+          msgs.push(`${p.name}：服务端已渲染，共 ${res.files.length} 页`);
+        } catch {
+          try {
+            const got = await pdfToImages(p.blob, cleanName(p.name), { targetWidth: pdfWidth });
+            for (const g of got) next.push({ name: g.name, blob: g.blob, path: g.path });
+            if (!got.length) msgs.push(`${p.name} 没有可渲染的页面`);
+            else msgs.push(`${p.name}：已在本机渲染 ${got.length} 页`);
+          } catch (err) {
+            msgs.push(`${p.name} 解析失败：${(err as Error).message}`);
+          }
         }
       } else if (EPUB_RE.test(p.name)) {
         try {
@@ -212,32 +226,6 @@ export function ImportDialog({
       } else if (NOVEL_RE.test(p.name)) {
         novelQueue.push(p);
         msgs.push(`${p.name}：小说文本，将自动识别章节并生成目录`);
-      } else if (SEVENZ_ONLY_RE.test(p.name)) {
-        try {
-          const file = p.blob instanceof File ? p.blob : new File([p.blob], p.name);
-          const res = await api.importArchive(file);
-          for (const f of res.files) {
-            next.push({ name: f.name, blob: new Blob(), path: f.path, remote: true });
-          }
-          setRemote((prev) => prev || { sessionId: res.sessionId });
-          const f = res.fields || {};
-          setMeta((m) => ({
-            title: m.title || f.title || '',
-            author: m.author || f.author || '',
-            artist: m.artist || f.artist || '',
-            tags: m.tags || (f.tags || []).join(', '),
-            description: m.description || f.description || '',
-            direction: f.direction || m.direction,
-            publisher: m.publisher || f.publisher || '',
-            year: m.year || f.year || '',
-            rating: m.rating || f.rating || '',
-            ageRating: m.ageRating || f.ageRating || '',
-          }));
-          if (res.meta) setComicInfo(res.meta);
-          msgs.push(`${p.name}：服务端已解压，共 ${res.files.length} 张图片`);
-        } catch (err) {
-          msgs.push(`${p.name} 解压失败：${(err as Error).message}`);
-        }
       } else {
         msgs.push(`${p.name}：暂不支持的格式（可用图片 / ZIP·CBZ·RAR·7Z·CBR / PDF / EPUB / TXT 小说 / TAR 等）`);
       }

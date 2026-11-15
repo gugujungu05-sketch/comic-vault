@@ -80,7 +80,7 @@ export function ReaderPage() {
         onExit={() => navigate(`/comic/${comic.id}`)}
         headerExtra={
           <button className="btn sm ghost" onClick={() => setExporting(true)} title="保存到本地">
-            <Icon name="download" size={15} />
+            <Icon name="download" size={15} /> 导出
           </button>
         }
       />
