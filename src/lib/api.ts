@@ -201,7 +201,7 @@ function transformResponse<T>(value: T, code: string | null, depth = 0): T {
 function requestXHR<T>(
   url: string,
   init: RequestInit,
-  onUpload?: (ratio: number) => void,
+  onUpload?: (loaded: number, total: number) => void,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -212,7 +212,7 @@ function requestXHR<T>(
     if (headers) for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     if (onUpload && xhr.upload) {
       xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && e.total > 0) onUpload(Math.min(1, e.loaded / e.total));
+        if (e.lengthComputable && e.total > 0) onUpload(e.loaded, e.total);
       };
     }
     xhr.onload = () => {
@@ -390,7 +390,7 @@ export const api = {
         const result = await requestXHR<{ chapter: Chapter; added: number }>(
           `/api/comics/${comicId}/chapters/${chapterId}/pages`,
           { method: 'POST', body: form },
-          (ratio) => onProgress?.(Math.min(files.length, before + ratio * batch.length), files.length),
+          (loaded, total) => onProgress?.(Math.min(files.length, Math.round(before + (loaded / total) * batch.length)), files.length),
         );
         last = result.chapter;
         onProgress?.(Math.min(i + BATCH, files.length), files.length);
@@ -497,13 +497,13 @@ export const api = {
 
   /* ---------- RAR / 7z 压缩包导入（服务端解压） ---------- */
 
-  /** TXT / EPUB 文字书：一次上传，服务端自动分章入库，速度接近本地阅读器 */
-  importNovelFile: (file: File) => {
+  /** TXT / EPUB 文字书：一次上传，服务端自动分章入库；带真实上传进度（大文件不再像卡死） */
+  importNovelFile: (file: File, onProgress?: (loaded: number, total: number) => void) => {
     const form = new FormData();
     form.append('file', file, file.name);
-    return request<{ kind: 'novel' | 'image'; comic?: Comic }>('/api/import/novel-file', {
+    return requestXHR<{ kind: 'novel' | 'image'; comic?: Comic }>('/api/import/novel-file', {
       method: 'POST', body: form,
-    });
+    }, onProgress);
   },
 
   /** 前端已分好章时直接提交（无需上传原文件） */

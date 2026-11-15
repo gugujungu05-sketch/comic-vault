@@ -76,7 +76,6 @@ export function ImportDialog({
   const imgRef = useRef<HTMLInputElement>(null);
   const photoRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
-  const arcRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (dirRef.current) {
@@ -268,12 +267,16 @@ export function ImportDialog({
 
       // 0) 小说 / 文字型 EPUB：一次上传，服务端自动分章并生成目录，不逐页上传
       if (novelFiles.length) {
-        for (const nf of novelFiles) {
-          setPhase(`正在解析并自动分章：${nf.name}`);
+        for (let ni = 0; ni < novelFiles.length; ni++) {
+          const nf = novelFiles[ni];
+          setPhase(`正在上传并解析：${nf.name}（${ni + 1}/${novelFiles.length}）`);
           const file = nf.blob instanceof File ? nf.blob : new File([nf.blob], nf.name);
-          const r = await api.importNovelFile(file);
+          const r = await api.importNovelFile(file, (loaded, tot) => {
+            setProgress({ done: Math.round((loaded / 1024 / 1024) * 10) / 10, total: Math.round((tot / 1024 / 1024) * 10) / 10 });
+            setPhase(`正在上传 ${nf.name} · ${Math.round((loaded / 1024 / 1024) * 10) / 10} / ${Math.round((tot / 1024 / 1024) * 10) / 10} MB`);
+          });
           if (r.kind === 'image') {
-            throw new Error(`${nf.name} 是图片漫画，请用「压缩包 / PDF / EPUB」入口重新导入`);
+            throw new Error(`${nf.name} 是图片漫画，请用「添加文件」入口重新导入`);
           }
           if (r.comic?.id && !cid) cid = r.comic.id;
         }
@@ -418,17 +421,14 @@ export function ImportDialog({
       </div>
 
       <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
-        <button className="btn sm" onClick={() => photoRef.current?.click()}>
-          <Icon name="image" size={15} /> 选择图片（相册可多选）
+        <button className="btn primary" onClick={() => imgRef.current?.click()}>
+          <Icon name="upload" size={16} /> 选择文件（图片 / 压缩包 / PDF / EPUB / TXT，可多选）
         </button>
-        <button className="btn sm" onClick={() => imgRef.current?.click()}>
-          <Icon name="image" size={15} /> 选择文件 / 继续添加
+        <button className="btn sm" onClick={() => photoRef.current?.click()} title="手机浏览器从相册一次多选图片">
+          <Icon name="image" size={15} /> 从相册选图
         </button>
         <button className="btn sm" onClick={() => dirRef.current?.click()}>
-          <Icon name="folder" size={15} /> 选择文件夹
-        </button>
-        <button className="btn sm" onClick={() => arcRef.current?.click()}>
-          <Icon name="file" size={15} /> 压缩包 / PDF / EPUB
+          <Icon name="folder" size={15} /> 整个文件夹
         </button>
         {(items.length > 0 || novelFiles.length > 0) && (
           <button className="btn sm ghost" onClick={() => { setItems([]); setNovelFiles([]); setTitles({}); setListLimit(300); }}>
@@ -442,8 +442,8 @@ export function ImportDialog({
 
       <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, lineHeight: 1.7 }}>
         <b>可以反复添加：</b>每次选择都会<b>追加</b>到列表，不会清空之前已选的文件，最后统一排序再导入。
-        部分手机浏览器（vivo / OPPO 等）点「选择文件」会打开文件管理器且一次只能选 1 个，
-        多点几次「继续添加」即可；点「选择图片」会打开相册，通常能一次多选。
+        「选择文件」支持图片、ZIP/CBZ/RAR/7Z、PDF、EPUB、TXT 等全部格式；
+        部分手机浏览器一次只能选 1 个，多点几次即可；「从相册选图」会打开相册，通常能一次多选。
       </div>
 
       {/* 纯图片选择器：accept=image/* 会让国产手机浏览器调起「相册」而不是单选的文件管理器 */}
@@ -476,18 +476,6 @@ export function ImportDialog({
         ref={dirRef}
         type="file"
         multiple
-        hidden
-        onChange={(e) => {
-          if (e.target.files) ingest(filesFromFileList(e.target.files));
-          e.target.value = '';
-        }}
-      />
-      <input
-        id="cv-import-archive"
-        ref={arcRef}
-        type="file"
-        multiple
-        accept={IMPORT_ACCEPT}
         hidden
         onChange={(e) => {
           if (e.target.files) ingest(filesFromFileList(e.target.files));
@@ -699,10 +687,12 @@ export function ImportDialog({
             <div>
               {phase && <div style={{ fontSize: 12, marginBottom: 6 }}>{phase}</div>}
               <div className="progress">
-                <i style={{ width: `${phase ? 100 : percent}%` }} />
+                <i style={{ width: `${percent}%` }} />
               </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>
-                {phase ? '正在解析文本并生成目录…' : `正在上传 ${Math.floor(progress.done)} / ${progress.total} 页 · ${percent}%`}
+                {phase
+                  ? ''
+                  : `正在上传 ${Math.floor(progress.done)} / ${progress.total} 页 · ${percent}%`}
               </div>
             </div>
           )}

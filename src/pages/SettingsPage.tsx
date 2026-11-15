@@ -13,6 +13,7 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 };
 type DesktopBridge = { version?: string };
+type AndroidBridge = { version?: string; platform?: string };
 
 export function SettingsPage() {
   const toast = useToast();
@@ -22,6 +23,11 @@ export function SettingsPage() {
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(false);
   const bridge = (window as unknown as { desktop?: DesktopBridge }).desktop;
+  /* 安卓客户端的 WebView 桥：window.CVAndroid（不认识它就会按「网页版」查更新，
+     返回网页版本号 2.7.x —— 看起来比客户端 3.4.x 还旧，用户以为没有新版本） */
+  const androidBridge = (window as unknown as { CVAndroid?: AndroidBridge }).CVAndroid;
+  const clientKind: 'desktop' | 'android' | 'web' = bridge ? 'desktop' : androidBridge ? 'android' : 'web';
+  const clientVersion = bridge?.version || androidBridge?.version || '';
   const { user, setUser, codeLogin } = useSession();
   const [verifyCode, setVerifyCode] = useState('');
   const [verifyDevCode, setVerifyDevCode] = useState<string | null>(null);
@@ -142,10 +148,7 @@ export function SettingsPage() {
   async function checkUpdate() {
     setChecking(true);
     try {
-      const r = await discover.checkUpdate(
-        bridge ? 'desktop' : 'web',
-        bridge ? (bridge.version || '1.0.0') : '',
-      );
+      const r = await discover.checkUpdate(clientKind, clientVersion || '0');
       setUpdate(r);
       toast(r.hasUpdate ? `发现新版本 ${r.latest}` : '已是最新版本');
     } catch (err) {
@@ -389,7 +392,13 @@ export function SettingsPage() {
             <div className="app-panel-row">
               <span className="app-panel-label">运行形态</span>
               <span className="app-panel-value">
-                {bridge ? `桌面软件 v${bridge.version || '1.0'}` : installed ? '已安装的应用' : '浏览器网页'}
+                {bridge
+                  ? `桌面软件 v${bridge.version || '1.0'}`
+                  : androidBridge
+                    ? `安卓客户端 v${androidBridge.version || '1.0'}`
+                    : installed
+                      ? '已安装的应用'
+                      : '浏览器网页'}
               </span>
             </div>
           </div>

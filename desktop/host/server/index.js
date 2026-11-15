@@ -550,17 +550,66 @@ async function getPdfjs() {
   if (!pdfjsPromise) pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs');
   return pdfjsPromise;
 }
+
+/**
+ * PDF 渲染必须用与 pdf.js 内部同一份 @napi-rs/canvas：
+ * pdf.js 在 Node 下会自带一份（版本可能与项目根不同），两份副本的 Path2D 类不一致时，
+ * ctx.fill(字形路径) 会报「not a valid enum value of type CanvasFillRule」——
+ * 表现为带文字的 PDF 导入失败、提示「解压失败」。这里从 pdf.mjs 同目录解析模块。
+ */
+let pdfCanvasPromise = null;
+async function getPdfCanvas() {
+  if (!pdfCanvasPromise) {
+    pdfCanvasPromise = (async () => {
+      const { createRequire } = await import('node:module');
+      try {
+        const pdfMjs = createRequire(import.meta.url).resolve('pdfjs-dist/legacy/build/pdf.mjs');
+        return createRequire(pdfMjs)('@napi-rs/canvas');
+      } catch {
+        return import('@napi-rs/canvas');
+      }
+    })();
+  }
+  return pdfCanvasPromise;
+}
+
+/** pdf.js 标准字体目录（14 种基础字体，缺了它 PDF 里的文字会渲染成空白） */
+let pdfFontsPromise = null;
+async function getPdfStandardFonts() {
+  if (!pdfFontsPromise) {
+    pdfFontsPromise = (async () => {
+      const { createRequire } = await import('node:module');
+      try {
+        const pkg = createRequire(import.meta.url).resolve('pdfjs-dist/package.json');
+        const dir = path.join(path.dirname(pkg), 'standard_fonts');
+        return fs.existsSync(dir) ? `${dir}${path.sep}` : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+  }
+  return pdfFontsPromise;
+}
+
 async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
-  let createCanvas, pdfjs;
+  let pdfjs, canvasMod;
   try {
-    ({ createCanvas } = await import('@napi-rs/canvas'));
-    pdfjs = await getPdfjs();
+    [pdfjs, canvasMod] = await Promise.all([getPdfjs(), getPdfCanvas()]);
   } catch {
     // 桌面端内置服务未打包原生 PDF 渲染组件：给明确指引，而不是抛英文模块错误
     throw new Error('当前环境未启用 PDF 渲染，请改用网站导入 PDF，或先把 PDF 转成图片 / ZIP 压缩包');
   }
+  // useSystemFonts 必须关：Node 下系统字体解析会导致字形对象「isn't resolved yet」，
+  // 文字全部丢字渲染成空白；改用 pdf.js 自带的标准字体目录。
+  const standardFontDataUrl = await getPdfStandardFonts();
   const data = new Uint8Array(await fsp.readFile(srcPath));
-  const doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+  const doc = await pdfjs.getDocument({
+    data,
+    useSystemFonts: false,
+    disableFontFace: true,
+    isEvalSupported: false,
+    ...(standardFontDataUrl ? { standardFontDataUrl } : {}),
+  }).promise;
   await ensureDir(outDir);
   const pad = Math.max(4, String(doc.numPages).length);
   for (let i = 1; i <= doc.numPages; i++) {
@@ -568,7 +617,7 @@ async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
     const base = page.getViewport({ scale: 1 });
     const scale = Math.min(3, Math.max(0.5, targetWidth / base.width));
     const vp = page.getViewport({ scale });
-    const canvas = createCanvas(Math.max(1, Math.ceil(vp.width)), Math.max(1, Math.ceil(vp.height)));
+    const canvas = canvasMod.createCanvas(Math.max(1, Math.ceil(vp.width)), Math.max(1, Math.ceil(vp.height)));
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1205,7 +1254,10 @@ function splitNovelChapters(raw) {
   const lines = text.split('\n');
   const heads = [];
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const rawLine = lines[i];
+    // 快速跳过空行 / 长行：几百 MB 的小说逐行 trim 会明显拖慢解析
+    if (rawLine.length === 0 || rawLine.length > 80) continue;
+    const line = rawLine.trim();
     if (!line || line.length > 70) continue;
     if (NOVEL_HEAD_RE.test(line)) heads.push({ i, title: line });
   }
@@ -1226,8 +1278,9 @@ function novelDir(comicId) {
   return path.join(STORE_DIR, comicId, '_text');
 }
 
-/** 正文独立落盘，db.json 只存文件名：整本小说不会拖慢所有接口 */
-function createNovelComic(req, { title, author, description, chapters }) {
+/** 正文独立落盘，db.json 只存文件名：整本小说不会拖慢所有接口。
+ *  几百话的书逐章同步 writeFileSync 很慢，改为 64 路并发批量写。 */
+async function createNovelComic(req, { title, author, description, chapters }) {
   const db = loadDb();
   const t = now();
   const comic = {
@@ -1246,27 +1299,33 @@ function createNovelComic(req, { title, author, description, chapters }) {
   };
   const dir = novelDir(comic.id);
   fs.mkdirSync(dir, { recursive: true });
-  comic.chapters = chapters.slice(0, 5000).map((c, i) => {
+  const picked = chapters.slice(0, 5000);
+  comic.chapters = picked.map((c, i) => {
     const id = newId('ch');
-    const file = `${id}.txt`;
-    fs.writeFileSync(path.join(dir, file), String(c.text || ''), 'utf8');
     return {
       id, title: String(c.title || `第 ${i + 1} 章`).trim().slice(0, 120),
-      number: i + 1, pages: [], textFile: file, createdAt: t, uploadedBy: req.user.id,
+      number: i + 1, pages: [], textFile: `${id}.txt`, createdAt: t, uploadedBy: req.user.id,
     };
   });
+  // 章节正文 64 路并发批量写盘：几百话的书落盘从串行几十秒降到 1~2 秒
+  const WRITE_BATCH = 64;
+  for (let i = 0; i < comic.chapters.length; i += WRITE_BATCH) {
+    await Promise.all(comic.chapters.slice(i, i + WRITE_BATCH).map((ch, j) =>
+      fsp.writeFile(path.join(dir, ch.textFile), String(picked[i + j].text || ''), 'utf8').catch(() => {}),
+    ));
+  }
   db.comics.unshift(comic);
   saveDbSoon();
   return { ...summarize(comic), chapters: comic.chapters };
 }
 
 /** 前端已分好章时走这个（TXT 本地解析、EPUB 本地解析） */
-app.post('/api/import/novel', requireUser, (req, res) => {
+app.post('/api/import/novel', requireUser, async (req, res) => {
   const body = req.body || {};
   const chapters = Array.isArray(body.chapters) ? body.chapters : [];
   if (!chapters.length) return res.status(400).json({ error: '没有识别到章节' });
   try {
-    res.json({ kind: 'novel', comic: createNovelComic(req, {
+    res.json({ kind: 'novel', comic: await createNovelComic(req, {
       title: body.title, author: body.author, description: body.description, chapters,
     }) });
   } catch (err) {
@@ -1377,7 +1436,7 @@ app.post('/api/import/novel-file', requireUser, upload.single('file'), async (re
       const title = path.basename(file.originalname || '未命名小说').replace(/\.[^.]+$/, '');
       const author = (text.slice(0, 2000).match(/(?:作者|著者)\s*[:：]\s*([^\n]{1,30})/) || [])[1] || '';
       await cleanupTmp(file);
-      return res.json({ kind: 'novel', comic: createNovelComic(req, { title, author, chapters }) });
+      return res.json({ kind: 'novel', comic: await createNovelComic(req, { title, author, chapters }) });
     }
     if (ext === 'epub') {
       await ensureDir(tmpDir);
@@ -1387,7 +1446,7 @@ app.post('/api/import/novel-file', requireUser, upload.single('file'), async (re
       await fsp.rm(tmpDir, { recursive: true, force: true });
       await cleanupTmp(file);
       if (parsed.kind === 'image') return res.json({ kind: 'image' });
-      return res.json({ kind: 'novel', comic: createNovelComic(req, parsed) });
+      return res.json({ kind: 'novel', comic: await createNovelComic(req, parsed) });
     }
     await cleanupTmp(file);
     return res.status(400).json({ error: '只支持 TXT / EPUB 文字书，图片型 EPUB 请走漫画导入' });

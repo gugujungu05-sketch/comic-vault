@@ -74,7 +74,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.13.2";
+    private static final String APP_VERSION = "3.4.0.14.0";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";
@@ -461,6 +461,9 @@ public class MainActivity extends Activity {
                 if (cookie != null) conn.setRequestProperty("Cookie", cookie);
                 if (files != null && files.length() > 0) {
                     conn.setDoOutput(true);
+                    // 流式上传：不预设流式模式时 HttpURLConnection 会把整个请求体缓冲在内存里
+                    // 才开始发送——大文件（几百话小说 / 整本漫画）会长时间无进展甚至内存溢出
+                    conn.setChunkedStreamingMode(256 * 1024);
                     String boundary = "----cv" + System.currentTimeMillis()
                             + Long.toHexString(System.nanoTime());
                     conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);

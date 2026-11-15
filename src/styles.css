@@ -33,65 +33,66 @@
   color-scheme: light;
 }
 
-/* ---- 更多主题：深海之蓝 / 松林绿 / 暮色暖橘 / 樱粉物语 ---- */
+/* ---- 更多主题：深海之蓝 / 松林绿 / 暮色暖橘 / 樱粉物语（配色偏柔和，长时间阅读不刺眼） ---- */
 :root[data-theme='sea'] {
-  --bg: #0a141e;
-  --bg-soft: #0e1c2a;
-  --surface: #12202e;
-  --surface-2: #172a3a;
-  --border: #213950;
-  --text: #e3eef7;
-  --muted: #8aa3b8;
-  --accent: #3fa7d6;
-  --accent-2: #5eead4;
-  --shadow: 0 12px 32px rgba(2, 14, 26, 0.45);
-  --reader-bg: #060e16;
+  --bg: #0c1620;
+  --bg-soft: #101c28;
+  --surface: #142230;
+  --surface-2: #192a3a;
+  --border: #24405a;
+  --text: #dfe9f2;
+  --muted: #8ba2b6;
+  --accent: #5b9fc4;
+  --accent-2: #6fc3b4;
+  --shadow: 0 12px 32px rgba(2, 14, 26, 0.4);
+  --reader-bg: #0a1219;
   color-scheme: dark;
 }
 
 :root[data-theme='forest'] {
-  --bg: #0b1410;
-  --bg-soft: #0f1c15;
-  --surface: #132218;
-  --surface-2: #182c20;
-  --border: #21402e;
-  --text: #e5f2ea;
-  --muted: #93b3a1;
-  --accent: #3ecf8e;
-  --accent-2: #a3e635;
-  --shadow: 0 12px 32px rgba(3, 18, 10, 0.45);
-  --reader-bg: #060d09;
+  --bg: #0f1712;
+  --bg-soft: #131d17;
+  --surface: #17241d;
+  --surface-2: #1c2c24;
+  --border: #2a4434;
+  --text: #e2ede6;
+  --muted: #94ab9f;
+  --accent: #6fbf8f;
+  --accent-2: #b5d99c;
+  --shadow: 0 12px 32px rgba(3, 18, 10, 0.4);
+  --reader-bg: #0c120e;
   color-scheme: dark;
 }
 
 :root[data-theme='sunset'] {
-  --bg: #160f0b;
-  --bg-soft: #1f1510;
-  --surface: #251913;
-  --surface-2: #2e1f17;
-  --border: #3e2b1f;
-  --text: #f7ede4;
-  --muted: #b99f8c;
-  --accent: #ff8a5c;
-  --accent-2: #ffc857;
-  --shadow: 0 12px 32px rgba(20, 8, 2, 0.45);
-  --reader-bg: #0e0906;
+  --bg: #1a130e;
+  --bg-soft: #221912;
+  --surface: #281e16;
+  --surface-2: #31261c;
+  --border: #423226;
+  --text: #f0e6db;
+  --muted: #b4a08e;
+  --accent: #df9a6e;
+  --accent-2: #d9b36a;
+  --shadow: 0 12px 32px rgba(20, 8, 2, 0.4);
+  --reader-bg: #120c08;
   color-scheme: dark;
 }
 
+/* 樱粉：浅色护眼主题，白天长时间看漫画更舒服 */
 :root[data-theme='sakura'] {
-  --bg: #160f1a;
-  --bg-soft: #1d1424;
-  --surface: #241a2e;
-  --surface-2: #2e213a;
-  --border: #3d2c4d;
-  --text: #f5e9f4;
-  --muted: #b297b5;
-  --accent: #ff7eb3;
-  --accent-2: #c084fc;
-  --shadow: 0 12px 32px rgba(18, 6, 24, 0.45);
-  --reader-bg: #0d0810;
-  color-scheme: dark;
+  --bg: #faf3f5;
+  --bg-soft: #f3e9ec;
+  --surface: #ffffff;
+  --surface-2: #f7eef1;
+  --border: #e7d5db;
+  --text: #43333b;
+  --muted: #9a8490;
+  --accent: #c97a97;
+  --accent-2: #a98cc9;
+  --shadow: 0 12px 30px rgba(90, 40, 60, 0.12);
+  --reader-bg: #efe4e8;
+  color-scheme: light;
 }
 
 * {
@@ -862,6 +863,16 @@ textarea {
 
 /* 设置面板：分组标签 / 说明文字 / 操作提示 */
 .rp-label { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+/* 主题选择 chip 里的小色点 */
+.theme-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: -1px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
 .rp-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin-top: 8px; }
 /* 阅读器设置面板内控件：任何主题下都保证清晰可读（不依赖 --muted 的低对比色） */
 .reader-panel .chip {
@@ -932,6 +943,30 @@ textarea {
   padding: 1px 5px;
   border-radius: 5px;
 }
+/* 页序调整小箭头：悬停缩略图时出现在右上角 */
+.thumb-grid .page-move {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 2;
+}
+.thumb-grid button:hover .page-move { display: flex; }
+.thumb-grid .page-move > span {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(20, 22, 30, 0.78);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.thumb-grid .page-move > span:hover { background: var(--accent); }
 
 .slider {
   -webkit-appearance: none;

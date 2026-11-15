@@ -3,6 +3,7 @@ import type { Chapter, ReaderFilter, ReaderPrefs } from '../types';
 import { Icon } from './Icon';
 import { PageEditor } from './PageEditor';
 import { saveImageToDevice } from '../lib/util';
+import { THEMES, normalizeTheme } from '../lib/themes';
 import { useToast } from './Toasts';
 
 type Mode = ReaderPrefs['mode'];
@@ -127,6 +128,15 @@ export function ReaderView({
   const [help, setHelp] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
+  /* 阅读器内直接换主题：分享阅读器没有主界面设置页，也在这里换 */
+  const [uiTheme, setUiTheme] = useState<string>(() => normalizeTheme(
+    typeof document !== 'undefined' ? document.documentElement.dataset.theme : null,
+  ));
+  function changeTheme(id: string) {
+    setUiTheme(id);
+    document.documentElement.dataset.theme = id;
+    try { localStorage.setItem('cv-theme', id); } catch { /* 忽略 */ }
+  }
   const [saveChoice, setSaveChoice] = useState(false);
   const [swipeHint, setSwipeHint] = useState(false);
   const [scrollRatio, setScrollRatio] = useState(0);
@@ -800,6 +810,19 @@ export function ReaderView({
                         ? '当前设置只记住并应用到这本漫画的所有话。'
                         : '当前设置只记住并应用到当前这一话。'}
                   </div>
+                </div>
+
+                <div>
+                  <div className="rp-label">界面主题（分享阅读同样生效）</div>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    {THEMES.map((t) => (
+                      <button key={t.id} className={`chip ${uiTheme === t.id ? 'active' : ''}`} type="button"
+                        onClick={() => changeTheme(t.id)} title={t.label}>
+                        <span className="theme-dot" style={{ background: t.swatch[1] }} /> {t.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="rp-note">阅读器背景、按键与面板都会跟着主题变化；分享页的访客也能自己选。</div>
                 </div>
 
                 <div>

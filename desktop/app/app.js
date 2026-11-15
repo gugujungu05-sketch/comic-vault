@@ -664,6 +664,7 @@
           <td class="ch-ops">
             <button class="btn sm" data-action="read-chapter" data-id="${esc(ch.id)}">阅读</button>
             <button class="btn sm" data-action="rename-chapter" data-id="${esc(ch.id)}">重命名</button>
+            <button class="btn sm" data-action="manage-pages" data-id="${esc(ch.id)}" title="查看 / 排序 / 删除这一话的页面">页面</button>
             <button class="btn sm icon" data-action="move-chapter" data-id="${esc(ch.id)}" data-dir="-1" title="上移" ${i === 0 ? 'disabled' : ''}>↑</button>
             <button class="btn sm icon" data-action="move-chapter" data-id="${esc(ch.id)}" data-dir="1" title="下移" ${i === chapters.length - 1 ? 'disabled' : ''}>↓</button>
             <button class="btn sm" data-action="add-pages" data-id="${esc(ch.id)}">加页</button>
@@ -1041,6 +1042,128 @@
     await startImport(paths, { intoChapterId: chapterId });
   }
 
+  /* ------------------------------ 页面管理（每话：查看 / 排序 / 删除） ------------------------------ */
+  /** 打开某一话的页面管理网格：点格子勾选、↑↓ 或拖动调序（改动立即保存）、删除选中 */
+  async function openPageManager(chapterId) {
+    const c = state.comicData;
+    const ch = (c?.chapters || []).find((x) => x.id === chapterId);
+    if (!ch) return toast('找不到这一话', true);
+    const pages = (ch.pages || []).slice();
+    if (!pages.length) return toast('这一话还没有页面', true);
+    state.pageMgr = { comicId: state.comic, chapterId, pages, sel: new Set(), title: ch.title };
+    openModal(`<h3>页面管理 · ${esc(ch.title)} · ${pages.length} 页</h3>
+      <div class="imp-tools"><span class="muted" id="pmCount"></span>
+        <span class="spacer"></span>
+        <button class="btn sm" id="pmAll" type="button">全选</button>
+        <button class="btn sm" id="pmNone" type="button">取消选择</button>
+        <button class="btn sm" id="pmSort" type="button">按名称排序</button>
+        <button class="btn sm" id="pmReverse" type="button">倒序</button>
+        <button class="btn sm danger" id="pmDel" type="button">删除选中</button></div>
+      <div class="imp-grid" id="pmGrid"></div>
+      <p class="muted" style="font-size:11px;margin:10px 0 0">点格子勾选后「删除选中」；拖动格子或点 ↑↓ 调整页序，<b>每次调整立即保存</b>。编号就是阅读时的页序。</p>
+      <div class="modal-actions"><button class="btn primary" data-action="close-modal">完成</button></div>`, true);
+    renderPageGrid();
+    $('#pmAll').onclick = () => { state.pageMgr.sel = new Set(state.pageMgr.pages.map((p) => p.id)); renderPageGrid(); };
+    $('#pmNone').onclick = () => { state.pageMgr.sel.clear(); renderPageGrid(); };
+    $('#pmSort').onclick = async () => {
+      state.pageMgr.pages.sort((a, b) => String(a.name || a.file).localeCompare(String(b.name || b.file), 'zh-CN', { numeric: true }));
+      await savePageOrder();
+    };
+    $('#pmReverse').onclick = async () => { state.pageMgr.pages.reverse(); await savePageOrder(); };
+    $('#pmDel').onclick = async () => {
+      const ids = state.pageMgr.pages.filter((p) => state.pageMgr.sel.has(p.id)).map((p) => p.id);
+      if (!ids.length) return toast('请先勾选要删除的页面', true);
+      if (!confirm(`确定删除选中的 ${ids.length} 页？此操作不可撤销。`)) return;
+      busy(true, `正在删除 ${ids.length} 页…`);
+      try {
+        for (const pid of ids) {
+          await api('DELETE', `/api/comics/${state.pageMgr.comicId}/chapters/${state.pageMgr.chapterId}/pages/${pid}`);
+        }
+        state.pageMgr.pages = state.pageMgr.pages.filter((p) => !state.pageMgr.sel.has(p.id));
+        state.pageMgr.sel.clear();
+        renderPageGrid();
+        toast(`已删除 ${ids.length} 页`);
+      } catch (err) { toast(err.message, true); } finally { busy(false); }
+    };
+    const grid = $('#pmGrid');
+    grid.addEventListener('click', (e) => {
+      const mv = e.target.closest('[data-pm-move]');
+      if (mv) {
+        e.preventDefault(); e.stopPropagation();
+        const i = Number(mv.dataset.idx);
+        const list = state.pageMgr.pages;
+        const to = i + Number(mv.dataset.pmMove);
+        if (i < 0 || to < 0 || i >= list.length || to >= list.length || i === to) return;
+        const [moved] = list.splice(i, 1);
+        list.splice(to, 0, moved);
+        savePageOrder();
+        return;
+      }
+      if (e.target.closest('input[type=checkbox]')) return;
+      const cell = e.target.closest('.pm-cell');
+      const box = cell?.querySelector('input[type=checkbox]');
+      if (box) box.click();
+    });
+    grid.addEventListener('change', (e) => {
+      const cb = e.target.closest('input[type=checkbox]');
+      if (!cb) return;
+      if (cb.checked) state.pageMgr.sel.add(cb.dataset.id); else state.pageMgr.sel.delete(cb.dataset.id);
+      cb.closest('.pm-cell')?.classList.toggle('on', cb.checked);
+      const el = $('#pmCount'); if (el) el.textContent = `已选 ${state.pageMgr.sel.size} 页`;
+    });
+    let dragFrom = -1;
+    grid.addEventListener('dragstart', (e) => {
+      const cell = e.target.closest('.pm-cell');
+      if (!cell) return;
+      dragFrom = Number(cell.dataset.idx);
+      cell.classList.add('dragging');
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(dragFrom)); } catch { /* 忽略 */ }
+    });
+    grid.addEventListener('dragover', (e) => { e.preventDefault(); try { e.dataTransfer.dropEffect = 'move'; } catch { /* 忽略 */ } });
+    grid.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const cell = e.target.closest('.pm-cell');
+      if (cell && dragFrom >= 0) {
+        const list = state.pageMgr.pages;
+        const to = Math.min(list.length - 1, Number(cell.dataset.idx));
+        const [moved] = list.splice(dragFrom, 1);
+        list.splice(to, 0, moved);
+        savePageOrder();
+      }
+      dragFrom = -1;
+    });
+    grid.addEventListener('dragend', () => { $$('#pmGrid .pm-cell').forEach((x) => x.classList.remove('dragging')); dragFrom = -1; });
+  }
+
+  function renderPageGrid() {
+    const grid = $('#pmGrid');
+    if (!grid || !state.pageMgr) return;
+    const list = state.pageMgr.pages;
+    grid.innerHTML = list.map((p, i) => {
+      const on = state.pageMgr.sel.has(p.id);
+      const thumb = p.thumbUrl || p.url || '';
+      return `<div class="imp-cell pm-cell ${on ? 'on' : ''}" data-idx="${i}" draggable="true" title="${esc(p.name || p.file || '')}">
+        <input type="checkbox" data-id="${esc(p.id)}" ${on ? 'checked' : ''} />
+        <span class="imp-thumb">${thumb ? `<img loading="lazy" src="${esc(asset(thumb))}" alt="" />` : ''}</span>
+        <span class="imp-n">${i + 1}</span>
+        <span class="imp-name">${esc(p.name || p.file || '')}</span>
+        <span class="imp-ops">
+          <button type="button" data-pm-move="-1" data-idx="${i}" title="前移一页" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button type="button" data-pm-move="1" data-idx="${i}" title="后移一页" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+        </span>
+      </div>`;
+    }).join('');
+    const el = $('#pmCount'); if (el) el.textContent = `已选 ${state.pageMgr.sel.size} 页`;
+  }
+
+  async function savePageOrder() {
+    renderPageGrid();
+    try {
+      await api('PUT', `/api/comics/${state.pageMgr.comicId}/chapters/${state.pageMgr.chapterId}/pages/reorder`,
+        { body: { order: state.pageMgr.pages.map((p) => p.id) } });
+    } catch (err) { toast(err.message, true); }
+  }
+
   /* ------------------------------ 导入（桌面核心优势） ------------------------------ */
   async function uploadInto(comicId, chapterId, paths) {
     const total = paths.length;
@@ -1062,7 +1185,10 @@
   /* 章节页式网格：点选/取消、编号即页序、按名称排序，缩略图由宿主提供 */
   function updateImportCount() {
     const el = $('#impCount');
-    if (el) el.textContent = `已选 ${state.importSel.size} / ${(state.importPaths || []).length} 个文件`;
+    if (el) {
+      const news = (state.importPaths || []).filter((p) => !p.existing);
+      el.textContent = `新选 ${state.importSel.size} / ${news.length} 个文件${(state.importExisting || []).length ? ` · 含已有 ${(state.importExisting || []).length} 页` : ''}`;
+    }
   }
   function renderImportGrid() {
     const grid = $('#impGrid');
@@ -1070,6 +1196,18 @@
     const list = state.importPaths || [];
     grid.innerHTML = list.map((p, i) => {
       const key = keyOf(p), name = nameOf(p), on = state.importSel.has(key);
+      if (p.existing) {
+        return `<div class="imp-cell pm-cell exist" data-idx="${i}" draggable="true" title="${esc(name)}">
+          <span class="imp-badge">已有</span>
+          <span class="imp-thumb">${p.url ? `<img loading="lazy" src="${esc(asset(p.url))}" alt="" />` : ''}</span>
+          <span class="imp-n">${i + 1}</span>
+          <span class="imp-name">${esc(name)}</span>
+          <span class="imp-ops">
+            <button type="button" data-imp-move="-1" data-idx="${i}" title="前移一页" ${i === 0 ? 'disabled' : ''}>↑</button>
+            <button type="button" data-imp-move="1" data-idx="${i}" title="后移一页" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+          </span>
+        </div>`;
+      }
       return `<div class="imp-cell ${on ? 'on' : ''}" data-idx="${i}" draggable="true" title="${esc(name)}">
         <input type="checkbox" data-key="${esc(key)}" ${on ? 'checked' : ''} />
         <span class="imp-thumb" data-thumb="${esc(key)}"><span class="imp-ext">${esc(extOf(name))}</span></span>
@@ -1083,7 +1221,7 @@
     }).join('');
     updateImportCount();
     if (Host.thumb) {
-      $$('#impGrid .imp-thumb').forEach((box) => {
+      $$('#impGrid .imp-thumb[data-thumb]').forEach((box) => {
         const key = box.dataset.thumb;
         Promise.resolve(Host.thumb(key)).then((u) => {
           if (u) box.innerHTML = `<img src="${esc(u)}" alt="" />`;
@@ -1290,18 +1428,32 @@
     if (!paths || !paths.length) return toast('没有找到可用图片', true);
     paths = paths.slice();
     try { paths.sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'zh-CN', { numeric: true })); } catch { /* 忽略 */ }
-    state.importPaths = paths;
+    /* 「加页」模式：把这一话已有的页面也放进网格（标「已有」），新图片与它们混排，
+       编号就是最终页序 —— 不再是只能把新图追加到末尾 */
+    state.importExisting = [];
+    if (intoChapter) {
+      try {
+        const c = await api('GET', `/api/comics/${state.comic}`);
+        const ch = (c.chapters || []).find((x) => x.id === state.importIntoChapter);
+        if (ch && (ch.pages || []).length) {
+          state.importExisting = ch.pages.map((p) => ({
+            existing: true, id: p.id, name: p.name || p.file || '', url: p.thumbUrl || p.url || '',
+          }));
+        }
+      } catch { /* 读不到已有页面就退回纯新增模式 */ }
+    }
+    state.importPaths = [...(state.importExisting || []), ...paths];
     state.importSel = new Set(paths.map(keyOf));
     let comics = state.comics;
     try { comics = (await api('GET', '/api/comics')).comics || []; } catch { /* 忽略 */ }
     const options = comics.map((c) => `<option value="${esc(c.id)}"${opts.defaultComicId === c.id ? ' selected' : ''}>${esc(c.title)}</option>`).join('');
     const targetBlock = intoChapter
-      ? `<label class="field"><span>导入到</span><div class="muted" style="font-size:12px">当前漫画的这一话 · 勾选的页面按下方编号追加到末尾</div></label>`
+      ? `<label class="field"><span>导入到</span><div class="muted" style="font-size:12px">当前漫画的这一话 · 新图可与「已有」页面混排，编号就是最终页序</div></label>`
       : `<label class="field"><span>导入到</span>
           <select class="select" id="impTarget"><option value="__new__">＋ 新建一本漫画</option>${options}</select></label>
         <label class="field" id="impTitleRow"><span>漫画标题</span><input class="input" id="impTitle" value="${esc(nameOf(paths[0]).replace(/\.[^.]+$/, ''))}" /></label>
         <label class="field"><span>话标题</span><input class="input" id="impChapter" value="第 1 话" /></label>`;
-    openModal(`<h3>${intoChapter ? '追加页面' : '导入漫画'} · ${paths.length} 个文件</h3>
+    openModal(`<h3>${intoChapter ? '追加页面' : '导入漫画'} · 新选 ${paths.length} 个文件${(state.importExisting || []).length ? ` · 已有 ${(state.importExisting || []).length} 页` : ''}</h3>
       <div class="imp-tools"><span class="muted" id="impCount"></span>
         <span class="spacer"></span>
         <button class="btn sm primary" id="impAddMore" type="button">＋ 继续添加图片</button>
@@ -1392,7 +1544,7 @@
     $('#impReverse').onclick = () => { state.importPaths.reverse(); renderImportGrid(); };
   }
   async function doImport() {
-    const paths = (state.importPaths || []).filter((p) => state.importSel.has(keyOf(p)));
+    const paths = (state.importPaths || []).filter((p) => !p.existing && state.importSel.has(keyOf(p)));
     if (!paths.length) return toast('请至少勾选一个文件', true);
     const target = $('#impTarget')?.value || '__new__';
     let comicId = target, chapterId = '';
@@ -1412,11 +1564,45 @@
         chapterId = (Array.isArray(chs) ? chs[chs.length - 1] : chs.chapters?.slice(-1)[0])?.id;
       }
       if (!chapterId) throw new Error('创建章节失败');
+      const plan = (state.importPaths || []).filter((p) => p.existing || state.importSel.has(keyOf(p)));
       closeModal();
       state.importIntoChapter = '';
       await uploadInto(comicId, chapterId, paths);
+      /* 加页模式且网格里混有「已有」页面：按网格编号做最终页序，
+         新上传的页面按文件名对号入座，插到用户拖好的位置 */
+      if ((state.importExisting || []).length && plan.some((p) => p.existing)) {
+        busy(true, '正在按排序整理页序…');
+        const c = await api('GET', `/api/comics/${comicId}`);
+        const ch = (c.chapters || []).find((x) => x.id === chapterId);
+        const existIds = new Set(state.importExisting.map((p) => p.id));
+        const nameMap = new Map();
+        for (const p of (ch?.pages || [])) {
+          if (!existIds.has(p.id)) {
+            const k = p.name || p.file || '';
+            if (!nameMap.has(k)) nameMap.set(k, []);
+            nameMap.get(k).push(p);
+          }
+        }
+        const order = [];
+        let missing = 0;
+        for (const item of plan) {
+          if (item.existing) { order.push(item.id); continue; }
+          const pool = nameMap.get(nameOf(item)) || [];
+          const pg = pool.shift();
+          if (pg) order.push(pg.id); else missing += 1;
+        }
+        // 漏匹配的页补到末尾，保证不丢页
+        for (const p of (ch?.pages || [])) if (!order.includes(p.id)) order.push(p.id);
+        if (order.length) {
+          await api('PUT', `/api/comics/${comicId}/chapters/${chapterId}/pages/reorder`, { body: { order } });
+        }
+        if (missing) toast(`有 ${missing} 张新页因文件名对不上被排到了末尾`, true);
+      }
       state.importPaths = null;
       state.importSel = new Set();
+      state.importExisting = [];
+      busy(false);
+      state.view = 'comic'; state.comic = comicId; render();
     } catch (err) { toast(err.message, true); busy(false); }
   }
 
@@ -1773,6 +1959,7 @@
       else if (a === 'src-save') await srcSave();
       else if (a === 'src-subscribe') await subscribe(el.dataset.url, el.dataset.title, el.dataset.cover);
       else if (a === 'rename-chapter') await renameChapter(id);
+      else if (a === 'manage-pages') await openPageManager(id);
       else if (a === 'move-chapter') await moveChapter(id, Number(el.dataset.dir));
       else if (a === 'del-chapter') await delChapter(id);
       else if (a === 'export-chapter') await exportCbz([id]);

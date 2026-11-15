@@ -292,6 +292,13 @@ body.mobile .btn { min-height: 40px; }
 }
 .imp-cell.on { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .imp-cell input { position: absolute; top: 7px; left: 7px; width: 16px; height: 16px; accent-color: var(--accent); z-index: 2; }
+/* 加页网格里的「已有」页面：不可勾选，仅参与排序 */
+.imp-cell.exist { opacity: .92; border-style: dashed; }
+.imp-badge {
+  position: absolute; top: 5px; left: 7px; z-index: 2;
+  font-size: 10px; line-height: 1; padding: 3px 5px; border-radius: 4px;
+  background: var(--accent); color: #fff; font-weight: 700;
+}
 .imp-thumb {
   display: grid; place-items: center; height: 92px; border-radius: 5px; overflow: hidden;
   background: #171a22; color: var(--muted); font-size: 12px; font-weight: 700;

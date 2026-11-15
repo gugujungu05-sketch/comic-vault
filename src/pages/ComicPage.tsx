@@ -198,8 +198,35 @@ export function ComicPage() {
     }
   }
 
-  async function movePickedPages(fromChapterId: string) {
+  /** 页序调整：单页上移/下移、按名称重排、倒序（调用服务端 reorder 即时保存） */
+  async function applyPageOrder(chapterId: string, order: string[]) {
     if (!comic) return;
+    try {
+      await api.reorderPages(comic.id, chapterId, order);
+      await load();
+    } catch (err) {
+      errorToast(err, '保存页序失败');
+    }
+  }
+
+  async function movePage(ch: Chapter, idx: number, dir: -1 | 1) {
+    const to = idx + dir;
+    if (to < 0 || to >= ch.pages.length) return;
+    const ids = ch.pages.map((p) => p.id);
+    const [moved] = ids.splice(idx, 1);
+    ids.splice(to, 0, moved);
+    await applyPageOrder(ch.id, ids);
+  }
+
+  async function sortPages(ch: Chapter, by: 'name' | 'reverse') {
+    const pages = ch.pages.slice();
+    if (by === 'name') pages.sort((a, b) => String(a.name || a.file).localeCompare(String(b.name || b.file), 'zh-CN', { numeric: true }));
+    else pages.reverse();
+    await applyPageOrder(ch.id, pages.map((p) => p.id));
+    toast(by === 'name' ? '已按名称重排' : '已倒序');
+  }
+
+  async function movePickedPages(fromChapterId: string) {    if (!comic) return;
     const ids = Object.keys(picked).filter((k) => picked[k]);
     if (!ids.length) return;
     const target = prompt('移动到哪一话？请输入章节标题', comic.chapters.find((c) => c.id !== fromChapterId)?.title || '');
@@ -454,6 +481,13 @@ export function ComicPage() {
                           <Icon name="grid" size={13} /> 拆分跨页
                           {ch.pages.filter((p) => p.wide).length ? `（${ch.pages.filter((p) => p.wide).length}）` : ''}
                         </button>
+                        <span style={{ width: 8 }} />
+                        <button className="btn sm ghost" onClick={() => sortPages(ch, 'name')} title="按文件名自然排序">
+                          按名称排序
+                        </button>
+                        <button className="btn sm ghost" onClick={() => sortPages(ch, 'reverse')} title="整话倒序">
+                          倒序
+                        </button>
                         {Object.keys(picked).filter((k) => picked[k]).length === 1 && (
                           <button
                             className="btn sm"
@@ -479,11 +513,17 @@ export function ComicPage() {
                             className={picked[p.id] ? 'active' : ''}
                             onClick={() => setPicked({ ...picked, [p.id]: !picked[p.id] })}
                             onDoubleClick={() => setCoverFromPage(ch.id, p.id)}
-                            title="单击选择，双击设为封面"
+                            title="单击选择，双击设为封面；左右键调整页序"
                           >
                             <img src={p.thumbUrl || p.url} alt="" loading="lazy" />
                             <span className="n">{idx + 1}</span>
                             {p.wide && <span className="wide-tag">跨页</span>}
+                            <span className="page-move">
+                              <span role="button" title="前移一页" onClick={(e) => { e.stopPropagation(); movePage(ch, idx, -1); }}
+                                style={{ opacity: idx === 0 ? 0.3 : 1 }}>↑</span>
+                              <span role="button" title="后移一页" onClick={(e) => { e.stopPropagation(); movePage(ch, idx, 1); }}
+                                style={{ opacity: idx === ch.pages.length - 1 ? 0.3 : 1 }}>↓</span>
+                            </span>
                           </button>
                         ))}
                       </div>
