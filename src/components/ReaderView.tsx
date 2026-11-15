@@ -566,6 +566,7 @@ export function ReaderView({
           >
             <Icon name="menu" size={15} /> 设置
           </button>
+          </div>
           {headerExtra}
         </div>
       </div>
