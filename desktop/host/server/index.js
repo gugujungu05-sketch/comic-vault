@@ -37,6 +37,7 @@ import { registerOnline } from './online.js';
 import { registerTranslation } from './translate.js';
 import { registerUpdates } from './updates.js';
 import { storePage } from './page-store.js';
+import { snapshotChapter, undoChapter, undoStatus, clearUndo } from './page-undo.js';
 import { recordActivity, recordUpload } from './activity.js';
 import { registerDiscovery, ensureSamples, APP_VERSION } from './discovery.js';
 
@@ -807,6 +808,7 @@ app.delete('/api/comics/:id', async (req, res) => {
   if (idx < 0) return res.status(404).json({ error: '漫画不存在' });
   const [comic] = db.comics.splice(idx, 1);
   await removeComicFiles(comic.id);
+  await clearUndo(comic.id);
   saveDbSoon();
   res.json({ ok: true });
 });
@@ -902,6 +904,7 @@ app.delete('/api/comics/:id/chapters/:chapterId', async (req, res) => {
   if (idx < 0) return res.status(404).json({ error: '章节不存在' });
   comic.chapters.splice(idx, 1);
   await removeChapterFiles(comic.id, req.params.chapterId);
+  await clearUndo(comic.id, req.params.chapterId);
   comic.updatedAt = now();
   saveDbSoon();
   res.json(comic.chapters);
@@ -942,6 +945,7 @@ app.post('/api/comics/:id/chapters/:chapterId/pages', upload.array('files', 300)
   }
   try {
     const result = await withChapterLock(`${comic.id}/${chapter.id}`, async () => {
+  await snapshotChapter(comic, chapter, 'upload', '追加页面');
   const insertAt = (() => {
     const raw = req.body?.index;
     const n = Number(raw);
@@ -1008,6 +1012,7 @@ app.delete('/api/comics/:id/chapters/:chapterId/pages/:pageId', async (req, res)
   if (!chapter) return res.status(404).json({ error: '章节不存在' });
   const idx = chapter.pages.findIndex((p) => p.id === req.params.pageId);
   if (idx < 0) return res.status(404).json({ error: '页面不存在' });
+  await snapshotChapter(comic, chapter, 'delete', '删除页面');
   const [page] = chapter.pages.splice(idx, 1);
   await fsp.rm(path.join(chapterDir(comic.id, chapter.id), page.file), { force: true });
   await fsp.rm(path.join(comicDir(comic.id), '_thumbs', chapter.id, `${page.id}.webp`), { force: true });
@@ -1016,16 +1021,33 @@ app.delete('/api/comics/:id/chapters/:chapterId/pages/:pageId', async (req, res)
   res.json({ ok: true, pageCount: chapter.pages.length });
 });
 
-app.put('/api/comics/:id/chapters/:chapterId/pages/reorder', (req, res) => {
+app.put('/api/comics/:id/chapters/:chapterId/pages/reorder', async (req, res) => {
   const comic = getComic(req.params.id);
   const chapter = getChapter(comic, req.params.chapterId);
   if (!chapter) return res.status(404).json({ error: '章节不存在' });
   const order = req.body?.order;
   if (!Array.isArray(order)) return res.status(400).json({ error: '缺少 order' });
+  await snapshotChapter(comic, chapter, 'reorder', '调整页序');
   chapter.pages.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   comic.updatedAt = now();
   saveDbSoon();
   res.json({ ok: true, pageCount: chapter.pages.length });
+});
+
+/* 撤销：查看可撤销步数 / 恢复上一次页面编辑（含被删除、被覆盖的原图） */
+app.get('/api/comics/:id/chapters/:chapterId/undo/status', async (req, res) => {
+  const comic = getComic(req.params.id);
+  if (!comic) return res.status(404).json({ error: '漫画不存在' });
+  res.json(await undoStatus(comic.id, req.params.chapterId));
+});
+
+app.post('/api/comics/:id/chapters/:chapterId/undo', async (req, res) => {
+  const comic = getComic(req.params.id);
+  const chapter = getChapter(comic, req.params.chapterId);
+  if (!chapter) return res.status(404).json({ error: '章节不存在' });
+  const result = await undoChapter(comic, chapter);
+  if (!result.ok) return res.status(400).json(result);
+  res.json({ ...result, chapter: withPageUrls(comic, chapter) });
 });
 
 app.post('/api/comics/:id/chapters/:chapterId/pages/move', async (req, res) => {
@@ -1034,6 +1056,8 @@ app.post('/api/comics/:id/chapters/:chapterId/pages/move', async (req, res) => {
   const to = getChapter(comic, req.body?.targetChapterId);
   if (!from || !to) return res.status(404).json({ error: '章节不存在' });
   const ids = new Set(req.body?.pageIds || []);
+  await snapshotChapter(comic, from, 'move', '移出页面');
+  if (from.id !== to.id) await snapshotChapter(comic, to, 'move', '移入页面');
   const moving = from.pages.filter((p) => ids.has(p.id));
   from.pages = from.pages.filter((p) => !ids.has(p.id));
   await ensureDir(chapterDir(comic.id, to.id));
@@ -1065,6 +1089,10 @@ app.post('/api/comics/:id/chapters/:chapterId/pages/:pageId/edit', async (req, r
   const { rotate = 0, crop = null, scope = 'page' } = req.body || {};
   if (!hasSharp) return res.status(400).json({ error: '服务端未启用 sharp，无法编辑页面' });
 
+  // 编辑作用域可能跨页/跨话/整本，逐个受影响章节建快照
+  for (const c of editTargets(comic, chapter, page, scope).map((t) => t.chapter).filter((c, i, a) => a.indexOf(c) === i)) {
+    await snapshotChapter(comic, c, 'edit', '旋转/裁剪页面');
+  }
   const targets = editTargets(comic, chapter, page, scope);
   let updated = 0;
   try {
@@ -1098,6 +1126,7 @@ app.post('/api/comics/:id/chapters/:chapterId/pages/split', async (req, res) => 
   });
   if (!targets.length) return res.status(400).json({ error: '没有检测到跨页（宽 > 高）的页面' });
 
+  await snapshotChapter(comic, chapter, 'split', '拆分跨页');
   let split = 0;
   try {
     for (const page of targets) {
@@ -1155,6 +1184,7 @@ app.post('/api/comics/:id/chapters/:chapterId/pages/merge', async (req, res) => 
   const picked = chapter.pages.filter((p) => wanted.has(p.id));
   if (picked.length < 2) return res.status(400).json({ error: '请至少选择 2 页进行合并' });
 
+  await snapshotChapter(comic, chapter, 'merge', '合并为跨页');
   let merged = 0;
   try {
     for (let i = 0; i + 1 < picked.length; i += 2) {

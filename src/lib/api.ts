@@ -411,6 +411,17 @@ export const api = {
       body: JSON.stringify({ order }),
     }),
 
+  /** 页面编辑撤销：查询可撤销状态 / 恢复上一次编辑（含被删、被覆盖的原图） */
+  undoStatus: (comicId: string, chapterId: string) =>
+    request<{ canUndo: number; latest: { op: string; label: string; ts: number } | null }>(
+      `/api/comics/${comicId}/chapters/${chapterId}/undo/status`,
+    ),
+  undoPageEdit: (comicId: string, chapterId: string) =>
+    request<{ ok: boolean; label?: string; op?: string; remaining: number; pageCount: number; chapter: Chapter }>(
+      `/api/comics/${comicId}/chapters/${chapterId}/undo`,
+      { method: 'POST' },
+    ),
+
   movePages: (comicId: string, chapterId: string, pageIds: string[], targetChapterId: string) =>
     request<{ ok: boolean; moved: number }>(`/api/comics/${comicId}/chapters/${chapterId}/pages/move`, {
       method: 'POST',

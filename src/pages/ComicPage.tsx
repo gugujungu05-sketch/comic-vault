@@ -29,6 +29,9 @@ export function ComicPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editingPage, setEditingPage] = useState<{ chapter: Chapter; page: Page } | null>(null);
   const [fixing, setFixing] = useState(false);
+  const [undoInfo, setUndoInfo] = useState<Record<string, number>>({});
+  const [addingToChapter, setAddingToChapter] = useState<string | null>(null);
+  const addPagesRef = useMemo(() => ({ current: null as HTMLInputElement | null }), []);
   const { user } = useSession();
   const isOwner = !!user && (comic?.ownerId === user.id || comic?.createdBy === user.id);
   const canWrite = !!user && (isOwner || comic?.scope === 'community');
@@ -36,7 +39,14 @@ export function ComicPage() {
   async function load() {
     if (!id) return;
     try {
-      setComic(await api.get(id));
+      const c = await api.get(id);
+      setComic(c);
+      // 并行拉取每章可撤销步数，驱动「撤销」按钮状态；失败不影响主流程
+      const info: Record<string, number> = {};
+      await Promise.all((c.chapters || []).map(async (ch) => {
+        try { info[ch.id] = (await api.undoStatus(c.id, ch.id)).canUndo; } catch { info[ch.id] = 0; }
+      }));
+      setUndoInfo(info);
     } catch (err) {
       errorToast(err, '加载失败');
     } finally {
@@ -209,6 +219,38 @@ export function ComicPage() {
     }
   }
 
+  /** 撤销该话最近一次页面编辑（上传/删除/排序/移动/合并/拆分/旋转裁剪） */
+  async function undoChapterEdit(ch: Chapter) {
+    if (!comic) return;
+    setFixing(true);
+    try {
+      const res = await api.undoPageEdit(comic.id, ch.id);
+      await load();
+      toast(res.remaining > 0 ? `已撤销「${res.label || '上一步'}」，还可撤销 ${res.remaining} 步` : `已撤销「${res.label || '上一步'}」`);
+    } catch (err) {
+      errorToast(err, '撤销失败');
+    } finally {
+      setFixing(false);
+    }
+  }
+
+  /** 往现有章节继续加页：选择图片后上传到该话末尾 */
+  async function addPagesToChapter(ch: Chapter, files: FileList | null) {
+    if (!comic || !files || !files.length) return;
+    const list = Array.from(files).map((f) => ({ name: f.name, blob: f }));
+    setFixing(true);
+    try {
+      await api.uploadPages(comic.id, ch.id, list, ch.pages.length);
+      await load();
+      toast(`已追加 ${list.length} 页到《${ch.title}》`);
+    } catch (err) {
+      errorToast(err, '加页失败');
+    } finally {
+      setFixing(false);
+      setAddingToChapter(null);
+    }
+  }
+
   async function movePage(ch: Chapter, idx: number, dir: -1 | 1) {
     const to = idx + dir;
     if (to < 0 || to >= ch.pages.length) return;
@@ -248,6 +290,19 @@ export function ComicPage() {
 
   return (
     <main className="page">
+      <input
+        ref={(el) => { addPagesRef.current = el; }}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        onChange={(e) => {
+          const target = addingToChapter;
+          const ch = comic?.chapters.find((c) => c.id === target);
+          if (ch) void addPagesToChapter(ch, e.target.files);
+          e.target.value = '';
+        }}
+      />
       <div className="row" style={{ marginBottom: 12 }}>
         <button className="btn sm ghost" onClick={() => navigate('/')}>
           <Icon name="left" size={14} /> 返回书架
@@ -487,6 +542,24 @@ export function ComicPage() {
                         </button>
                         <button className="btn sm ghost" onClick={() => sortPages(ch, 'reverse')} title="整话倒序">
                           倒序
+                        </button>
+                        <span style={{ width: 8 }} />
+                        <button
+                          className="btn sm"
+                          disabled={fixing}
+                          onClick={() => { setAddingToChapter(ch.id); addPagesRef.current?.click(); }}
+                          title="选择图片追加到这一话"
+                        >
+                          <Icon name="plus" size={13} /> 继续加页
+                        </button>
+                        <button
+                          className="btn sm ghost"
+                          disabled={fixing || !undoInfo[ch.id]}
+                          onClick={() => undoChapterEdit(ch)}
+                          title={undoInfo[ch.id] ? `可撤销 ${undoInfo[ch.id]} 步` : '暂无可撤销的操作'}
+                        >
+                          <Icon name="left" size={13} /> 撤销
+                          {undoInfo[ch.id] ? `（${undoInfo[ch.id]}）` : ''}
                         </button>
                         {Object.keys(picked).filter((k) => picked[k]).length === 1 && (
                           <button

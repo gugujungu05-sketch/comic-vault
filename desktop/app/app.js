@@ -1131,22 +1131,72 @@
     openModal(`<h3>页面管理 · ${esc(ch.title)} · ${pages.length} 页</h3>
       <div class="imp-tools"><span class="muted" id="pmCount"></span>
         <span class="spacer"></span>
+        <button class="btn sm primary" id="pmAdd" type="button">＋ 继续加页</button>
+        <button class="btn sm" id="pmUndo" type="button" disabled title="撤销上一次编辑">↶ 撤销<span id="pmUndoN"></span></button>
         <button class="btn sm" id="pmAll" type="button">全选</button>
         <button class="btn sm" id="pmNone" type="button">取消选择</button>
         <button class="btn sm" id="pmSort" type="button">按名称排序</button>
         <button class="btn sm" id="pmReverse" type="button">倒序</button>
         <button class="btn sm danger" id="pmDel" type="button">删除选中</button></div>
       <div class="imp-grid" id="pmGrid"></div>
-      <p class="muted" style="font-size:11px;margin:10px 0 0">点格子勾选后「删除选中」；拖动格子或点 ↑↓ 调整页序，<b>每次调整立即保存</b>。编号就是阅读时的页序。</p>
+      <p class="muted" style="font-size:11px;margin:10px 0 0">点格子勾选后「删除选中」；拖动格子或点 ↑↓ 调整页序，<b>每次调整立即保存</b>。误操作可点「撤销」恢复（含被删除的原图）。编号就是阅读时的页序。</p>
       <div class="modal-actions"><button class="btn primary" data-action="close-modal">完成</button></div>`, true);
     renderPageGrid();
+    // 加载可撤销步数，驱动「撤销」按钮
+    (async () => {
+      try {
+        const st = await api('GET', `/api/comics/${state.comic}/chapters/${chapterId}/undo/status`, { noCache: true });
+        const btn = $('#pmUndo'); const n = $('#pmUndoN');
+        if (btn && n) { btn.disabled = !st.canUndo; n.textContent = st.canUndo ? ` (${st.canUndo})` : ''; if (st.latest?.label) btn.title = `撤销上一步：${st.latest.label}`; }
+      } catch { /* 忽略 */ }
+    })();
+    const addBtn = $('#pmAdd');
+    if (addBtn) addBtn.onclick = async () => {
+      let paths = [];
+      try { paths = (Host.pickImport ? await Host.pickImport() : await Host.pickFiles()) || []; }
+      catch { return toast('选择图片失败', true); }
+      if (!paths || !paths.length) return;
+      try { paths = await Host.resolvePaths(paths); } catch { /* 已是文件列表 */ }
+      busy(true, `追加 ${paths.length} 页…`);
+      try {
+        const batch = paths.map((p) => ({ path: p, name: base(p), field: 'files' }));
+        // 不传 index → 服务端默认追加到章节末尾，正是「继续加页」
+        await api('POST', `/api/comics/${state.comic}/chapters/${chapterId}/pages`, { files: batch });
+        const c = await api('GET', `/api/comics/${state.comic}`, { noCache: true });
+        const fresh = (c.chapters || []).find((x) => x.id === chapterId);
+        state.comicData = c;
+        state.pageMgr.pages = (fresh?.pages || []).slice();
+        renderPageGrid();
+        toast(`已追加 ${paths.length} 页`);
+        const u = $('#pmUndo'); if (u) u.disabled = false;
+      } catch (err) { toast(err.message, true); } finally { busy(false); }
+    };
+    const undoBtn = $('#pmUndo');
+    if (undoBtn) undoBtn.onclick = async () => {
+      busy(true, '撤销中…');
+      try {
+        const res = await api('POST', `/api/comics/${state.comic}/chapters/${chapterId}/undo`);
+        const n = $('#pmUndoN'); const btn = $('#pmUndo');
+        const fresh = (res.chapter || {}).pages || [];
+        state.pageMgr.pages = fresh.slice();
+        state.pageMgr.sel.clear();
+        renderPageGrid();
+        if (state.comicData) {
+          const ch2 = (state.comicData.chapters || []).find((x) => x.id === chapterId);
+          if (ch2) ch2.pages = fresh;
+        }
+        toast(`已撤销「${res.label || '上一步'}」${res.remaining ? `，还可撤销 ${res.remaining} 步` : ''}`);
+        if (btn && n) { btn.disabled = !res.remaining; n.textContent = res.remaining ? ` (${res.remaining})` : ''; }
+      } catch (err) { toast(err.message, true); } finally { busy(false); }
+    };
     $('#pmAll').onclick = () => { state.pageMgr.sel = new Set(state.pageMgr.pages.map((p) => p.id)); renderPageGrid(); };
     $('#pmNone').onclick = () => { state.pageMgr.sel.clear(); renderPageGrid(); };
+    const enableUndo = () => { const u = $('#pmUndo'); if (u) u.disabled = false; };
     $('#pmSort').onclick = async () => {
       state.pageMgr.pages.sort((a, b) => String(a.name || a.file).localeCompare(String(b.name || b.file), 'zh-CN', { numeric: true }));
-      await savePageOrder();
+      await savePageOrder(); enableUndo();
     };
-    $('#pmReverse').onclick = async () => { state.pageMgr.pages.reverse(); await savePageOrder(); };
+    $('#pmReverse').onclick = async () => { state.pageMgr.pages.reverse(); await savePageOrder(); enableUndo(); };
     $('#pmDel').onclick = async () => {
       const ids = state.pageMgr.pages.filter((p) => state.pageMgr.sel.has(p.id)).map((p) => p.id);
       if (!ids.length) return toast('请先勾选要删除的页面', true);
@@ -1159,6 +1209,7 @@
         state.pageMgr.pages = state.pageMgr.pages.filter((p) => !state.pageMgr.sel.has(p.id));
         state.pageMgr.sel.clear();
         renderPageGrid();
+        enableUndo();
         toast(`已删除 ${ids.length} 页`);
       } catch (err) { toast(err.message, true); } finally { busy(false); }
     };
@@ -1238,6 +1289,7 @@
     try {
       await api('PUT', `/api/comics/${state.pageMgr.comicId}/chapters/${state.pageMgr.chapterId}/pages/reorder`,
         { body: { order: state.pageMgr.pages.map((p) => p.id) } });
+      const u = $('#pmUndo'); if (u) u.disabled = false;
     } catch (err) { toast(err.message, true); }
   }
 
