@@ -22,8 +22,21 @@ import { nanoid } from 'nanoid';
 import { loadDb, saveDbSoon, newId, getComic, comicDir, DATA_DIR, TMP_DIR } from './store.js';
 import { storePage } from './page-store.js';
 import { requireUser } from './social.js';
+import {
+  loadJsSources, allJsSources, getJsSource,
+  jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders,
+  jsDiscoverTabs, jsDiscoverLoad,
+} from './js-sources.js';
 
 const now = () => Date.now();
+
+/** 启动时加载内置 JS 书源（Ciallo-Reader 移植脚本） */
+loadJsSources();
+
+/** 判断是否 JS 脚本书源，并返回其实例 */
+function jsOf(id) {
+  return String(id || '').startsWith('js:') ? getJsSource(id) : null;
+}
 
 const SOURCES_FILE = path.join(DATA_DIR, 'sources.json');
 const UA_DEFAULT =
@@ -167,6 +180,138 @@ export async function fetchComicDetail(source, url) {
   return { title, cover, chapters };
 }
 
+/** 从书源导入一话到书库（路由 /api/sources/import 与定时追更共用）。
+ *  JS 脚本源与规则源共用同一套入库流程；images/headers 由调用方预取或在此抓取。 */
+async function createSourceComic(db, p) {
+  const t = now();
+  const comic = {
+    id: newId('c'),
+    title: (p.title || '未命名漫画').trim(),
+    author: p.author || '',
+    artist: '',
+    description: p.description || '',
+    tags: [],
+    status: 'ongoing',
+    direction: db.settings.defaultDirection || 'ltr',
+    language: 'zh',
+    favorite: false,
+    cover: null,
+    chapters: [],
+    progress: null,
+    share: null,
+    publisher: '',
+    year: null,
+    rating: null,
+    ageRating: '',
+    comicInfo: null,
+    ownerId: p.userId,
+    createdBy: p.userId,
+    scope: 'personal',
+    visibility: 'private',
+    allowDownload: true,
+    aliases: [],
+    tagEntries: [],
+    covers: [],
+    activeCoverId: null,
+    createdAt: t,
+    updatedAt: t,
+    category: p.category || 'other',
+    views: 0,
+    downloads: 0,
+    likes: [],
+    lastActivityAt: t,
+    source: { id: p.source?.id || '', name: p.source?.name || p.source?.key || '', url: p.comicUrl || '' },
+  };
+  db.comics.unshift(comic);
+  return comic;
+}
+
+/** 首次导入时下载站点封面存为漫画封面 */
+async function attachSourceCover(p, comic, coverUrl, imgHeaders) {
+  if (comic.cover || !coverUrl || !String(coverUrl).startsWith('http')) return null;
+  try {
+    const tmpCover = await downloadSourceImage(coverUrl, imgHeaders);
+    const name = `cover_${nanoid(6)}${path.extname(tmpCover) || '.jpg'}`;
+    const dir = path.join(comicDir(comic.id), '_cover');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.rename(tmpCover, path.join(dir, name)).catch(async () => {
+      await fsp.copyFile(tmpCover, path.join(dir, name));
+      await fsp.rm(tmpCover, { force: true });
+    });
+    comic.cover = { type: 'file', file: name };
+    return `/api/files/${comic.id}/_cover/${name}`;
+  } catch {
+    return null; /* 封面失败不影响导入 */
+  }
+}
+
+/** 下载一张源站图片到临时文件（带防盗链头） */
+async function downloadSourceImage(imgUrl, headers = {}) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 30000);
+  try {
+    const r = await fetch(imgUrl, {
+      headers: { 'User-Agent': UA_DEFAULT, ...headers },
+      signal: ac.signal,
+      redirect: 'follow',
+    });
+    if (!r.ok) throw new Error(`图片返回 ${r.status}`);
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.startsWith('image/') && !ct.includes('octet-stream')) throw new Error(`非图片响应: ${ct}`);
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 32) throw new Error('图片内容为空');
+    const ext = ct.includes('png') ? 'png' : ct.includes('webp') ? 'webp' : ct.includes('gif') ? 'gif' : ct.includes('avif') ? 'avif' : 'jpg';
+    const tmp = path.join(TMP_DIR, `src-${nanoid(8)}.${ext}`);
+    await fsp.mkdir(TMP_DIR, { recursive: true });
+    await fsp.writeFile(tmp, buf);
+    return tmp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** JS 脚本源导入一话：images 由源脚本 loadEp 给出，防盗链头由 onImageLoad 给出 */
+export async function importJsChapter(p) {
+  const db = loadDb();
+  let comic = p.comic || null;
+  const { images, headers } = await jsChapterImages(p.source, p.bookId, p.chapterPath);
+
+  if (!comic) comic = createSourceComic(db, p);
+
+  const chapter = {
+    id: newId('ch'),
+    title: (p.chapterTitle || `第 ${comic.chapters.length + 1} 话`).trim(),
+    pages: [],
+    uploadedBy: p.userId,
+    uploadedAt: now(),
+  };
+  let stored = 0;
+  for (const imgUrl of images) {
+    let tmp = null;
+    try {
+      tmp = await downloadSourceImage(imgUrl, jsImageHeaders(p.source, imgUrl) || headers);
+      const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id);
+      chapter.pages.push(page);
+      stored++;
+    } catch (err) {
+      if (tmp) await fsp.rm(tmp, { force: true });
+      console.error('[js-sources] 图片下载失败:', err.message);
+    }
+  }
+  if (!stored) {
+    const e = new Error('所有图片都下载失败，可能被站点防盗链拦截');
+    e.status = 422;
+    throw e;
+  }
+  comic.chapters.push(chapter);
+  comic.updatedAt = now();
+  comic.lastActivityAt = now();
+
+  const coverUrl = await attachSourceCover(p, comic, p.cover, jsImageHeaders(p.source, p.cover || images[0]));
+  saveDbSoon();
+  return { comic, chapter, total: images.length, stored, coverUrl };
+}
+
 /**
  * 从书源导入一话到书库（路由 /api/sources/import 与定时追更共用）。
  * @param {object} p { source, userId, comic?, title, cover, comicUrl, chapterTitle, chapterUrl }
@@ -302,17 +447,28 @@ export async function importChapterFromSource(p) {
 export function registerSources(app) {
   const router = express.Router();
 
-  // 书源列表（内置 + 自定义）
+  // 书源列表（内置 JS 源 + 规则源 + 自定义）
   router.get('/', (req, res) => {
-    res.json({
-      sources: allSources().map((s) => ({
-        id: s.id,
-        name: s.name,
-        baseUrl: s.baseUrl,
-        builtin: !!s.builtin,
-        hasRules: !!(s.rules && s.rules.search && s.rules.chapter),
-      })),
-    });
+    const js = allJsSources().map((s) => ({
+      id: s.id,
+      name: s.name,
+      baseUrl: s.baseUrl,
+      builtin: true,
+      kind: 'js',
+      mediaType: s.mediaType,
+      version: s.version,
+      hasRules: true,
+    }));
+    const rules = allSources().map((s) => ({
+      id: s.id,
+      name: s.name,
+      baseUrl: s.baseUrl,
+      builtin: !!s.builtin,
+      kind: 'rules',
+      mediaType: 'comic',
+      hasRules: !!(s.rules && s.rules.search && s.rules.chapter),
+    }));
+    res.json({ sources: [...js, ...rules] });
   });
 
   // 新增 / 更新自定义书源
@@ -344,14 +500,35 @@ export function registerSources(app) {
     res.json({ ok: true });
   });
 
+  // 发现 / 浏览：进入书源不搜索也能看到漫画 / 小说列表
+  router.get('/:id/discover', requireUser, async (req, res) => {
+    const js = jsOf(req.params.id);
+    if (!js) return res.status(404).json({ error: '书源不存在' });
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    try {
+      const tabs = jsDiscoverTabs(js);
+      if (!tabs.length) return res.json({ tabs: [], items: [], maxPage: 1 });
+      const tabIndex = Math.min(Math.max(0, parseInt(req.query.tab, 10) || 0), tabs.length - 1);
+      const r = await jsDiscoverLoad(js, tabIndex, page);
+      return res.json({ tabs, items: r.items, maxPage: r.maxPage, tab: tabIndex });
+    } catch (err) {
+      return sourceError(res, err);
+    }
+  });
+
   // 搜索
   router.get('/:id/search', requireUser, async (req, res) => {
-    const source = allSources().find((s) => s.id === req.params.id);
-    if (!source) return res.status(404).json({ error: '书源不存在' });
     const kw = String(req.query.kw || '').trim();
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     if (!kw) return res.status(400).json({ error: '请输入搜索关键词' });
     try {
+      const js = jsOf(req.params.id);
+      if (js) {
+        const items = await jsSearch(js, kw, page);
+        return res.json({ items });
+      }
+      const source = allSources().find((s) => s.id === req.params.id);
+      if (!source) return res.status(404).json({ error: '书源不存在' });
       const url = absUrl(source.baseUrl, source.rules.search.url.replace('{kw}', encodeURIComponent(kw)).replace('{page}', String(page)));
       const html = await fetchText(source, url);
       const $ = cheerio.load(html);
@@ -369,8 +546,19 @@ export function registerSources(app) {
     }
   });
 
-  // 漫画详情 + 章节列表
+  // 漫画详情 + 章节列表（JS 源：url 即书籍 id）
   router.post('/:id/comic', requireUser, async (req, res) => {
+    const js = jsOf(req.params.id);
+    if (js) {
+      const bookId = String(req.body?.url || '').trim();
+      if (!bookId) return res.status(400).json({ error: '缺少书籍标识' });
+      try {
+        const d = await jsComicDetail(js, bookId);
+        return res.json({ ...d, url: d.url || bookId, bookId });
+      } catch (err) {
+        return sourceError(res, err);
+      }
+    }
     const source = allSources().find((s) => s.id === req.params.id);
     if (!source) return res.status(404).json({ error: '书源不存在' });
     const url = String(req.body?.url || '');
@@ -383,8 +571,23 @@ export function registerSources(app) {
     }
   });
 
-  // 单章节图片列表（预览用，可带下一页跟随）
+  // 单章节图片列表（预览 / 在线阅读用）
   router.post('/:id/chapter', requireUser, async (req, res) => {
+    const js = jsOf(req.params.id);
+    if (js) {
+      const bookId = String(req.body?.bookId || req.body?.url || '').trim();
+      const chapterPath = String(req.body?.chapterUrl || '').trim();
+      if (!bookId || !chapterPath) return res.status(400).json({ error: '缺少书籍或章节标识' });
+      try {
+        const { images } = await jsChapterImages(js, bookId, chapterPath);
+        return res.json({
+          images: images.map((u) => `/api/online/img?sid=${encodeURIComponent(js.key)}&u=${encodeURIComponent(u)}`),
+          count: images.length,
+        });
+      } catch (err) {
+        return sourceError(res, err);
+      }
+    }
     const source = allSources().find((s) => s.id === req.params.id);
     if (!source) return res.status(404).json({ error: '书源不存在' });
     const url = String(req.body?.url || '');
@@ -412,8 +615,39 @@ export function registerSources(app) {
 
   // 导入一话到书库：body { comicId?, sourceId, sourceName, title, cover, author?, chapterTitle, chapterUrl }
   // comicId 不传则新建漫画（之后重复调用传回 comicId 即可连续导入多话）。
+  // JS 脚本源：bookId = 源站书籍 id，chapterUrl = 章节路径（如 /chapter/123）。
   router.post('/import', requireUser, async (req, res) => {
     const b = req.body || {};
+    const js = jsOf(b.sourceId);
+    if (js) {
+      const bookId = String(b.bookId || b.comicUrl || '').trim();
+      const chapterPath = String(b.chapterUrl || '').trim();
+      if (!bookId || !chapterPath) return res.status(400).json({ error: '缺少书籍或章节标识' });
+      let comic = b.comicId ? getComic(b.comicId) : null;
+      if (b.comicId && (!comic || comic.createdBy !== req.user.id))
+        return res.status(404).json({ error: '目标漫画不存在或不属于你' });
+      try {
+        const r = await importJsChapter({
+          source: js, userId: req.user.id, comic,
+          title: b.title, cover: b.cover, comicUrl: b.comicUrl,
+          author: b.author, description: b.description,
+          bookId, chapterPath, chapterTitle: b.chapterTitle,
+        });
+        return res.json({
+          comicId: r.comic.id,
+          chapterId: r.chapter.id,
+          chapterTitle: r.chapter.title,
+          coverUrl: r.coverUrl,
+          total: r.total,
+          stored: r.stored,
+          failed: r.total - r.stored,
+          chaptersDone: r.comic.chapters.length,
+        });
+      } catch (err) {
+        if (err?.status) return res.status(err.status).json({ error: err.message });
+        return sourceError(res, err);
+      }
+    }
     const source = allSources().find((s) => s.id === b.sourceId);
     if (!source) return res.status(404).json({ error: '书源不存在' });
     const chapterUrl = String(b.chapterUrl || '');

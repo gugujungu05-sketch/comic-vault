@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, discover, social, networkDiag, VPN_HINT } from '../lib/api';
+import { api, discover, social, networkDiag, translation, VPN_HINT } from '../lib/api';
 import { useSession } from '../lib/session';
-import type { Announcement, Stats, UpdateInfo } from '../types';
+import type { Announcement, Stats, UpdateInfo, TranslateConfig } from '../types';
 import { Icon } from '../components/Icon';
 import { formatBytes, withShareCode, copyText } from '../lib/util';
 import { THEMES, normalizeTheme } from '../lib/themes';
@@ -41,11 +41,16 @@ export function SettingsPage() {
   const [annBusy, setAnnBusy] = useState(false);
   const [direction, setDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [theme, setTheme] = useState<string>(() => normalizeTheme(localStorage.getItem('cv-theme')));
+  /* AI 翻译配置（生肉漫画 → 中文） */
+  const [trCfg, setTrCfg] = useState<TranslateConfig | null>(null);
+  const [trBusy, setTrBusy] = useState(false);
+  const [trTest, setTrTest] = useState<{ ok: boolean; msg: string } | null>(null);
 
   useEffect(() => {
     api.stats().then(setStats).catch(() => {});
     api.list().then((r) => setDirection(r.settings.defaultDirection || 'ltr')).catch(() => {});
     api.runtime().then(setRuntime).catch(() => {});
+    translation.config().then(setTrCfg).catch(() => {});
     discover.announcements().then((r) => {
       setAnnouncements(r.announcements);
       setCanAnnounce(r.canAnnounce);
@@ -71,6 +76,32 @@ export function SettingsPage() {
       window.removeEventListener('appinstalled', onInstalled);
     };
   }, []);
+
+  async function saveTranslate(patch: Partial<TranslateConfig>) {
+    if (!trCfg) return;
+    const next = { ...trCfg, ...patch };
+    setTrCfg(next);
+    setTrTest(null);
+    try {
+      await translation.saveConfig(patch);
+      toast('翻译设置已保存');
+    } catch (err) {
+      errorToast(err);
+    }
+  }
+
+  async function runTranslateTest() {
+    setTrBusy(true);
+    setTrTest(null);
+    try {
+      const r = await translation.test();
+      setTrTest({ ok: r.ok, msg: `连接成功 · ${r.provider} / ${r.model} · 样图识别 ${r.regions} 处文字` });
+    } catch (err) {
+      setTrTest({ ok: false, msg: (err as Error)?.message || '测试失败，请检查 API Key 与网络' });
+    } finally {
+      setTrBusy(false);
+    }
+  }
 
   async function installApp() {
     if (!installPrompt) {
@@ -241,6 +272,122 @@ export function SettingsPage() {
       </div>
 
       <div className="chapter-list">
+        {/* AI 翻译配置：多模态大模型看图翻译生肉漫画，服务端原位渲染 */}
+        <div className="chapter-item" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div className="chapter-title"><Icon name="globe" size={15} /> AI 翻译生肉漫画</div>
+            <div className="chapter-sub">
+              在阅读器里对非中文页面点「AI 翻译」：多模态大模型看懂画面上下文后翻译，服务端自动修补底图、把译文排回原位。
+              哪家翻译最准就用哪家——推荐 Gemini（识图与排版最强）或 OpenAI GPT-4o；也支持自定义兼容接口。
+              需自备对应服务的 API Key（本机/服务端保存，不会上传到别处）。
+            </div>
+          </div>
+          {!trCfg ? (
+            <div className="muted sm-text">正在读取翻译设置…</div>
+          ) : (
+            <>
+              <div className="row wrap" style={{ gap: 8 }}>
+                <label className="field">
+                  <span>服务商</span>
+                  <select
+                    className="input"
+                    value={trCfg.provider}
+                    onChange={(e) => {
+                      const p = e.target.value as TranslateConfig['provider'];
+                      const d = trCfg.defaults[p];
+                      setTrCfg({ ...trCfg, provider: p, baseUrl: d.baseUrl, model: d.model });
+                      translation.saveConfig({ provider: p, baseUrl: d.baseUrl, model: d.model }).catch(() => {});
+                    }}
+                  >
+                    <option value="gemini">Gemini（推荐，识图翻译最准）</option>
+                    <option value="openai">OpenAI GPT-4o</option>
+                    <option value="custom">自定义兼容接口</option>
+                  </select>
+                </label>
+              </div>
+              <label className="field" style={{ width: '100%' }}>
+                <span>API Key{trCfg.hasKey ? '（已保存，留空则保持不变）' : ''}</span>
+                <input
+                  className="input"
+                  type="password"
+                  autoComplete="off"
+                  value={trCfg.apiKey}
+                  placeholder={trCfg.hasKey ? '••••••••（已保存）' : '粘贴 API Key'}
+                  onChange={(e) => setTrCfg({ ...trCfg, apiKey: e.target.value })}
+                />
+              </label>
+              <div className="row wrap" style={{ gap: 8 }}>
+                <label className="field" style={{ flex: '1 1 260px' }}>
+                  <span>接口地址（可留空用默认）</span>
+                  <input
+                    className="input"
+                    value={trCfg.baseUrl}
+                    placeholder={trCfg.defaults[trCfg.provider].baseUrl}
+                    onChange={(e) => setTrCfg({ ...trCfg, baseUrl: e.target.value })}
+                  />
+                </label>
+                <label className="field" style={{ flex: '1 1 200px' }}>
+                  <span>模型</span>
+                  <input
+                    className="input"
+                    value={trCfg.model}
+                    placeholder={trCfg.defaults[trCfg.provider].model}
+                    onChange={(e) => setTrCfg({ ...trCfg, model: e.target.value })}
+                  />
+                </label>
+              </div>
+              <div className="row wrap" style={{ gap: 8 }}>
+                <label className="field" style={{ flex: '1 1 140px' }}>
+                  <span>目标语言</span>
+                  <input
+                    className="input"
+                    value={trCfg.targetLang}
+                    onChange={(e) => setTrCfg({ ...trCfg, targetLang: e.target.value })}
+                    placeholder="简体中文"
+                  />
+                </label>
+                <label className="field" style={{ flex: '1 1 140px' }}>
+                  <span>字号调整</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={-6}
+                    max={12}
+                    value={trCfg.fontSizeOffset}
+                    onChange={(e) => setTrCfg({ ...trCfg, fontSizeOffset: Number(e.target.value) || 0 })}
+                  />
+                </label>
+                <label className="field" style={{ flex: '1 1 140px' }}>
+                  <span>文字颜色</span>
+                  <input
+                    className="input"
+                    type="color"
+                    value={trCfg.inkColor}
+                    onChange={(e) => setTrCfg({ ...trCfg, inkColor: e.target.value })}
+                    style={{ width: 64, padding: 2 }}
+                  />
+                </label>
+              </div>
+              <div className="row wrap" style={{ gap: 8 }}>
+                <button className="btn primary" disabled={trBusy} onClick={() => saveTranslate({
+                  apiKey: trCfg.apiKey, baseUrl: trCfg.baseUrl, model: trCfg.model,
+                  targetLang: trCfg.targetLang, fontSizeOffset: trCfg.fontSizeOffset, inkColor: trCfg.inkColor,
+                })}>
+                  {trBusy ? '处理中…' : '保存翻译设置'}
+                </button>
+                <button className="btn" disabled={trBusy} onClick={runTranslateTest}>
+                  {trBusy ? '测试中…' : '测试连接'}
+                </button>
+              </div>
+              {trTest && (
+                <div className={trTest.ok ? 'auth-hint' : 'auth-hint dev'} style={{ color: trTest.ok ? 'var(--accent)' : undefined }}>
+                  {trTest.msg}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         <div className="chapter-item" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 10 }}>
           <div>
             <div className="chapter-title">邮箱验证与找回密码</div>

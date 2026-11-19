@@ -745,6 +745,30 @@ textarea {
 }
 .reader-stage.double { display: flex; gap: 4px; align-items: center; justify-content: center; }
 .reader-stage.double img { flex: 1 1 50%; min-width: 0; }
+
+/* 观看时把合并跨页拆成左右两张单页：同一张图按背景定位各裁一半，不改动原图 */
+.media-half {
+  background-repeat: no-repeat;
+  background-size: 200% 100%;
+  background-position: center center;
+  flex: 0 0 auto;
+}
+.media-half-l { background-position: left center; }
+.media-half-r { background-position: right center; }
+/* 翻页模式（单页/双页）：半图高度撑满舞台，宽度按 aspect-ratio 自动 */
+.reader-stage.single .media-half,
+.reader-stage.double .media-half {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  animation: fadeIn 0.22s ease both;
+}
+.reader-stage.double .media-half { flex: 1 1 50%; min-width: 0; }
+.reader-stage.fit-width .media-half { width: 100%; height: auto; }
+.reader-stage.fit-height .media-half { height: 100%; width: auto; }
+.reader-stage.original .media-half { max-width: none; max-height: none; }
 .reader-stage.fit-height img { height: 100%; width: auto; }
 .reader-stage.fit-width img { width: 100%; height: auto; }
 .reader-stage.original img { max-width: none; max-height: none; }
@@ -757,14 +781,30 @@ textarea {
   place-items: initial;
   padding: 14px 0 22px;
 }
-.reader-stage.continuous .cont-page {
+.reader-stage.continuous .cont-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 18px;
+}
+.reader-stage.continuous .cont-row:last-child { margin-bottom: 0; }
+.reader-stage.continuous .cont-row .cont-page {
   display: block;
-  margin: 0 auto 18px;
   border-radius: 3px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  max-width: 100%;
 }
-.reader-stage.continuous .cont-page:last-child { margin-bottom: 0; }
-.reader-stage.continuous img { width: 100%; display: block; }
+/* 并排列数由 data-cols 决定（1/2/3/4），页序始终自然顺序，不受翻页方向影响 */
+.reader-stage.continuous .cont-row .cont-page { width: 100%; max-width: 100%; }
+.reader-stage.continuous .cont-row[data-cols="2"] .cont-page { width: calc(50% - 2px); max-width: calc(50% - 2px); }
+.reader-stage.continuous .cont-row[data-cols="3"] .cont-page { width: calc(33.333% - 3px); max-width: calc(33.333% - 3px); }
+.reader-stage.continuous .cont-row[data-cols="4"] .cont-page { width: calc(25% - 3px); max-width: calc(25% - 3px); }
+.reader-stage.continuous img { display: block; }
+/* 拆出的半图在滚动行内按分栏宽度显示，高度由 aspect-ratio 撑出 */
+.reader-stage.continuous .cont-row .media-half { display: block; height: auto; }
+/* 拆出的半图刚好占满一整行时（单列/半宽对开），让它居中对齐 */
+.reader-stage.continuous .cont-row .media-half.cont-page { border-radius: 3px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4); }
 
 /* 条漫（Webtoon）：图片宽度撑满、零间隙、上下连续滚动，长图不被切断 */
 .reader-stage.webtoon {
@@ -775,6 +815,13 @@ textarea {
   display: block; width: 100%; height: auto; max-width: none; max-height: none;
   margin: 0; padding: 0; object-fit: initial; animation: none;
 }
+/* 条漫多页并排：一行 N 张，页宽按视口均分，零间隙 */
+.reader-stage.webtoon .cont-row { display: flex; width: 100%; gap: 0; }
+.reader-stage.webtoon .cont-row[data-cols="2"] .webtoon-page { width: 50%; }
+.reader-stage.webtoon .cont-row[data-cols="3"] .webtoon-page { width: 33.333%; }
+.reader-stage.webtoon .cont-row[data-cols="4"] .webtoon-page { width: 25%; }
+/* 条漫拆出的半图：宽度跟随分栏，高度由 aspect-ratio 撑出，零间隙 */
+.reader-stage.webtoon .cont-row .media-half { display: block; height: auto; max-width: none; max-height: none; }
 .webtoon-edge {
   display: block; width: 100%; padding: 22px 16px; border: 0; cursor: pointer;
   background: #12151c; color: var(--accent); font-size: 14px; font-weight: 700;
@@ -782,6 +829,14 @@ textarea {
 }
 .webtoon-edge:hover { background: #1a1f2a; }
 .webtoon-edge.done { color: var(--muted); cursor: default; font-weight: 500; }
+/* 连续跨章：章节之间的标题分隔条，滚动无缝衔接但能看出换话 */
+.chain-chapter-title {
+  display: block; width: 100%; padding: 14px 16px; box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(0,0,0,.55), rgba(0,0,0,.15));
+  color: #fff; font-size: 15px; font-weight: 700; text-align: center;
+  border-top: 2px solid var(--accent); border-bottom: 1px solid rgba(255,255,255,.12);
+  margin-top: 8px;
+}
 
 .reader-zoom-wrap {
   width: 100%;
@@ -2371,6 +2426,14 @@ textarea {
   text-align: justify; word-break: break-word;
 }
 .novel-h1 { font-size: 1.5em; margin: 0 0 1.2em; line-height: 1.5; text-align: center; }
+.nv-btn.on { border-color: var(--accent, #7c6cff); color: var(--accent, #7c6cff); font-weight: 700; }
+/* 连续阅读：章节之间只用小标题分隔，不再每话一个大标题（封面） */
+.novel-seg { display: block; }
+.novel-seg + .novel-seg { margin-top: 2.2em; padding-top: 1.4em; border-top: 1px dashed rgba(128, 128, 128, .3); }
+.novel-seg-title {
+  font-size: 1.05em; font-weight: 700; line-height: 1.5; text-align: center;
+  margin: 0 0 1.4em; color: var(--muted, #8b93a5);
+}
 .novel-body p { margin: 0 0 .85em; text-indent: 2em; }
 .novel-end { text-align: center; font-size: 13px; margin: 40px 0 24px; }
 .novel-chapter-nav { display: flex; justify-content: space-between; gap: 12px; }

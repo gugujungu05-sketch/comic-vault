@@ -31,8 +31,10 @@
     comic: null, q: '', board: 'all', category: 'all', update: null, busy: false,
     importPaths: null, importSel: new Set(), importIntoChapter: '', comicCoverPick: null,
     sourcesList: [], sourceId: '', srcResults: [], srcComic: null, srcChecked: new Set(),
+    srcMode: 'discover', srcTabs: [], srcTab: 0, srcPage: 1, srcMaxPage: 1, srcKw: '',
     subs: [],
     selecting: false, selComics: new Set(),
+    trCfg: null,   // AI 翻译配置（生肉漫画→中文）
   };
 
   /* ------------------------------ 基础 ------------------------------ */
@@ -55,9 +57,31 @@
     if (el) el.textContent = text || '';
     $$('[data-action]').forEach((b) => { if (b.dataset.busy !== '0') b.disabled = on; });
   }
+  /* GET 结果短时内存缓存：来源发现页/书源列表等读多写少的接口，几秒内重复进入直接复用，
+     明显减少"每次点进来都重新联网抓取"造成的卡顿。写操作与带 noCache 的请求不走缓存。 */
+  const _apiCache = new Map();
+  function cacheGet(path, query) {
+    const key = path + '?' + JSON.stringify(query || {});
+    const hit = _apiCache.get(key);
+    if (hit && Date.now() - hit.t < 8000) return hit.v;
+    return null;
+  }
+  function cachePut(path, query, v) {
+    const key = path + '?' + JSON.stringify(query || {});
+    _apiCache.set(key, { t: Date.now(), v });
+    if (_apiCache.size > 120) {
+      const now = Date.now();
+      for (const [k, x] of _apiCache) if (now - x.t > 30000) _apiCache.delete(k);
+    }
+  }
   async function api(method, path, opts = {}) {
+    if (method === 'GET' && !opts.noCache) {
+      const cached = cacheGet(path, opts.query);
+      if (cached !== null) return cached;
+    }
     const r = await Host.api({ method, path, query: opts.query || {}, body: opts.body, files: opts.files });
     if (r.status >= 400) throw new Error((r.data && r.data.error) || `请求失败 (${r.status})`);
+    if (method === 'GET' && !opts.noCache) cachePut(path, opts.query, r.data);
     return r.data;
   }
   const asset = (p) => { try { return Host.asset(p); } catch { return p; } };
@@ -413,13 +437,29 @@
     if (!state.sourcesList.find((s) => s.id === state.sourceId)) state.sourceId = state.sourcesList[0].id;
     const opts = state.sourcesList.map((s) => `<option value="${esc(s.id)}" ${s.id === state.sourceId ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
     $('#content').innerHTML = `<div class="panel row" style="gap:8px;flex-wrap:wrap">
-        <select class="select" id="srcSel" style="max-width:220px">${opts}</select>
-        <input class="input" id="srcKw" placeholder="输入漫画名搜索…" style="flex:1;min-width:140px" />
-        <button class="btn primary" data-action="src-search">搜索</button></div>
-      <div id="srcOut"></div>`;
-    $('#srcSel').addEventListener('change', (e) => { state.sourceId = e.target.value; });
-    renderSrcResults();
+        <select class="select" id="srcSel" style="max-width:200px">${opts}</select>
+        <button class="btn sm ${state.srcMode === 'discover' ? 'primary' : ''}" data-action="src-mode" data-mode="discover">发现</button>
+        <button class="btn sm ${state.srcMode === 'search' ? 'primary' : ''}" data-action="src-mode" data-mode="search">搜索</button>
+        <input class="input" id="srcKw" placeholder="输入漫画名搜索…" value="${esc(state.srcKw)}" style="flex:1;min-width:140px;${state.srcMode === 'discover' ? 'display:none' : ''}" />
+        <button class="btn primary" data-action="src-search" style="${state.srcMode === 'discover' ? 'display:none' : ''}">搜索</button>
+      </div>
+      <div id="srcTabs" class="panel row" style="gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+      <div id="srcOut"></div>
+      <div id="srcPager" class="row" style="gap:8px;justify-content:center;margin:12px 0"></div>`;
+    $('#srcSel').addEventListener('change', (e) => {
+      state.sourceId = e.target.value; state.srcTab = 0; state.srcPage = 1;
+      if (state.srcMode === 'discover') srcDiscover();
+    });
     $('#srcKw').addEventListener('keydown', (e) => { if (e.key === 'Enter') srcSearch(); });
+    /* 进入来源页默认加载发现页（漫画不再"必须搜索才有"） */
+    if (state.srcMode === 'discover') srcDiscover(); else renderSrcResults();
+  }
+  function renderSrcTabs() {
+    const box = $('#srcTabs');
+    if (!box) return;
+    if (state.srcMode !== 'discover' || !state.srcTabs.length) { box.innerHTML = ''; return; }
+    box.innerHTML = state.srcTabs.map((t) =>
+      `<button class="chip ${t.index === state.srcTab ? 'active' : ''}" data-action="src-tab" data-tab="${t.index}">${esc(t.title)}</button>`).join('');
   }
   function renderSrcResults() {
     const out = $('#srcOut');
@@ -427,13 +467,50 @@
     out.innerHTML = state.srcResults.length
       ? `<div class="grid">${state.srcResults.map((r, i) => `
         <div class="card" data-action="src-open" data-i="${i}">
-          <div class="cover">${r.cover ? `<img src="${esc(r.cover)}" />` : '🌐'}</div>
+          <div class="cover">${r.cover ? `<img src="${esc(r.cover)}" referrerpolicy="no-referrer" />` : '🌐'}</div>
           <div class="card-body"><div class="card-title">${esc(r.title)}</div></div></div>`).join('')}</div>`
-      : '<div class="empty">输入关键词搜索，结果会显示在这里</div>';
+      : `<div class="empty">${state.srcMode === 'discover' ? '这个书源没有发现页内容，试试「搜索」' : '输入关键词搜索，结果会显示在这里'}</div>`;
+    /* 发现页分页 */
+    const pager = $('#srcPager');
+    if (pager) {
+      if (state.srcMode === 'discover' && state.srcMaxPage > 1) {
+        pager.innerHTML = `<button class="btn sm" data-action="src-page" data-d="-1" ${state.srcPage <= 1 ? 'disabled' : ''}>← 上一页</button>
+          <span class="muted">第 ${state.srcPage} / ${state.srcMaxPage} 页</span>
+          <button class="btn sm" data-action="src-page" data-d="1" ${state.srcPage >= state.srcMaxPage ? 'disabled' : ''}>下一页 →</button>`;
+      } else pager.innerHTML = '';
+    }
+    renderSrcTabs();
+  }
+  function setSrcMode(mode) {
+    state.srcMode = mode;
+    if (mode === 'search') {
+      $$('[data-action="src-mode"]').forEach((b) => b.classList.toggle('primary', b.dataset.mode === 'search'));
+      const kw = $('#srcKw'); if (kw) kw.style.display = '';
+      const sb = $('[data-action="src-search"]'); if (sb) sb.style.display = '';
+      state.srcResults = []; renderSrcResults();
+    } else srcDiscover();
+    $$('[data-action="src-mode"]').forEach((b) => b.classList.toggle('primary', b.dataset.mode === mode));
+    if (mode === 'discover') { const kw = $('#srcKw'); if (kw) kw.style.display = 'none'; const sb = $('[data-action="src-search"]'); if (sb) sb.style.display = 'none'; }
+  }
+  async function srcDiscover() {
+    if (!state.sourceId) return;
+    busy(true, '加载发现页…');
+    try {
+      const r = await api('GET', `/api/sources/${state.sourceId}/discover`, {
+        query: { tab: state.srcTab, page: state.srcPage },
+      });
+      state.srcTabs = r.tabs || [];
+      state.srcTab = r.tab ?? state.srcTab;
+      state.srcMaxPage = r.maxPage || 1;
+      state.srcResults = r.items || [];
+      renderSrcResults();
+    } catch (err) { state.srcResults = []; renderSrcResults(); }
+    finally { busy(false); }
   }
   async function srcSearch() {
     const kw = $('#srcKw')?.value.trim();
     if (!kw) return toast('请输入搜索关键词', true);
+    state.srcKw = kw;
     busy(true, '搜索中…');
     try {
       const r = await api('GET', `/api/sources/${state.sourceId}/search`, { query: { kw } });
@@ -1738,6 +1815,7 @@
   async function renderSettings() {
     const rt = await api('GET', '/api/runtime').catch(() => null);
     const ann = await api('GET', '/api/announcements').catch(() => ({ announcements: [] }));
+    if (state.trCfg === null) state.trCfg = await api('GET', '/api/translate/config').catch(() => null);
     const u = state.update;
     const cfg = await Host.getConfig().catch(() => ({}));
     const isLocal = cfg.mode !== 'remote';
@@ -1789,6 +1867,8 @@
         </div>
         <p class="muted" style="font-size:11px;margin:8px 0 0">阅读器窗口也会跟随所选主题。</p></div>
 
+      ${translatePanelHtml()}
+
       <div class="panel"><div class="panel-title"><h3>检查更新</h3>
         <button class="btn primary" data-action="check-update">检查更新</button></div>
         <div id="updateBox">${u ? updateHtml(u) : '<span class="muted">尚未检查</span>'}</div></div>
@@ -1796,6 +1876,45 @@
       <div class="panel"><h3>关于</h3>
         <div class="kv"><span>版本</span><b>v${esc(Host.version || '—')}（${isMobile ? 'Android' : '桌面'}）</b></div>
         <div class="kv"><span>数据</span><b>${isLocal ? '保存在本机' : '与网站 / 手机实时互通'}</b></div></div>`;
+  }
+  /** AI 翻译配置面板：多模态大模型看图翻译生肉漫画，服务端原位渲染（与网站设置页一致） */
+  function translatePanelHtml() {
+    const t = state.trCfg;
+    if (!t) return '';
+    const d = (t.defaults || {})[t.provider] || { baseUrl: '', model: '' };
+    const sel = (v, label) => `<option value="${esc(v)}" ${t.provider === v ? 'selected' : ''}>${esc(label)}</option>`;
+    return `<div class="panel"><h3>🌐 AI 翻译生肉漫画</h3>
+      <p class="muted" style="font-size:12px;margin:0 0 10px">
+        阅读器里对非中文页面点「AI 翻译」：多模态大模型看懂画面上下文后翻译，服务端自动修补底图、把译文排回原位。
+        推荐 Gemini（识图最强）或 OpenAI GPT-4o；需自备对应服务的 API Key（保存在服务端，不会外传）。</p>
+      <label class="field"><span>服务商</span>
+        <select class="input" id="trProvider">
+          ${sel('gemini', 'Gemini（推荐，识图翻译最准）')}${sel('openai', 'OpenAI GPT-4o')}${sel('custom', '自定义兼容接口')}
+        </select></label>
+      <label class="field" style="margin-top:8px"><span>API Key${t.hasKey ? '（已保存，留空则保持不变）' : ''}</span>
+        <input class="input" id="trKey" type="password" autocomplete="off" value="${esc(t.apiKey || '')}"
+          placeholder="${t.hasKey ? '••••••••（已保存）' : '粘贴 API Key'}" /></label>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+        <label class="field" style="flex:1 1 240px"><span>接口地址（可留空用默认）</span>
+          <input class="input" id="trBase" value="${esc(t.baseUrl || '')}" placeholder="${esc(d.baseUrl)}" /></label>
+        <label class="field" style="flex:1 1 180px"><span>模型</span>
+          <input class="input" id="trModel" value="${esc(t.model || '')}" placeholder="${esc(d.model)}" /></label>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+        <label class="field" style="flex:1 1 120px"><span>目标语言</span>
+          <input class="input" id="trLang" value="${esc(t.targetLang || '简体中文')}" placeholder="简体中文" /></label>
+        <label class="field" style="flex:1 1 120px"><span>字号调整</span>
+          <input class="input" id="trSize" type="number" min="-6" max="12" value="${Number(t.fontSizeOffset) || 0}" /></label>
+        <label class="field" style="flex:0 0 90px"><span>文字颜色</span>
+          <input class="input" id="trInk" type="color" value="${esc(t.inkColor || '#ffffff')}" style="width:64px;padding:2px" /></label>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn primary" data-action="tr-save">保存翻译设置</button>
+        <button class="btn" data-action="tr-test">测试连接</button>
+        <span id="trTestMsg" class="muted" style="font-size:12px"></span>
+      </div>
+      <p class="muted" style="font-size:11px;margin:8px 0 0">本机模式与连接站点均可翻译；翻译需联网调用所选模型的 API（Key 保存在服务端）。</p>
+    </div>`;
   }
   function updateHtml(u) {
     if (!u.ok) return `<span style="color:var(--danger)">检查失败：${esc(u.error || '未知错误')}</span>`;
@@ -1848,10 +1967,20 @@
   /* ------------------------------ 事件 ------------------------------ */
   document.addEventListener('change', (e) => {
     const sel = e.target.closest('[data-sub-interval]');
-    if (!sel) return;
-    api('PUT', `/api/subscriptions/${sel.dataset.subInterval}`, { body: { intervalMin: Number(sel.value) } })
-      .then(() => toast('检查间隔已更新'))
-      .catch((err) => toast(err.message, true));
+    if (sel) {
+      api('PUT', `/api/subscriptions/${sel.dataset.subInterval}`, { body: { intervalMin: Number(sel.value) } })
+        .then(() => toast('检查间隔已更新'))
+        .catch((err) => toast(err.message, true));
+      return;
+    }
+    /* 翻译服务商切换：自动填入该服务的默认地址/模型 */
+    if (e.target && e.target.id === 'trProvider') {
+      const p = e.target.value;
+      const d = ((state.trCfg && state.trCfg.defaults) || {})[p] || { baseUrl: '', model: '' };
+      const b = $('#trBase'), m = $('#trModel');
+      if (b) b.value = d.baseUrl || '';
+      if (m) m.value = d.model || '';
+    }
   });
   document.addEventListener('click', async (e) => {
     const el = e.target.closest('[data-action]');
@@ -1952,6 +2081,9 @@
         busy(false); render(); toast(`已删除 ${ok} 本`);
       }
       else if (a === 'goto-sources') { state.view = 'sources'; render(); }
+      else if (a === 'src-mode') setSrcMode(el.dataset.mode);
+      else if (a === 'src-tab') { state.srcTab = Number(el.dataset.tab); state.srcPage = 1; await srcDiscover(); }
+      else if (a === 'src-page') { state.srcPage = Math.max(1, state.srcPage + Number(el.dataset.d)); await srcDiscover(); }
       else if (a === 'src-search') await srcSearch();
       else if (a === 'src-open') await srcOpen(Number(el.dataset.i));
       else if (a === 'src-import') await srcImport();
@@ -2044,6 +2176,31 @@
         try { localStorage.setItem('cv-theme', state.theme); } catch { /* 忽略 */ }
         try { await Host.setTheme(state.theme); } catch { /* 旧宿主不支持时靠 localStorage 兜底 */ }
         renderSettings();
+      }
+      else if (a === 'tr-save') {
+        const body = {
+          apiKey: $('#trKey')?.value.trim() || '',
+          baseUrl: $('#trBase')?.value.trim() || '',
+          model: $('#trModel')?.value.trim() || '',
+          targetLang: $('#trLang')?.value.trim() || '简体中文',
+          fontSizeOffset: Number($('#trSize')?.value) || 0,
+          inkColor: $('#trInk')?.value || '#ffffff',
+        };
+        try {
+          await api('POST', '/api/translate/config', { body });
+          state.trCfg = await api('GET', '/api/translate/config');
+          toast('翻译设置已保存');
+          renderSettings();
+        } catch (err) { toast(err.message || String(err), true); }
+      }
+      else if (a === 'tr-test') {
+        const msg = $('#trTestMsg'); if (msg) msg.textContent = '测试中…';
+        try {
+          const r = await api('POST', '/api/translate/test', { body: {} });
+          if (msg) msg.textContent = `✓ 连接正常（${r.provider} / ${r.model}，识别到 ${r.regions} 处文字）`;
+        } catch (err) {
+          if (msg) msg.textContent = '✗ ' + ((err && err.message) || '测试失败');
+        }
       }
       else if (a === 'check-update') await checkUpdate();
       else if (a === 'open-site') await Host.openExternal(await Host.siteUrl());

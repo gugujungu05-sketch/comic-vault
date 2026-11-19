@@ -14,6 +14,7 @@
     <button class="r-btn" id="btnPrevChapter" title="上一话 [">«</button>
     <select class="r-select" id="chapterSel"></select>
     <button class="r-btn" id="btnNextChapter" title="下一话 ]">»</button>
+    <button class="r-btn" id="btnSettings" title="阅读设置（主题 / 护眼 / 亮度 / 对比度）">⚙ 设置</button>
     <button class="r-btn" id="btnWebtoon" title="条漫：宽度撑满、上下连续滚动">条漫</button>
     <button class="r-btn" id="btnSpread" title="单页 / 双页">单页</button>
     <button class="r-btn" id="btnDir" title="切换阅读方向（从左往右 / 从右往左）">从左往右</button>
@@ -25,9 +26,31 @@
     <button class="r-btn" id="btnZoomOut" title="缩小">−</button>
     <span class="r-zoom" id="zoomLabel">100%</span>
     <button class="r-btn" id="btnZoomIn" title="放大">＋</button>
+    <button class="r-btn" id="btnTranslate" title="AI 翻译当前话（生肉→中文，译文排回原位）">🌐 AI 翻译</button>
+    <button class="r-btn" id="btnTransReset" title="还原为原图" style="display:none">↺ 还原</button>
     <button class="r-btn" id="btnSave" title="保存本页图片">⇩ 存本页</button>
     <button class="r-btn" id="btnFull" title="全屏">⛶</button>
   </header>
+  <div class="r-settings" id="settingsPanel">
+    <div class="rs-head"><strong>阅读设置</strong><button class="r-btn" id="btnCloseSettings" title="关闭">✕</button></div>
+    <div class="rs-row"><span>界面主题</span><div class="rs-themes" id="rsThemes"></div></div>
+    <div class="rs-row"><span>画面滤镜</span><div class="rs-chips" id="rsFilter">
+      <button data-v="none" class="active">原图</button><button data-v="warm">护眼</button>
+      <button data-v="gray">黑白</button><button data-v="invert">反色</button>
+    </div></div>
+    <div class="rs-row"><span>亮度 <b id="rsBrightVal">100%</b></span><input type="range" id="rsBright" min="50" max="150" value="100" /></div>
+    <div class="rs-row"><span>对比度 <b id="rsContrastVal">100%</b></span><input type="range" id="rsContrast" min="50" max="180" value="100" /></div>
+    <div class="rs-row" id="rsScrollRow"><span>滚动并排页数（上下滚动 / 条漫）</span><div class="rs-chips" id="rsCols">
+      <button data-v="1">单列</button><button data-v="2">双页</button><button data-v="3">三页</button><button data-v="4">四页</button>
+    </div></div>
+    <div class="rs-row" id="rsNovelRow" style="display:none"><span>小说连续阅读（跨章不中断、去掉每话大标题）</span><div class="rs-chips" id="rsNovelCont">
+      <button data-v="0">单章</button><button data-v="1">连续跨章</button>
+    </div></div>
+    <div class="rs-row"><span>阅读方式</span><div class="rs-chips" id="rsModes">
+      <button data-v="keepOrder">保持单页顺序</button><button data-v="linkChapters">连续跨章</button><button data-v="splitWide">跨页拆单页</button>
+    </div></div>
+    <div class="rs-tip">设置自动保存 · 主题与网站 / 主界面同步</div>
+  </div>
   <button class="r-peek" id="btnPeek" title="显示阅读菜单" aria-label="显示阅读菜单">☰</button>
   <div class="r-stage" id="stage"><div class="r-loading">正在载入页面…</div></div>
   <div class="r-hint" id="hint">轻点画面正中唤出菜单 · 左右滑动翻页 · ← / → 翻页</div>

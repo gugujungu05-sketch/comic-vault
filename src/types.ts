@@ -222,6 +222,38 @@ export interface ReaderPrefs {
   brightness: number;
   contrast: number;
   smartDouble: boolean;
+  /** 双页对开(翻页模式)下是否保持单页自然顺序 1→2→3，不受 LTR/RTL 方向镜像影响 */
+  keepPageOrder?: boolean;
+  /** 滚动模式（上下滚动/条漫）下每行的并排页数：1 单列 / 2 双页 / 3 三页 / 4 四页 */
+  scrollCols?: number;
+  /** 兼容旧键：滚动双页。读取时映射为 scrollCols=2 */
+  scrollDouble?: boolean;
+  /** 滚动模式下隐藏被标记为跨页的大图（旧行为，保留兼容；新界面改用 splitWide） */
+  hideWide?: boolean;
+  /** 观看时把合并的跨页大图拆成左右两张单页显示（可逆，不改原图） */
+  splitWide?: boolean;
+  /** 连续跨章：翻到本章末自动进入下一章，跨章不中断 */
+  linkChapters?: boolean;
+}
+
+export interface TranslateConfig {
+  provider: 'gemini' | 'openai' | 'custom';
+  apiKey: string;
+  hasKey: boolean;
+  baseUrl: string;
+  model: string;
+  targetLang: string;
+  fontFamily: string;
+  fontSizeOffset: number;
+  inkColor: string;
+  useOutline: boolean;
+  defaults: Record<'gemini' | 'openai' | 'custom', { baseUrl: string; model: string }>;
+}
+
+export interface TranslateResult {
+  url: string;
+  count: number;
+  cached: boolean;
 }
 
 export interface Settings {

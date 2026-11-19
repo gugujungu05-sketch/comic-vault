@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { Chapter, ReaderFilter, ReaderPrefs } from '../types';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import type { Chapter, Page, ReaderFilter, ReaderPrefs } from '../types';
 import { Icon } from './Icon';
 import { PageEditor } from './PageEditor';
 import { saveImageToDevice } from '../lib/util';
+import { translation } from '../lib/api';
 import { THEMES, normalizeTheme } from '../lib/themes';
 import { useToast } from './Toasts';
 
@@ -21,7 +22,111 @@ const BASE_PREFS: ReaderPrefs = {
   brightness: 1,
   contrast: 1,
   smartDouble: true,
+  keepPageOrder: true,
+  scrollCols: 1,
+  hideWide: false,
+  splitWide: false,
+  linkChapters: true,
 };
+
+/** 跨页大图判定：优先用服务端标记，缺失/未刷新时按真实宽高比兜底。
+    合并后的跨页图若后端没来得及标记 wide，仍能正确识别为跨页（独占一行 / 被隐藏）。 */
+function isWide(p: { wide?: boolean; width?: number; height?: number } | undefined | null): boolean {
+  if (!p) return false;
+  if (p.wide) return true;
+  if (p.width && p.height && p.width / p.height >= 1.15) return true;
+  return false;
+}
+
+/** 一个"逻辑显示页"。half=full 为原页；l/r 为把跨页大图按左右半拆出的单页（同一张图，背景裁剪）。
+    origIdx 指回 chapter.pages 下标，保证进度/存图/存档仍落在原页上。 */
+type MediaPage = { p: Page; half: 'full' | 'l' | 'r'; key: string; origIdx: number };
+
+/** 把原页列表按 splitWide 展开成逻辑显示页：跨页→左右两半，普通页不变。 */
+function buildViewPages(pages: Page[], split: boolean): MediaPage[] {
+  const out: MediaPage[] = [];
+  pages.forEach((p, i) => {
+    if (split && isWide(p)) {
+      out.push({ p, half: 'l', key: `${p.id}-sl`, origIdx: i });
+      out.push({ p, half: 'r', key: `${p.id}-sr`, origIdx: i });
+    } else {
+      out.push({ p, half: 'full', key: p.id, origIdx: i });
+    }
+  });
+  return out;
+}
+
+/** 半图宽高比：跨页约 2:1，拆出的单页约 1:1；用真实尺寸精确计算，缺失时按 0.78 兜底。 */
+function halfAspect(p: Page): string {
+  if (p.width && p.height && p.width > 0 && p.height > 0) {
+    return `${(p.width / 2).toFixed(2)} / ${p.height.toFixed(2)}`;
+  }
+  return '0.78';
+}
+
+/** 只有"完整页"才可能是跨页；拆出来的左右半不是跨页，可正常参与配对/并排。 */
+function mediaIsWide(m: MediaPage | undefined): boolean {
+  return !!m && m.half === 'full' && isWide(m.p);
+}
+
+/** 统一渲染一页媒体：完整页→img；拆出的左/右半→同一张图按背景定位裁一半。 */
+function PageMedia({ m, className, style, alt, loading, onLoad, draggable, overrideUrl }: {
+  m: MediaPage;
+  className: string;
+  style?: CSSProperties;
+  alt?: string;
+  loading?: 'eager' | 'lazy';
+  onLoad?: () => void;
+  draggable?: boolean;
+  overrideUrl?: string;
+}) {
+  const src = overrideUrl || m.p.url;
+  if (m.half === 'full') {
+    return (
+      <img
+        className={className}
+        src={src}
+        alt={alt}
+        loading={loading}
+        onLoad={onLoad}
+        draggable={draggable}
+        style={style}
+      />
+    );
+  }
+  return (
+    <div
+      className={`${className} media-half media-half-${m.half}`}
+      role="img"
+      aria-label={alt}
+      style={{
+        aspectRatio: halfAspect(m.p),
+        backgroundImage: src ? `url("${src}")` : undefined,
+        ...style,
+      }}
+    />
+  );
+}
+
+/** 按与 doubleScreens 相同的规则，求一章分屏后「最后一屏」的第一页索引（用于跨章回退对齐） */
+function lastScreenStart(ch: { pages: { wide?: boolean; width?: number; height?: number }[] }, smartDouble: boolean): number {
+  const pages = ch.pages || [];
+  if (!pages.length) return 0;
+  if (!smartDouble) return pages.length - 1;
+  const last = pages.length - 1;
+  // 末页是跨页 → 它自己独占最后一屏
+  if (isWide(pages[last])) return last;
+  // 末页是普通页：若倒数第二页存在且二者都非跨页，则它们成对，最后一屏从 last-1 开始；
+  // 若倒数第二页是跨页（已独占前一屏），则末页自己单独成屏。
+  if (last >= 1 && !isWide(pages[last - 1])) return last - 1;
+  return last;
+}
+
+/** 兼容旧键：老版本存了 scrollDouble，新版本读 scrollCols */
+function scrollColsOf(p: Partial<ReaderPrefs>): number {
+  if (typeof p.scrollCols === 'number') return Math.min(4, Math.max(1, p.scrollCols));
+  return p.scrollDouble ? 2 : 1;
+}
 
 function readPart(key: string): Partial<ReaderPrefs> {
   try {
@@ -78,6 +183,7 @@ export function ReaderView({
   readOnly = false,
   comicId,
   onPagesChanged,
+  ensurePages,
 }: {
   title: string;
   chapters: Chapter[];
@@ -91,6 +197,8 @@ export function ReaderView({
   /** 传入后可启用页面编辑（旋转/裁剪） */
   comicId?: string;
   onPagesChanged?: (chapter: Chapter) => void;
+  /** 在线阅读：切到没有页面的章节时按需拉取页面（父组件负责回填 chapters） */
+  ensurePages?: (chapter: Chapter) => Promise<unknown>;
 }) {
   const toast = useToast();
   const comicKey = comicKeyOf(comicId, title);
@@ -119,6 +227,17 @@ export function ReaderView({
   const [brightness, setBrightness] = useState(initialPrefs.brightness);
   const [contrast, setContrast] = useState(initialPrefs.contrast);
   const [smartDouble, setSmartDouble] = useState(initialPrefs.smartDouble);
+  const [keepPageOrder, setKeepPageOrder] = useState(initialPrefs.keepPageOrder !== false);
+  const [scrollCols, setScrollCols] = useState(scrollColsOf(initialPrefs));
+  const [splitWide, setSplitWide] = useState(!!initialPrefs.splitWide);
+  const [linkChapters, setLinkChapters] = useState(!!initialPrefs.linkChapters);
+  /* AI 翻译：origIdx → 译文图 URL（服务端缓存），以及正在翻译的原页集合 */
+  const [translated, setTranslated] = useState<Record<number, string>>({});
+  const [translating, setTranslating] = useState<Set<number>>(new Set());
+  const [translateOn, setTranslateOn] = useState(false);
+  /* 连续跨章：链式渲染的章节窗口。初始只含当前章，滚动到边界时向前/向后扩展。 */
+  const [chainStart, setChainStart] = useState(chapterIndex);
+  const [chainEnd, setChainEnd] = useState(chapterIndex);
   const [zoom, setZoom] = useState(1);
 
   /* 沉浸式：默认隐藏工具栏。只有「轻点画面正中间」或角落菜单按钮才切换 */
@@ -147,23 +266,138 @@ export function ReaderView({
   const touchOnUi = useRef(false);
   const touchStart = useRef<{ x: number; y: number; t: number; moved: boolean } | null>(null);
   const saveFirst = useRef(true);
-
+  /* 链式跨章：向前扩展（prepend 上一话）后需要把滚动位置补偿回来，保持视觉连续 */
+  const pendingScrollComp = useRef<{ heightBefore: number; topBefore: number } | null>(null);
+  const chainTip = useRef({ start: chapterIndex, end: chapterIndex });
   const chapter = chapters[chapterIndex];
-  const total = chapter?.pages.length || 0;
+  /* 逻辑显示页：splitWide 开启时把跨页大图拆成左右两张单页，其余不变。
+     pageIndex/进度/存档仍按逻辑页索引推进，origIdx 指回原页用于存图。 */
+  const viewPages = useMemo<MediaPage[]>(
+    () => buildViewPages(chapter?.pages || [], splitWide),
+    [chapter, splitWide],
+  );
+  const total = viewPages.length;
   const rtl = direction === 'rtl';
 
-  const currentWide = mode === 'double' && smartDouble && !!chapter?.pages[pageIndex]?.wide;
-  const step = mode === 'double' ? (currentWide ? 1 : 2) : 1;
+  /* 双页模式：把整话预先划分成「屏」。跨页大图永远独占一屏，且它前面那张落单的普通页
+     也单独成屏——这样跨页绝不会和相邻页并排。翻页在「屏」之间移动，无论从前往后翻，
+     还是从下一话往回翻，同一张跨页的排版都完全一致（根治「滑回去才独占、再翻又并排」）。
+     splitWide 开启后，拆出的左右半不再是跨页，会自然两两配对成"原样两页"。 */
+  const doubleScreens = useMemo<number[][]>(() => {
+    const pages = viewPages;
+    const screens: number[][] = [];
+    for (let i = 0; i < pages.length; ) {
+      if (smartDouble && mediaIsWide(pages[i])) { screens.push([i]); i += 1; continue; }
+      /* 拆分出的左右半（同一原跨页）强制配成独占一屏，恢复"原样两页对开" */
+      if (pages[i].half === 'l' && i + 1 < pages.length && pages[i + 1].half === 'r'
+          && pages[i + 1].origIdx === pages[i].origIdx) {
+        screens.push([i, i + 1]); i += 2; continue;
+      }
+      /* 下一项是拆分出的左半：当前页落单独占，避免和半图配对把它拆散 */
+      if (i + 1 < pages.length && pages[i + 1].half === 'l') { screens.push([i]); i += 1; continue; }
+      if (i + 1 < pages.length && mediaIsWide(pages[i + 1])) { screens.push([i]); i += 1; continue; }
+      if (i + 1 < pages.length) { screens.push([i, i + 1]); i += 2; }
+      else { screens.push([i]); i += 1; }
+    }
+    return screens;
+  }, [viewPages, smartDouble]);
 
-  const currentPages = useMemo(() => {
+  /* pageIndex 仍是「页索引」（供进度 / slider 用）；找到它所在的屏。
+     拖动 slider 落在某屏的第二页时，归到该屏，避免把跨页拆开。 */
+  const screenIndex = useMemo(() => {
+    if (mode !== 'double') return 0;
+    let k = doubleScreens.findIndex((s) => s[0] === pageIndex);
+    if (k < 0) k = doubleScreens.findIndex((s) => s.includes(pageIndex));
+    return k < 0 ? 0 : k;
+  }, [doubleScreens, pageIndex, mode]);
+
+  const activeScreen = mode === 'double' ? (doubleScreens[screenIndex] || [pageIndex]) : [pageIndex];
+  const currentWide = mode === 'double' && smartDouble && mediaIsWide(viewPages[activeScreen[0]]);
+  const step = mode === 'double' ? Math.max(1, activeScreen.length) : 1;
+
+  const currentPages = useMemo<MediaPage[]>(() => {
+    const idxs = mode === 'double' ? (doubleScreens[screenIndex] || [pageIndex]) : [pageIndex];
+    const arr = idxs.map((i) => viewPages[i]).filter(Boolean);
+    /* 保持单页自然顺序 1→2（默认）：双页显示不被 LTR/RTL 观看方向镜像打乱。
+       只有显式关掉 keepPageOrder 时，才按方向镜像（日漫从右往左的传统排法）。 */
+    return rtl && !keepPageOrder ? [...arr].reverse() : arr;
+  }, [viewPages, pageIndex, mode, doubleScreens, screenIndex, rtl, keepPageOrder]);
+
+  /* 滚动模式（上下滚动 / 条漫）：按 viewPages（可能已拆开跨页）和 scrollCols 把每 N 页并成一行。
+     页序始终是自然顺序 1→2→3，不受 LTR/RTL 观看方向镜像——合并只改变排版，不改变单页顺序。
+     跨页大图自动独占一行；每行元素仍引用原始 Page 对象，进度/存图逻辑不变。
+     连续跨章开启时：把 [chainStart..chainEnd] 多章拼成一个连续滚动区，章与章之间插入标题分隔。 */
+  const isScroll = mode === 'continuous' || mode === 'webtoon';
+  type ScrollRow = { row: MediaPage[]; ci: number; pi: number; chapterStart?: boolean };
+
+  /** 把一章的"逻辑显示页"按 scrollCols 分组。splitWide 关闭时跨页大图仍独占一行；
+     开启时跨页已在 buildViewPages 拆成左右两张单页，会自然参与并排。页序始终为自然顺序，
+     不受 LTR/RTL 镜像——合并/拆分只改变排版，不改变页序。 */
+  function rowsForChapter(ch: Chapter, ci: number): ScrollRow[] {
+    const pages = ch.id === chapter?.id ? viewPages : buildViewPages(ch.pages, splitWide);
+    const base = pages.length ? pages[0].origIdx : -1;
+    const out: ScrollRow[] = [];
+    if (scrollCols <= 1) {
+      pages.forEach((p, i) => out.push({ row: [p], ci, pi: p.origIdx, chapterStart: i === 0 && base === 0 }));
+      return out;
+    }
+    for (let i = 0; i < pages.length; ) {
+      const a = pages[i];
+      const start = i === 0 && base === 0;
+      if (mediaIsWide(a)) { out.push({ row: [a], ci, pi: a.origIdx, chapterStart: start }); i += 1; continue; }
+      const row: MediaPage[] = [];
+      let j = i;
+      for (let c = 0; c < scrollCols && j < pages.length; c++, j++) {
+        if (mediaIsWide(pages[j])) break;
+        row.push(pages[j]);
+      }
+      if (!row.length) { row.push(pages[i]); j = i + 1; }
+      out.push({ row, ci, pi: row[0].origIdx, chapterStart: start });
+      i = j;
+    }
+    return out;
+  }
+
+  const chained = isScroll && linkChapters && chapters.length > 1;
+  const scrollRows = useMemo<ScrollRow[]>(() => {
     if (!chapter) return [];
-    if (mode !== 'double') return [chapter.pages[pageIndex]].filter(Boolean);
-    const a = chapter.pages[pageIndex];
-    if (smartDouble && a?.wide) return [a];
-    const b = chapter.pages[pageIndex + 1];
-    const pair = [a, b].filter(Boolean);
-    return rtl ? [...pair].reverse() : pair;
-  }, [chapter, pageIndex, mode, rtl, smartDouble]);
+    if (!chained) return rowsForChapter(chapter, chapterIndex);
+    const rows: ScrollRow[] = [];
+    for (let ci = chainStart; ci <= chainEnd && ci < chapters.length; ci++) {
+      const ch = chapters[ci];
+      if (!ch) continue;
+      rows.push(...rowsForChapter(ch, ci));
+    }
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chapter, chapterIndex, chapters, chained, chainStart, chainEnd, scrollCols, splitWide, viewPages]);
+
+  /* 向前扩展链式窗口后，把滚动位置补上新增内容的高度，保持视觉不跳动 */
+  useLayoutEffect(() => {
+    const comp = pendingScrollComp.current;
+    if (!comp) return;
+    const el = stageRef.current;
+    if (el) el.scrollTop = comp.topBefore + Math.max(0, el.scrollHeight - comp.heightBefore);
+    pendingScrollComp.current = null;
+  }, [chainStart]);
+
+  /* 在线阅读：切到空章节时按需拉取页面（ensurePages 由父组件提供并回填 chapters） */
+  const [lazyLoading, setLazyLoading] = useState(false);
+  const lazyKey = useRef('');
+  useEffect(() => {
+    if (!ensurePages) return;
+    const ch = chapters[chapterIndex];
+    if (!ch || ch.pages.length) {
+      setLazyLoading(false);
+      return;
+    }
+    if (lazyKey.current === ch.id) return;
+    lazyKey.current = ch.id;
+    setLazyLoading(true);
+    Promise.resolve(ensurePages(ch))
+      .catch(() => {})
+      .finally(() => setLazyLoading(false));
+  }, [chapters, chapterIndex, ensurePages]);
 
   const filterCss = useMemo(() => {
     const parts = [`brightness(${brightness.toFixed(2)})`, `contrast(${contrast.toFixed(2)})`];
@@ -216,10 +450,10 @@ export function ReaderView({
     if (saveFirst.current) {
       saveFirst.current = false;
       /* 记录初始值，切话时不再重复写入 */
-      lastSaved.current = JSON.stringify({ prefScope, mode, fit, direction, filter, brightness, contrast, smartDouble });
+      lastSaved.current = JSON.stringify({ prefScope, mode, fit, direction, filter, brightness, contrast, smartDouble, keepPageOrder, scrollCols, splitWide, linkChapters });
       return;
     }
-    const snapshot: ReaderPrefs = { mode, fit, direction, filter, brightness, contrast, smartDouble };
+    const snapshot: ReaderPrefs = { mode, fit, direction, filter, brightness, contrast, smartDouble, keepPageOrder, scrollCols, splitWide, linkChapters };
     const sig = JSON.stringify({ prefScope, ...snapshot });
     if (sig === lastSaved.current) return;   /* 切话 / 无关渲染不写 */
     lastSaved.current = sig;
@@ -229,7 +463,7 @@ export function ReaderView({
     } catch {
       /* 隐私模式下忽略 */
     }
-  }, [prefScope, mode, fit, direction, filter, brightness, contrast, smartDouble, comicKey, chapter?.id]);
+  }, [prefScope, mode, fit, direction, filter, brightness, contrast, smartDouble, keepPageOrder, scrollCols, splitWide, linkChapters, comicKey, chapter?.id]);
 
   /* 「仅本话」范围：切到另一话时，载入那一话自己的记忆 */
   const lastChapterId = useRef(chapter?.id || '');
@@ -241,7 +475,8 @@ export function ReaderView({
     const p = loadEffective(comicKey, id, initialDirection);
     setMode(p.mode); setFit(p.fit); setDirection(p.direction);
     setFilter(p.filter); setBrightness(p.brightness); setContrast(p.contrast);
-    setSmartDouble(p.smartDouble);
+    setSmartDouble(p.smartDouble); setKeepPageOrder(p.keepPageOrder !== false);
+    setScrollCols(scrollColsOf(p)); setSplitWide(!!p.splitWide); setLinkChapters(!!p.linkChapters);
   }, [chapter?.id, prefScope, comicKey, initialDirection]);
 
   /** 切换作用范围：清掉更细粒度的旧覆盖，让新范围立即生效 */
@@ -264,9 +499,10 @@ export function ReaderView({
 
   useEffect(() => {
     if (!chapter || !onProgress) return;
-    const t = setTimeout(() => onProgress(chapter.id, pageIndex), 400);
+    const orig = viewPages[pageIndex]?.origIdx ?? pageIndex;
+    const t = setTimeout(() => onProgress(chapter.id, orig), 400);
     return () => clearTimeout(t);
-  }, [chapter, pageIndex, onProgress]);
+  }, [chapter, pageIndex, onProgress, viewPages]);
 
   /* 手机端首次进入提示：点中间唤出菜单、左右滑动翻页 */
   useEffect(() => {
@@ -293,49 +529,86 @@ export function ReaderView({
   useEffect(() => {
     if (!chapter) return;
     for (let i = 1; i <= 3; i++) {
-      const p = chapter.pages[pageIndex + i];
-      if (p?.url) {
+      const m = viewPages[pageIndex + i];
+      if (m?.p.url) {
         const img = new Image();
-        img.src = p.url;
+        img.src = m.p.url;
       }
     }
-  }, [chapter, pageIndex]);
+  }, [viewPages, pageIndex]);
+
+  /** AI 翻译当前屏：对每个原页调用服务端翻译（看图翻译+原位渲染），结果按 origIdx 缓存。
+      只有非中文生肉才需要；译文图是服务端生成的 PNG，直接替换 img 源，不改原始数据。 */
+  async function translateCurrent() {
+    const pages = uniqueSourcePages().filter((x) => x.p.url);
+    if (!pages.length) { toast('这一页还没有图片', 'err'); return; }
+    setTranslateOn(true);
+    const todo = pages.filter((x) => !translated[x.idx]);
+    if (!todo.length) { toast('本页已翻译'); return; }
+    setTranslating(new Set(todo.map((x) => x.idx)));
+    let ok = 0;
+    for (const { p, idx } of todo) {
+      try {
+        const r = await translation.page(p.url!);
+        setTranslated((m) => ({ ...m, [idx]: r.url.startsWith('/') ? new URL(r.url, location.origin).href : r.url }));
+        ok += 1;
+      } catch (err) {
+        toast(`第 ${idx + 1} 页翻译失败：${(err as Error)?.message || '请检查翻译设置'}`, 'err');
+      }
+    }
+    setTranslating(new Set());
+    if (ok) toast(`已翻译 ${ok} 页（译文在原位显示）`);
+  }
+
+  /** 当前屏涉及的"原页"去重列表（拆分后的左右半指向同一原页，只算一次） */
+  function uniqueSourcePages(): { p: Page; idx: number }[] {
+    const seen = new Set<number>();
+    const out: { p: Page; idx: number }[] = [];
+    for (const m of currentPages) {
+      if (seen.has(m.origIdx)) continue;
+      seen.add(m.origIdx);
+      out.push({ p: m.p, idx: m.origIdx });
+    }
+    if (!out.length && chapter?.pages[pageIndex]) out.push({ p: chapter.pages[pageIndex], idx: pageIndex });
+    return out;
+  }
 
   async function saveCurrentPage() {
     /* 双页对开且当前是两页：先问用户要合并下载还是单页下载，避免只存到一张 */
-    if (mode === 'double' && currentPages.length === 2 && currentPages[1]?.url) {
+    if (mode === 'double' && uniqueSourcePages().length === 2) {
       setSaveChoice(true);
       return;
     }
-    const p = currentPages[0] || chapter?.pages[pageIndex];
-    if (!p?.url) {
+    const first = uniqueSourcePages()[0];
+    if (!first?.p.url) {
       toast('这一页还没有图片', 'err');
       return;
     }
-    const name = `${title}-${chapter?.title || '漫画'}-第${pageIndex + 1}页`;
-    const ok = await saveImageToDevice(p.url, name);
+    const name = `${title}-${chapter?.title || '漫画'}-第${first.idx + 1}页`;
+    const ok = await saveImageToDevice(first.p.url, name);
     toast(ok ? '本页图片已保存' : '已打开图片，可长按保存', ok ? 'ok' : 'err');
   }
 
-  /** 单页下载：把对开的两页分别保存为两张原图 */
+  /** 单页下载：把对开的原页分别保存为两张原图 */
   async function saveSpreadAsSingle() {
     setSaveChoice(false);
+    const pages = uniqueSourcePages();
     let okAll = true;
-    for (let i = 0; i < currentPages.length; i++) {
-      const p = currentPages[i];
+    for (const { p, idx } of pages) {
       if (!p?.url) continue;
-      const name = `${title}-${chapter?.title || '漫画'}-第${pageIndex + i + 1}页`;
+      const name = `${title}-${chapter?.title || '漫画'}-第${idx + 1}页`;
       const ok = await saveImageToDevice(p.url, name);
       if (!ok) okAll = false;
     }
-    toast(okAll ? `已分别保存 ${currentPages.length} 张单页` : '部分图片未保存，可长按保存', okAll ? 'ok' : 'err');
+    toast(okAll ? `已分别保存 ${pages.length} 张单页` : '部分图片未保存，可长按保存', okAll ? 'ok' : 'err');
   }
 
   /** 合并下载：按当前双页对开的顺序把两页横向拼成一张长图 */
   async function saveSpreadAsMerged() {
     setSaveChoice(false);
     try {
-      const imgs = await Promise.all(currentPages.map((p) => new Promise<HTMLImageElement>((resolve, reject) => {
+      const sources = uniqueSourcePages().map((x) => x.p);
+      const imgs = await Promise.all(sources.map((p) => new Promise<HTMLImageElement>((resolve, reject) => {
         const im = new Image();
         im.crossOrigin = 'anonymous';
         im.onload = () => resolve(im);
@@ -371,36 +644,58 @@ export function ReaderView({
     setScrollRatio(0);
     setChapterIndex(next);
     setPageIndex(0);
+    chainTip.current = { start: next, end: next };
+    setChainStart(next); setChainEnd(next);
     requestAnimationFrame(() => stageRef.current?.scrollTo?.(0, 0));
   }, [chapterIndex, chapters.length]);
 
   const goNext = useCallback(() => {
     if (!chapter) return;
     setLoaded(false);
+    if (mode === 'double') {
+      // 跨页独占一屏：直接跳到下一屏的第一页，保证对齐一致（不会因跨页落在奇数位而并排）
+      const nextStart = (doubleScreens[screenIndex + 1] || [])[0];
+      if (nextStart !== undefined) { setPageIndex(nextStart); return; }
+      if (linkChapters && chapterIndex < chapters.length - 1) {
+        setChapterIndex(chapterIndex + 1); setPageIndex(0);
+      }
+      return;
+    }
     if (pageIndex + step <= total - 1) {
       setPageIndex(pageIndex + step);
-    } else if (chapterIndex < chapters.length - 1) {
+    } else if (linkChapters && chapterIndex < chapters.length - 1) {
       setChapterIndex(chapterIndex + 1);
       setPageIndex(0);
     }
-  }, [chapter, pageIndex, step, total, chapterIndex, chapters.length]);
+  }, [chapter, pageIndex, step, total, chapterIndex, chapters.length, linkChapters, mode, doubleScreens, screenIndex]);
 
   const goPrev = useCallback(() => {
     if (!chapter) return;
     setLoaded(false);
+    if (mode === 'double') {
+      const prevStart = (doubleScreens[screenIndex - 1] || [])[0];
+      if (prevStart !== undefined) { setPageIndex(prevStart); return; }
+      if (screenIndex <= 0 && pageIndex > 0) { setPageIndex(doubleScreens[0]?.[0] ?? 0); return; }
+      if (chapterIndex > 0) {
+        const prev = chapters[chapterIndex - 1];
+        // 跳到上一话的「最后一屏」：跨页独占时落在跨页本身，普通双页落在成对的第一页
+        const lastScreen = smartDouble ? lastScreenStart(prev, true) : prev.pages.length - 1;
+        setChapterIndex(chapterIndex - 1);
+        setPageIndex(Math.max(0, mode !== 'double' ? prev.pages.length - 1 : lastScreen));
+      }
+      return;
+    }
     let back = step;
-    if (mode === 'double' && smartDouble && chapter.pages[pageIndex - 1]?.wide) back = 1;
     if (pageIndex - back >= 0) {
       setPageIndex(pageIndex - back);
     } else if (pageIndex > 0) {
       setPageIndex(0);
     } else if (chapterIndex > 0) {
       const prev = chapters[chapterIndex - 1];
-      const last = prev.pages.length - 1;
       setChapterIndex(chapterIndex - 1);
-      setPageIndex(Math.max(0, prev.pages[last]?.wide || mode !== 'double' ? last : last - 1));
+      setPageIndex(Math.max(0, prev.pages.length - 1));
     }
-  }, [chapter, pageIndex, step, chapterIndex, chapters, mode, smartDouble]);
+  }, [chapter, pageIndex, step, chapterIndex, chapters, mode, doubleScreens, screenIndex, smartDouble]);
 
   /* 键盘操作：翻页不会弹出工具栏 */
   useEffect(() => {
@@ -532,6 +827,20 @@ export function ReaderView({
     if (!total) return;
     const ratio = el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight);
     setScrollRatio(ratio);
+    /* 链式连续跨章：滚动到窗口下沿追加下一话，滚动到上沿追加上一话，全程不跳变。 */
+    if (chained) {
+      if (ratio >= 0.985 && chainTip.current.end < chapters.length - 1) {
+        const next = chainTip.current.end + 1;
+        chainTip.current.end = next;
+        setChainEnd(next);
+      } else if (ratio <= 0.015 && chainTip.current.start > 0) {
+        const prev = chainTip.current.start - 1;
+        chainTip.current.start = prev;
+        pendingScrollComp.current = { heightBefore: el.scrollHeight, topBefore: el.scrollTop };
+        setChainStart(prev);
+      }
+      return;
+    }
     setPageIndex(Math.min(total - 1, Math.floor(ratio * total)));
   }
 
@@ -549,7 +858,8 @@ export function ReaderView({
   }
 
   const fitClass = fit === 'width' ? 'fit-width' : fit === 'height' ? 'fit-height' : fit === 'original' ? 'original' : '';
-  const editingPage = currentPages[rtl ? currentPages.length - 1 : 0];
+  const editingMedia = currentPages[rtl ? currentPages.length - 1 : 0];
+  const editingPage = editingMedia ? chapter?.pages[editingMedia.origIdx] : undefined;
 
   return (
     <div
@@ -579,6 +889,19 @@ export function ReaderView({
             <Icon name="download" size={15} /> 存本页
           </button>
           <button
+            className={`btn sm ${translateOn ? 'primary' : 'ghost'}`}
+            onClick={translateCurrent}
+            disabled={translating.size > 0}
+            title="AI 翻译当前页（生肉→中文，译文排回原位）"
+          >
+            <Icon name="globe" size={15} /> {translating.size > 0 ? '翻译中…' : translateOn ? '重新翻译' : 'AI 翻译'}
+          </button>
+          {translateOn && (
+            <button className="btn sm ghost" onClick={() => setTranslateOn(false)} title="还原为原图">
+              <Icon name="refresh" size={15} /> 还原
+            </button>
+          )}
+          <button
             className={`btn sm ${panel === 'settings' ? 'primary' : 'ghost'}`}
             onClick={() => setPanel(panel === 'settings' ? null : 'settings')}
             title="阅读设置"
@@ -602,48 +925,71 @@ export function ReaderView({
         onScroll={mode === 'continuous' || mode === 'webtoon' ? onContinuousScroll : undefined}
         style={{ filter: filterCss }}
       >
-        {mode === 'continuous' ? (
-          chapter.pages.map((p, i) => (
-            <img
-              key={p.id}
-              className="cont-page"
-              src={p.url}
-              alt={`第 ${i + 1} 页`}
-              loading={i < 3 ? 'eager' : 'lazy'}
-              style={{ maxWidth: fit === 'original' ? `${zoom * 100}%` : undefined }}
-              draggable={false}
-            />
-          ))
-        ) : mode === 'webtoon' ? (
+        {isScroll ? (
           <>
-            {chapterIndex > 0 && (
+            {!chained && chapterIndex > 0 && (
               <button className="webtoon-edge" onClick={() => goChapter(-1)}>
                 ↑ 上一话 · {chapters[chapterIndex - 1].title}
               </button>
             )}
-            {chapter.pages.map((p, i) => (
-              <img key={p.id} className="webtoon-page" src={p.url} alt={`第 ${i + 1} 页`}
-                loading={i < 3 ? 'eager' : 'lazy'} draggable={false} />
+            {scrollRows.map((srow, ri) => (
+              <Fragment key={`r-${srow.ci}-${srow.pi}`}>
+                {chained && srow.chapterStart && (
+                  <div className="chain-chapter-title">
+                    {chapters[srow.ci]?.title || `第 ${srow.ci + 1} 话`}
+                  </div>
+                )}
+                <div
+                  className={`cont-row ${srow.row.length > 1 ? 'dual' : ''} ${mode === 'webtoon' ? 'wt-row' : ''}`}
+                  data-cols={srow.row.length}
+                >
+                  {srow.row.map((m) => (
+                    <PageMedia
+                      key={m.key}
+                      m={m}
+                      className={mode === 'webtoon' ? 'webtoon-page' : 'cont-page'}
+                      overrideUrl={translateOn ? translated[m.origIdx] : undefined}
+                      alt={mediaIsWide(m) ? '跨页大图' : `${chapters[srow.ci]?.title || ''} 第 ${srow.pi + 1} 页${m.half === 'l' ? '（左）' : m.half === 'r' ? '（右）' : ''}`}
+                      loading={ri < 3 ? 'eager' : 'lazy'}
+                      style={{ maxWidth: fit === 'original' ? `${zoom * 100}%` : undefined }}
+                      draggable={false}
+                    />
+                  ))}
+                </div>
+              </Fragment>
             ))}
-            {chapterIndex < chapters.length - 1 ? (
-              <button className="webtoon-edge" onClick={() => goChapter(1)}>
-                ↓ 下一话 · {chapters[chapterIndex + 1].title}
-              </button>
-            ) : (
-              <div className="webtoon-edge done">— 已经是最后一话 —</div>
+            {chained && (
+              chainEnd >= chapters.length - 1
+                ? <div className="webtoon-edge done">— 已经是最后一话 —</div>
+                : <div className="webtoon-edge done">继续向下滑动，自动接下一话 ↓</div>
+            )}
+            {!chained && (
+              chapterIndex < chapters.length - 1 ? (
+                <button className="webtoon-edge" onClick={() => goChapter(1)}>
+                  ↓ 继续下一话 · {chapters[chapterIndex + 1].title}
+                </button>
+              ) : (
+                <div className="webtoon-edge done">— 已经是最后一话 —</div>
+              )
             )}
           </>
         ) : (
-          currentPages.map((p, i) => (
-            <img
-              key={p.id}
-              src={p.url}
-              alt={`第 ${pageIndex + i + 1} 页`}
+          currentPages.length ? currentPages.map((m, i) => (
+            <PageMedia
+              key={m.key}
+              m={m}
+              className=""
+              overrideUrl={translateOn ? translated[m.origIdx] : undefined}
+              alt={`第 ${pageIndex + i + 1} 页${m.half === 'l' ? '（左）' : m.half === 'r' ? '（右）' : ''}`}
               draggable={false}
               onLoad={() => setLoaded(true)}
-              style={{ opacity: loaded ? 1 : 0.6, width: fit === 'original' ? `${zoom * 100}%` : undefined }}
+              style={{ opacity: translating.has(m.origIdx) ? 0.5 : loaded ? 1 : 0.6, width: fit === 'original' ? `${zoom * 100}%` : undefined }}
             />
-          ))
+          )) : (
+            <div className="reader-empty" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', color: 'var(--text-2, #8899aa)' }}>
+              {lazyLoading ? '正在加载本章…' : '这一话还没有页面'}
+            </div>
+          )
         )}
       </div>
 
@@ -700,7 +1046,11 @@ export function ReaderView({
             className="select"
             style={{ width: 150 }}
             value={chapterIndex}
-            onChange={(e) => { setChapterIndex(Number(e.target.value)); setPageIndex(0); }}
+            onChange={(e) => {
+              const ci = Number(e.target.value);
+              setChapterIndex(ci); setPageIndex(0);
+              chainTip.current = { start: ci, end: ci }; setChainStart(ci); setChainEnd(ci);
+            }}
           >
             {chapters.map((c, i) => (
               <option key={c.id} value={i}>{c.title}</option>
@@ -727,7 +1077,11 @@ export function ReaderView({
                     key={c.id}
                     className="chapter-item"
                     style={{ cursor: 'pointer', borderColor: i === chapterIndex ? 'var(--accent)' : undefined }}
-                    onClick={() => { setChapterIndex(i); setPageIndex(0); setPanel(null); }}
+                    onClick={() => {
+                      setChapterIndex(i); setPageIndex(0);
+                      chainTip.current = { start: i, end: i }; setChainStart(i); setChainEnd(i);
+                      setPanel(null);
+                    }}
                   >
                     <div className="chapter-main">
                       <div className="chapter-title">{c.title}</div>
@@ -741,10 +1095,10 @@ export function ReaderView({
                 {chapter.pages.map((p, i) => (
                   <button key={p.id} className={i === pageIndex ? 'active' : ''}
                     onClick={() => { setPageIndex(i); setPanel(null); }}
-                    title={p.wide ? '跨页大图' : `第 ${i + 1} 页`}>
+                    title={isWide(p) ? '跨页大图' : `第 ${i + 1} 页`}>
                     <img src={p.thumbUrl || p.url} alt="" loading="lazy" />
                     <span className="n">{i + 1}</span>
-                    {p.wide && <span className="wide-tag">跨页</span>}
+                    {isWide(p) && <span className="wide-tag">跨页</span>}
                   </button>
                 ))}
               </div>
@@ -761,6 +1115,15 @@ export function ReaderView({
                     ))}
                   </div>
                   <div className="rp-note">一屏一页，或左右对开两页；跨页大图会自动独占一屏。</div>
+                  <div className="row" style={{ justifyContent: 'space-between', marginTop: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>保持单页顺序</div>
+                      <div className="rp-note">双页对开按 1→2→3 自然顺序显示，不被左右翻页方向镜像打乱</div>
+                    </div>
+                    <button className={`switch ${keepPageOrder ? 'on' : ''}`} onClick={() => setKeepPageOrder(!keepPageOrder)} aria-label="保持单页顺序">
+                      <span className="knob" />
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -774,6 +1137,31 @@ export function ReaderView({
                     ))}
                   </div>
                   <div className="rp-note">上下滚动：一页一页往下滚，页与页之间有空隙；条漫：零间隙连成长条，适合条漫作品。</div>
+                  <div style={{ marginTop: 10 }}>
+                    <div className="rp-label" style={{ marginBottom: 6 }}>滚动并排页数（合并显示）</div>
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      {[1, 2, 3, 4].map((n) => (
+                        <button key={n} className={`chip ${scrollCols === n ? 'active' : ''}`} type="button"
+                          onClick={() => setScrollCols(n)}>
+                          {n === 1 ? '单列不合并' : `${n} 页并排`}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="rp-note">滚动 / 条漫下把每 N 页并成一行；跨页大图自动独占一行。页序始终按 1→2→3，不受翻页方向影响。</div>
+                  </div>
+                  <div className="row" style={{ justifyContent: 'space-between', marginTop: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>连续跨章</div>
+                      <div className="rp-note">滚动时下一话无缝接在后面、往上滑回到上一话；关闭则一次只看一话</div>
+                    </div>
+                    <button className={`switch ${linkChapters ? 'on' : ''}`} onClick={() => {
+                      const v = !linkChapters;
+                      setLinkChapters(v);
+                      if (v) { chainTip.current = { start: chapterIndex, end: chapterIndex }; setChainStart(chapterIndex); setChainEnd(chapterIndex); }
+                    }} aria-label="连续跨章">
+                      <span className="knob" />
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -878,6 +1266,16 @@ export function ReaderView({
                     <div className="rp-note">识别跨页大图并让它独占一屏</div>
                   </div>
                   <button className={`switch ${smartDouble ? 'on' : ''}`} onClick={() => setSmartDouble(!smartDouble)} aria-label="智能双页">
+                    <span className="knob" />
+                  </button>
+                </div>
+
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>跨页拆成单页</div>
+                    <div className="rp-note">观看时把合并的跨页还原成左右两张单页，随时可关掉复原</div>
+                  </div>
+                  <button className={`switch ${splitWide ? 'on' : ''}`} onClick={() => setSplitWide(!splitWide)} aria-label="跨页拆成单页">
                     <span className="knob" />
                   </button>
                 </div>

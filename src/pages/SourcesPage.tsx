@@ -1,37 +1,63 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
+import { ReaderView } from '../components/ReaderView';
 import { useErrorToast, useToast } from '../components/Toasts';
-import { sources as sourcesApi } from '../lib/api';
-import type { SourceChapterItem, SourceInfo, SourceSearchItem } from '../lib/api';
+import { online as onlineApi, sources as sourcesApi } from '../lib/api';
+import type {
+  OnlineShelfItem,
+  SourceChapterItem,
+  SourceComicDetail,
+  SourceInfo,
+  SourceSearchItem,
+} from '../lib/api';
+import type { Chapter, Page } from '../types';
+
+type MediaTab = 'comic' | 'novel';
+
+/** 在线来源封面统一走服务端代理：绕过跨域 / 防盗链 / 浏览器无法直连源站域名的问题 */
+function coverUrl(sid: string | undefined, url: string | undefined): string {
+  if (!url) return '';
+  if (!sid) return url;
+  return `/api/online/img?sid=${encodeURIComponent(sid.replace(/^js:/, ''))}&u=${encodeURIComponent(url)}`;
+}
 
 export default function SourcesPage() {
   const [list, setList] = useState<SourceInfo[]>([]);
+  const [tab, setTab] = useState<MediaTab>('comic');
   const [activeId, setActiveId] = useState('');
   const [kw, setKw] = useState('');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SourceSearchItem[]>([]);
-  const [detail, setDetail] = useState<{
-    title: string;
-    cover: string;
-    url: string;
-    chapters: SourceChapterItem[];
-    checked: Set<number>;
-  } | null>(null);
+  const [discoverTabs, setDiscoverTabs] = useState<{ index: number; title: string }[]>([]);
+  const [discoverTab, setDiscoverTab] = useState(0);
+  const [discoverPage, setDiscoverPage] = useState(1);
+  const [discoverMaxPage, setDiscoverMaxPage] = useState(1);
+  const [discovering, setDiscovering] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [detail, setDetail] = useState<(SourceComicDetail & { checked: Set<number> }) | null>(null);
   const [importing, setImporting] = useState<{ done: number; total: number; failed: number } | null>(null);
   const [importedComicId, setImportedComicId] = useState('');
+  const [shelf, setShelf] = useState<OnlineShelfItem[]>([]);
+  const [bookmarked, setBookmarked] = useState(false);
+  const [novelImporting, setNovelImporting] = useState(false);
   const [showManage, setShowManage] = useState(false);
+  const [onlineReader, setOnlineReader] = useState<OnlineReaderState | null>(null);
   const toast = useToast();
   const errorToast = useErrorToast();
 
   const active = list.find((s) => s.id === activeId) || null;
+  const tabSources = useMemo(() => list.filter((s) => (s.mediaType || 'comic') === tab), [list, tab]);
 
   async function load() {
     try {
-      const r = await sourcesApi.list();
+      const [r, s] = await Promise.all([sourcesApi.list(), onlineApi.shelf().catch(() => ({ items: [] }))]);
       setList(r.sources);
-      if (!activeId && r.sources.length) setActiveId(r.sources[0].id);
+      setShelf(s.items || []);
+      const first = r.sources.find((x) => (x.mediaType || 'comic') === tab)?.id || '';
+      setActiveId((cur) => cur || first);
+      if (first) loadDiscover(first, 0, 1);
     } catch (err) {
       errorToast(err, '加载书源失败');
     }
@@ -42,6 +68,33 @@ export default function SourcesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!activeId && tabSources.length) setActiveId(tabSources[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, tabSources.length]);
+
+  async function refreshShelf() {
+    try {
+      const s = await onlineApi.shelf();
+      setShelf(s.items || []);
+    } catch { /* 未登录等情况忽略 */ }
+  }
+
+  async function loadDiscover(sid: string, tab = 0, page = 1) {
+    if (!sid) return;
+    setDiscovering(true);
+    try {
+      const r = await sourcesApi.discover(sid, tab, page);
+      setDiscoverTabs(r.tabs || []);
+      setResults(r.items || []);
+      setDiscoverMaxPage(r.maxPage || 1);
+      setDiscoverTab(r.tab ?? tab);
+      setDiscoverPage(page);
+      setSearched(false);
+    } catch { setResults([]); setDiscoverTabs([]); }
+    finally { setDiscovering(false); }
+  }
+
   async function doSearch() {
     if (!active || !kw.trim()) return;
     setSearching(true);
@@ -49,7 +102,8 @@ export default function SourcesPage() {
     try {
       const r = await sourcesApi.search(active.id, kw.trim());
       setResults(r.items);
-      if (!r.items.length) toast('没有搜到结果，试试别的关键词或检查书源规则');
+      setSearched(true);
+      if (!r.items.length) toast('没有搜到结果，试试别的关键词或换个书源');
     } catch (err) {
       errorToast(err, '搜索失败');
     } finally {
@@ -62,7 +116,13 @@ export default function SourcesPage() {
     setSearching(true);
     try {
       const r = await sourcesApi.comic(active.id, item.link);
-      setDetail({ ...r, url: item.link, checked: new Set(r.chapters.map((_, i) => i)) });
+      setDetail({
+        ...r,
+        bookId: r.bookId || item.link,
+        checked: new Set((r.chapters || []).map((_, i) => i)),
+      });
+      const s = await onlineApi.shelf().catch(() => ({ items: [] as OnlineShelfItem[] }));
+      setBookmarked(!!(s.items || []).find((x) => x.key === `${active.id.replace(/^js:/, '')}:${r.bookId || item.link}`));
     } catch (err) {
       errorToast(err, '读取章节失败');
     } finally {
@@ -70,13 +130,65 @@ export default function SourcesPage() {
     }
   }
 
+  async function openShelfItem(item: OnlineShelfItem) {
+    const sourceId = `js:${item.sourceKey}`;
+    try {
+      const r = await sourcesApi.comic(sourceId, item.bookId);
+      setDetail({
+        ...r,
+        bookId: r.bookId || item.bookId,
+        checked: new Set((r.chapters || []).map((_, i) => i)),
+      });
+      setActiveId(sourceId);
+      setTab(item.kind);
+      setBookmarked(true);
+      setKw('');
+      setResults([]);
+      if (item.progress && r.chapters?.length) {
+        const i = r.chapters.findIndex((c) => c.url === item.progress!.chapterUrl);
+        if (i >= 0) startOnlineRead(item.bookId, r.chapters, i, item);
+      }
+    } catch (err) {
+      errorToast(err, '读取收藏失败（源站可能失效）');
+    }
+  }
+
+  async function bookmark(detail2: SourceComicDetail & { checked: Set<number> }) {
+    if (!active) return;
+    try {
+      if (bookmarked) {
+        const it = shelf.find((x) => x.key === `${active.id.replace(/^js:/, '')}:${detail2.bookId}`);
+        if (it) await onlineApi.removeFromShelf(it.id);
+        setBookmarked(false);
+        toast('已从书架移除');
+      } else {
+        await onlineApi.addToShelf({
+          sourceId: active.id,
+          bookId: detail2.bookId || '',
+          title: detail2.title,
+          cover: detail2.cover,
+          author: detail2.author || '',
+          kind: detail2.kind || (active.mediaType as MediaTab) || 'comic',
+          chaptersTotal: detail2.chapters?.length || 0,
+        });
+        setBookmarked(true);
+        toast('已收藏到书架');
+      }
+      refreshShelf();
+    } catch (err) {
+      errorToast(err, '书架操作失败');
+    }
+  }
+
   async function importChapters() {
     if (!active || !detail) return;
-    const picked = detail.chapters.filter((_, i) => detail.checked.has(i));
+    const chapters = detail.chapters || [];
+    const picked = chapters.filter((_, i) => detail.checked.has(i));
     if (!picked.length) return toast('请先勾选要导入的章节');
     setImporting({ done: 0, total: picked.length, failed: 0 });
     let comicId = '';
     let failed = 0;
+    let done = 0;
     for (const ch of picked) {
       try {
         const r = await sourcesApi.importChapter({
@@ -85,7 +197,8 @@ export default function SourcesPage() {
           sourceName: active.name,
           title: detail.title,
           cover: detail.cover,
-          comicUrl: detail.url,
+          comicUrl: detail.bookId || detail.url,
+          bookId: detail.bookId || detail.url,
           chapterTitle: ch.title,
           chapterUrl: ch.url,
         });
@@ -93,12 +206,51 @@ export default function SourcesPage() {
           comicId = r.comicId;
           setImportedComicId(r.comicId);
         }
-      } catch {
+        done++;
+      } catch (err) {
         failed++;
+        if (failed === 1) errorToast(err, '导入失败');
       }
-      setImporting({ done: (comicId ? picked.indexOf(ch) + 1 : 0), total: picked.length, failed });
+      setImporting({ done, total: picked.length, failed });
     }
-    toast(`导入完成：成功 ${picked.length - failed} 话${failed ? `，失败 ${failed} 话` : ''}`);
+    setImporting(null);
+    if (done) toast(`导入完成：成功 ${done} 话${failed ? `，失败 ${failed} 话` : ''}`);
+  }
+
+  async function importNovelBook() {
+    if (!active || !detail?.bookId) return;
+    setNovelImporting(true);
+    try {
+      const r = await onlineApi.importBook(active.id, detail.bookId);
+      toast(`已加入书库：《${detail.title}》共 ${r.comic.chapterCount} 章，可在书库里编辑`);
+      onImportedNavigate(r.comic.id);
+    } catch (err) {
+      errorToast(err, '整本导入失败');
+    } finally {
+      setNovelImporting(false);
+    }
+  }
+
+  function onImportedNavigate(comicId: string) {
+    setImportedComicId(comicId);
+  }
+
+  async function startOnlineRead(bookId: string, chapters: SourceChapterItem[], index: number, shelfItem?: OnlineShelfItem | null) {
+    if (!active) return;
+    setOnlineReader({
+      sourceKey: active.id.replace(/^js:/, ''),
+      sourceId: active.id,
+      bookId,
+      title: detail?.title || shelfItem?.title || '在线阅读',
+      chapters: chapters.map((c, i) => ({
+        id: c.url,
+        title: c.title,
+        number: i + 1,
+        pages: [] as Page[],
+      })) as Chapter[],
+      index,
+      shelfId: shelfItem?.id || '',
+    });
   }
 
   return (
@@ -107,7 +259,7 @@ export default function SourcesPage() {
         <div>
           <h1>在线来源</h1>
           <p className="muted" style={{ marginTop: 4 }}>
-            配置书源规则，从漫画站搜索并导入到你的书库（只导入你手动挑选的内容）
+            内置多来源：搜到即可收藏到书架在线看，也能一键加入自己的书库离读、编辑
           </p>
         </div>
         <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
@@ -117,152 +269,257 @@ export default function SourcesPage() {
         </div>
       </div>
 
-      {/* 书源选择 */}
-      <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-        {list.map((s) => (
-          <button
-            key={s.id}
-            className={`btn sm ${s.id === activeId ? 'primary' : ''}`}
-            onClick={() => {
-              setActiveId(s.id);
-              setResults([]);
-              setDetail(null);
-            }}
-          >
-            <Icon name="globe" size={14} /> {s.name}
-          </button>
-        ))}
-        {!list.length && <span className="muted">还没有书源，点右上角「书源管理」添加一个</span>}
-      </div>
-
-      {/* 搜索 */}
-      <div className="row" style={{ gap: 8, marginBottom: 18 }}>
-        <input
-          className="input"
-          style={{ maxWidth: 420 }}
-          placeholder="输入漫画名搜索…"
-          value={kw}
-          onChange={(e) => setKw(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && doSearch()}
-        />
-        <button className="btn primary" onClick={doSearch} disabled={searching || !active}>
-          {searching ? <Icon name="spinner" size={16} className="spin" /> : <Icon name="search" size={16} />}
-          搜索
-        </button>
-      </div>
-
-      {/* 搜索结果 */}
-      {!!results.length && !detail && (
-        <div className="comic-grid">
-          {results.map((r, i) => (
-            <div key={i} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openComic(r)}>
-              <div className="cover">
-                {r.cover ? (
-                  <img src={r.cover} alt={r.title} loading="lazy" />
-                ) : (
-                  <div className="cover-empty">
-                    <Icon name="book" size={30} />
+      {/* 我的在线书架 */}
+      {!!shelf.length && !onlineReader && (
+        <section className="panel" style={{ marginBottom: 16 }}>
+          <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+            <h2 style={{ margin: 0, fontSize: 16 }}>我的在线书架</h2>
+            <span className="muted">{shelf.length} 本 · 在线阅读，进度自动保存</span>
+          </div>
+          <div className="comic-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
+            {shelf.map((it) => (
+              <div key={it.id} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openShelfItem(it)}>
+                <div className="cover">
+                  {it.coverProxy ? (
+                    <img src={it.coverProxy} alt={it.title} loading="lazy" />
+                  ) : (
+                    <div className="cover-empty"><Icon name="book" size={26} /></div>
+                  )}
+                  <span className="wide-tag" style={{ position: 'absolute', top: 6, left: 6 }}>
+                    {it.kind === 'novel' ? '小说' : '漫画'}
+                  </span>
+                </div>
+                <div className="card-body">
+                  <div className="card-title" title={it.title}>{it.title}</div>
+                  <div className="muted" style={{ fontSize: 11 }}>
+                    {it.progress ? `读到 ${it.progress.chapterTitle || ''}` : it.sourceName}
                   </div>
-                )}
+                </div>
+                <button
+                  className="btn sm ghost"
+                  style={{ position: 'absolute', top: 6, right: 6, opacity: 0.85 }}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await onlineApi.removeFromShelf(it.id);
+                      refreshShelf();
+                    } catch (err) { errorToast(err, '移除失败'); }
+                  }}
+                  title="从书架移除"
+                >×</button>
               </div>
-              <div className="card-body">
-                <div className="card-title">{r.title}</div>
-              </div>
-            </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 漫画 / 小说 分类 */}
+      {!onlineReader && (
+        <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+          {([['comic', '漫画'], ['novel', '小说']] as [MediaTab, string][]).map(([k, label]) => (
+            <button key={k} className={`chip ${tab === k ? 'active' : ''}`} onClick={() => {
+              setTab(k); setResults([]); setDetail(null); setKw(''); setSearched(false);
+              const first = list.find((s) => (s.mediaType || 'comic') === k)?.id || '';
+              setActiveId(first);
+              if (first) loadDiscover(first, 0, 1);
+            }}>
+              {label}
+            </button>
           ))}
         </div>
       )}
 
-      {/* 详情 + 章节 + 导入 */}
-      {detail && (
-        <div className="panel" style={{ marginTop: 4 }}>
-          <div className="row" style={{ alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
-            {detail.cover && (
-              <img
-                src={detail.cover}
-                alt=""
-                style={{ width: 120, borderRadius: 10, flex: 'none' }}
-              />
-            )}
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <h2 style={{ margin: '0 0 8px' }}>{detail.title}</h2>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn sm" onClick={() => setDetail(null)}>
-                  ← 返回搜索
-                </button>
-                <button
-                  className="btn sm"
-                  onClick={() =>
-                    setDetail((d) =>
-                      d ? { ...d, checked: new Set(d.chapters.map((_, i) => i)) } : d,
-                    )
-                  }
-                >
-                  全选
-                </button>
-                <button className="btn sm" onClick={() => setDetail((d) => (d ? { ...d, checked: new Set() } : d))}>
-                  清空
-                </button>
-                <span className="muted">已选 {detail.checked.size} / {detail.chapters.length} 话</span>
-              </div>
-              <div className="row" style={{ marginTop: 12 }}>
-                <button
-                  className="btn primary"
-                  onClick={importChapters}
-                  disabled={!!importing || !detail.checked.size}
-                >
-                  <Icon name="download" size={16} />
-                  {importing ? `导入中 ${importing.done}/${importing.total}…` : '导入选中章节到书库'}
-                </button>
-                {importedComicId && (
-                  <Link className="btn" to={`/comic/${importedComicId}`}>
-                    查看已导入的漫画
-                  </Link>
-                )}
-              </div>
-              {importing && (
-                <div className="progress-mini" style={{ marginTop: 10, maxWidth: 420 }}>
-                  <i style={{ width: `${Math.round((importing.done / importing.total) * 100)}%` }} />
+      {!onlineReader && (
+        <>
+          {/* 书源选择 */}
+          <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+            {tabSources.map((s) => (
+              <button
+                key={s.id}
+                className={`btn sm ${s.id === activeId ? 'primary' : ''}`}
+                onClick={() => { setActiveId(s.id); setDetail(null); setKw(''); loadDiscover(s.id, 0, 1); }}
+              >
+                <Icon name="globe" size={14} /> {s.name}
+              </button>
+            ))}
+            {!tabSources.length && <span className="muted">这个分类还没有来源</span>}
+          </div>
+
+          {/* 搜索 */}
+          <div className="row" style={{ gap: 8, marginBottom: 18 }}>
+            <input
+              className="input"
+              style={{ maxWidth: 420 }}
+              placeholder={tab === 'novel' ? '输入小说名搜索…' : '输入漫画名搜索…'}
+              value={kw}
+              onChange={(e) => setKw(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && doSearch()}
+            />
+            <button className="btn primary" onClick={doSearch} disabled={searching || !active}>
+              {searching ? <Icon name="spinner" size={16} className="spin" /> : <Icon name="search" size={16} />}
+              搜索
+            </button>
+          </div>
+
+          {/* 发现分类（未搜索时显示） */}
+          {!searched && !detail && !!discoverTabs.length && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              {discoverTabs.map((t) => (
+                <button key={t.index} className={`chip ${discoverTab === t.index ? 'active' : ''}`}
+                  onClick={() => loadDiscover(active!.id, t.index, 1)}>{t.title}</button>
+              ))}
+            </div>
+          )}
+          {!searched && !detail && (
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <h2 style={{ margin: 0, fontSize: 15 }}>发现 · {active?.name || ''}</h2>
+              {!searched && discoverMaxPage > 1 && (
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="btn sm" disabled={discovering || discoverPage <= 1}
+                    onClick={() => loadDiscover(active!.id, discoverTab, discoverPage - 1)}>← 上一页</button>
+                  <span className="muted">{discoverPage} / {discoverMaxPage}</span>
+                  <button className="btn sm" disabled={discovering || discoverPage >= discoverMaxPage}
+                    onClick={() => loadDiscover(active!.id, discoverTab, discoverPage + 1)}>下一页 →</button>
                 </div>
               )}
             </div>
-          </div>
+          )}
 
-          <div
-            className="chapter-list"
-            style={{ marginTop: 16, maxHeight: 380, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 6 }}
-          >
-            {detail.chapters.map((ch, i) => (
-              <label
-                key={i}
-                className="chapter-item"
-                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px' }}
-              >
-                <input
-                  type="checkbox"
-                  checked={detail.checked.has(i)}
-                  onChange={() =>
-                    setDetail((d) => {
-                      if (!d) return d;
-                      const next = new Set(d.checked);
-                      if (next.has(i)) next.delete(i);
-                      else next.add(i);
-                      return { ...d, checked: next };
-                    })
-                  }
-                />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ch.title}</span>
-              </label>
-            ))}
-          </div>
-        </div>
+          {/* 搜索/发现结果 */}
+          {!!results.length && !detail && (
+            <div className="comic-grid">
+              {results.map((r, i) => (
+                <div key={i} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openComic(r)}>
+                  <div className="cover">
+                    {r.cover ? <img src={coverUrl(active?.id, r.cover)} alt={r.title} loading="lazy" /> : (
+                      <div className="cover-empty"><Icon name="book" size={30} /></div>
+                    )}
+                  </div>
+                  <div className="card-body">
+                    <div className="card-title">{r.title}</div>
+                    {r.author && <div className="muted" style={{ fontSize: 12 }}>{r.author}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 详情 */}
+          {detail && (
+            <div className="panel" style={{ marginTop: 4 }}>
+              <div className="row" style={{ alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+                {detail.cover && (
+                  <img src={coverUrl(active?.id, detail.cover)} alt="" style={{ width: 120, borderRadius: 10, flex: 'none' }} />
+                )}
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <h2 style={{ margin: '0 0 8px' }}>{detail.title}</h2>
+                  {!!detail.author && <div className="muted" style={{ marginBottom: 6 }}>{detail.author}</div>}
+                  {!!detail.description && (
+                    <p className="muted" style={{ fontSize: 13, marginTop: 0, maxHeight: 84, overflow: 'hidden' }}>
+                      {detail.description}
+                    </p>
+                  )}
+                  <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn sm" onClick={() => setDetail(null)}>← 返回</button>
+                    <button className={`btn sm ${bookmarked ? 'primary' : ''}`} onClick={() => bookmark(detail)}>
+                      <Icon name="star" size={14} /> {bookmarked ? '已在书架' : '收藏到书架'}
+                    </button>
+                    {detail.chapters && (
+                      <>
+                        <button className="btn sm" onClick={() => setDetail((d) => (d ? { ...d, checked: new Set(d.chapters!.map((_, i) => i)) } : d))}>全选</button>
+                        <button className="btn sm" onClick={() => setDetail((d) => (d ? { ...d, checked: new Set() } : d))}>清空</button>
+                        <span className="muted">已选 {detail.checked.size} / {detail.chapters.length} 话</span>
+                      </>
+                    )}
+                  </div>
+                  <div className="row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+                    {detail.chapters ? (
+                      <button className="btn primary" onClick={importChapters} disabled={!!importing || !detail.checked.size}>
+                        <Icon name="download" size={16} />
+                        {importing ? `导入中 ${importing.done}/${importing.total}…` : '导入选中章节到书库'}
+                      </button>
+                    ) : (
+                      <button className="btn primary" onClick={importNovelBook} disabled={novelImporting}>
+                        <Icon name="download" size={16} />
+                        {novelImporting ? '正在整本导入…' : '整本加入书库（自动分章，可编辑）'}
+                      </button>
+                    )}
+                    {importedComicId && (
+                      <Link className="btn" to={`/comic/${importedComicId}`}>查看已入库的{detail.kind === 'novel' ? '小说' : '漫画'}</Link>
+                    )}
+                  </div>
+                  {importing && (
+                    <div className="progress-mini" style={{ marginTop: 10, maxWidth: 420 }}>
+                      <i style={{ width: `${Math.round((importing.done / importing.total) * 100)}%` }} />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 章节列表（漫画）：勾选导入 + 单话在线阅读 */}
+              {detail.chapters && (
+                <div
+                  className="chapter-list"
+                  style={{ marginTop: 16, maxHeight: 380, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 6 }}
+                >
+                  {detail.chapters.map((ch, i) => (
+                    <label
+                      key={i}
+                      className="chapter-item"
+                      style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={detail.checked.has(i)}
+                        onChange={() =>
+                          setDetail((d) => {
+                            if (!d) return d;
+                            const next = new Set(d.checked);
+                            if (next.has(i)) next.delete(i);
+                            else next.add(i);
+                            return { ...d, checked: next };
+                          })
+                        }
+                      />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ch.title}</span>
+                      <button
+                        className="btn sm ghost"
+                        title="在线阅读（不下载）"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          startOnlineRead(detail.bookId || '', detail.chapters || [], i, shelf.find((x) => x.key === `${active?.id.replace(/^js:/, '')}:${detail.bookId}`));
+                        }}
+                      >▶</button>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {!detail.chapters && (
+                <p className="muted" style={{ marginTop: 14 }}>
+                  小说整本下载后自动分章入书库；也可以先收藏到书架，随时回来导入。
+                </p>
+              )}
+            </div>
+          )}
+
+          {!results.length && !detail && !searching && !discovering && (
+            <div className="empty">
+              <h3>{searched ? '没有找到结果' : '这个来源暂时没有可浏览的内容'}</h3>
+              <p>{searched ? '换个关键词或书源试试。' : '可以在上方搜索框输入名称，或换一个来源。'}</p>
+            </div>
+          )}
+          {discovering && !results.length && (
+            <div className="empty"><p>正在加载…</p></div>
+          )}
+        </>
       )}
 
-      {!results.length && !detail && !searching && (
-        <div className="empty">
-          <h3>从漫画站搬漫画</h3>
-          <p>选一个书源 → 搜索漫画 → 勾选章节 → 一键导入到书库，之后就能离线阅读。</p>
-        </div>
+      {onlineReader && (
+        <OnlineReader
+          state={onlineReader}
+          onExit={() => { setOnlineReader(null); refreshShelf(); }}
+          onStateChange={(next) => setOnlineReader({ ...next })}
+        />
       )}
 
       {showManage && (
@@ -277,6 +534,65 @@ export default function SourcesPage() {
         />
       )}
     </main>
+  );
+}
+
+/* ------------------------------ 在线阅读器（复用 ReaderView，按话拉取） ------------------------------ */
+
+interface OnlineReaderState {
+  sourceKey: string;
+  sourceId: string;
+  bookId: string;
+  title: string;
+  chapters: Chapter[];
+  index: number;
+  shelfId: string;
+}
+
+function OnlineReader({
+  state,
+  onExit,
+  onStateChange,
+}: {
+  state: OnlineReaderState;
+  onExit: () => void;
+  onStateChange: (s: OnlineReaderState) => void;
+}) {
+  const errorToast = useErrorToast();
+
+  async function ensurePages(ch: Chapter) {
+    try {
+      const r = await onlineApi.chapterImages(state.sourceKey, state.bookId, ch.id);
+      const pages: Page[] = (r.images || []).map((u, i) => ({ id: `${ch.id}_${i}`, url: u, file: '', width: 0, height: 0 }));
+      onStateChange({
+        ...state,
+        chapters: state.chapters.map((c) => (c.id === ch.id ? { ...c, pages } : c)),
+      });
+    } catch (err) {
+      errorToast(err, '本章加载失败');
+    }
+  }
+
+  const saveProgress = (chapterId: string, pageIndex: number) => {
+    if (!state.shelfId) return;
+    const ch = state.chapters.find((c) => c.id === chapterId);
+    onlineApi
+      .progress(state.shelfId, { chapterUrl: chapterId, chapterTitle: ch?.title || '', pageIndex })
+      .catch(() => {});
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'var(--bg-1, #0b0f14)' }}>
+      <ReaderView
+        title={`[在线] ${state.title}`}
+        chapters={state.chapters}
+        direction="ltr"
+        initialChapterId={state.chapters[state.index]?.id}
+        onExit={onExit}
+        ensurePages={ensurePages}
+        onProgress={saveProgress}
+      />
+    </div>
   );
 }
 
@@ -339,12 +655,20 @@ function SourceManager({
         </>
       }>
       <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
-        每个书源就是一份解析规则（选择器写法：<code>.thumb img@data-src</code> 取属性，<code>@text</code> 取文本，<code>|</code> 列多个兜底）。
-        抓取仅用于把你手动挑选的漫画下载进自己的书库。
+        内置 JS 来源来自开源项目 Ciallo-Reader（MIT），随软件更新维护。
+        你也可以添加自己的规则书源（选择器写法：<code>.thumb img@data-src</code> 取属性，<code>@text</code> 取文本，<code>|</code> 列多个兜底）。
       </p>
+      <div className="field" style={{ marginBottom: 10 }}>
+        <label>内置 JS 来源</label>
+        {list.filter((s) => s.kind === 'js').map((s) => (
+          <div key={s.id} className="row" style={{ gap: 8, marginBottom: 4 }}>
+            <span style={{ flex: 1 }}>{s.name} <span className="muted">（{(s.mediaType || 'comic') === 'novel' ? '小说' : '漫画'} · {s.baseUrl}）</span></span>
+          </div>
+        ))}
+      </div>
       <div className="row" style={{ gap: 8 }}>
         <div className="field" style={{ flex: 1 }}>
-          <label>书源名称</label>
+          <label>自定义书源名称</label>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="如：某漫画站" />
         </div>
         <div className="field" style={{ flex: 1 }}>

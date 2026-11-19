@@ -33,6 +33,8 @@ const PDF_OK = /\.pdf$/i;
 import { parseComicInfo, comicFieldsFromInfo } from './comicinfo.js';
 import { attachUser, requireUser, comicGuard, assetGuard, registerSocial } from './social.js';
 import { registerSources } from './sources.js';
+import { registerOnline } from './online.js';
+import { registerTranslation } from './translate.js';
 import { registerUpdates } from './updates.js';
 import { storePage } from './page-store.js';
 import { recordActivity, recordUpload } from './activity.js';
@@ -591,6 +593,24 @@ async function getPdfStandardFonts() {
   return pdfFontsPromise;
 }
 
+/** pdf.js CID 字体的 cMap 目录（中文/日文 PDF 的文字层必须靠它映射，否则提取/渲染丢字） */
+let pdfCmapsPromise = null;
+async function getPdfCmaps() {
+  if (!pdfCmapsPromise) {
+    pdfCmapsPromise = (async () => {
+      try {
+        const { createRequire } = await import('node:module');
+        const pkg = createRequire(import.meta.url).resolve('pdfjs-dist/package.json');
+        const dir = path.join(path.dirname(pkg), 'cmaps');
+        return fs.existsSync(dir) ? `${dir}${path.sep}` : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+  }
+  return pdfCmapsPromise;
+}
+
 async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
   let pdfjs, canvasMod;
   try {
@@ -602,6 +622,7 @@ async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
   // useSystemFonts 必须关：Node 下系统字体解析会导致字形对象「isn't resolved yet」，
   // 文字全部丢字渲染成空白；改用 pdf.js 自带的标准字体目录。
   const standardFontDataUrl = await getPdfStandardFonts();
+  const cMapUrl = await getPdfCmaps();
   const data = new Uint8Array(await fsp.readFile(srcPath));
   const doc = await pdfjs.getDocument({
     data,
@@ -609,6 +630,7 @@ async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
     disableFontFace: true,
     isEvalSupported: false,
     ...(standardFontDataUrl ? { standardFontDataUrl } : {}),
+    ...(cMapUrl ? { cMapUrl, cMapPacked: true } : {}),
   }).promise;
   await ensureDir(outDir);
   const pad = Math.max(4, String(doc.numPages).length);
@@ -1142,6 +1164,8 @@ app.post('/api/comics/:id/chapters/:chapterId/pages/merge', async (req, res) => 
       const bufB = await fsp.readFile(path.join(chapterDir(comic.id, chapter.id), b.file));
       const out = await mergeSpread(bufA, bufB, !!rtl);
       await rewritePage(comic, chapter, a, out, 'jpg');
+      // 合并出来的就是跨页大图：强制标记，避免比例不足 1.15 时被当成普通页
+      a.wide = true;
       // 删除被吸收的第二页
       const bi = chapter.pages.findIndex((p) => p.id === b.id);
       if (bi >= 0) chapter.pages.splice(bi, 1);
@@ -1274,13 +1298,36 @@ function splitNovelChapters(raw) {
   return out.filter((c) => c.text.length > 0);
 }
 
+/** 合并过短章节：一话被字体/空行误切成很多碎章时，把正文很短的章并回上一章，
+ *  原章标题作为小节标题保留在正文里。避免目录里几百个「每话都有封面」的空壳章。
+ *  可通过 opts.mergeShort === false 关闭；阈值默认 400 字。 */
+function mergeShortChapters(chapters, opts = {}) {
+  if (opts.mergeShort === false) return chapters;
+  const min = Math.max(80, Number(opts.minChars) || 400);
+  const src = Array.isArray(chapters) ? chapters : [];
+  const out = [];
+  for (const c of src) {
+    const text = String(c?.text || '').trim();
+    if (!text) continue;
+    const title = String(c?.title || '').trim();
+    if (out.length && text.length < min) {
+      const prev = out[out.length - 1];
+      prev.text = `${prev.text}\n\n${title || '（续）'}\n\n${text}`.trim();
+      prev.merged = true;
+    } else {
+      out.push({ title, text });
+    }
+  }
+  return out.length ? out : src;
+}
+
 function novelDir(comicId) {
   return path.join(STORE_DIR, comicId, '_text');
 }
 
 /** 正文独立落盘，db.json 只存文件名：整本小说不会拖慢所有接口。
  *  几百话的书逐章同步 writeFileSync 很慢，改为 64 路并发批量写。 */
-async function createNovelComic(req, { title, author, description, chapters }) {
+async function createNovelComic(req, { title, author, description, chapters, mergeShort, minChars }) {
   const db = loadDb();
   const t = now();
   const comic = {
@@ -1299,7 +1346,7 @@ async function createNovelComic(req, { title, author, description, chapters }) {
   };
   const dir = novelDir(comic.id);
   fs.mkdirSync(dir, { recursive: true });
-  const picked = chapters.slice(0, 5000);
+  const picked = mergeShortChapters(chapters, { mergeShort, minChars }).slice(0, 5000);
   comic.chapters = picked.map((c, i) => {
     const id = newId('ch');
     return {
@@ -1327,6 +1374,7 @@ app.post('/api/import/novel', requireUser, async (req, res) => {
   try {
     res.json({ kind: 'novel', comic: await createNovelComic(req, {
       title: body.title, author: body.author, description: body.description, chapters,
+      mergeShort: body.mergeShort, minChars: body.minChars,
     }) });
   } catch (err) {
     res.status(500).json({ error: `导入失败：${err.message || err}` });
@@ -1423,20 +1471,82 @@ async function epubChaptersFromDir(outDir) {
 }
 
 /** 上传 TXT / EPUB → 服务端一次解析分章入库（网站与桌面端共用，速度接近本地阅读器） */
+/** 浏览器/curl 以 UTF-8 上传的文件名会被 multer 按 latin1 解码，中文文件名会变成乱码。
+ *  特征：整串都落在 latin-1 区间且含高位字符 → 还原一次；已是正确中文（码点 > 0xFF）则原样返回。 */
+function utf8Name(name) {
+  const s = String(name || '');
+  if (!/[\u0080-\u00ff]/.test(s) || /[^\u0000-\u00ff]/.test(s)) return s;
+  try {
+    const t = Buffer.from(s, 'latin1').toString('utf8');
+    return /\ufffd/.test(t) ? s : t;
+  } catch { return s; }
+}
+
+/** 提取 PDF 文字层：纯 JS 解析（getTextContent），不渲染画布，大文件也只要几秒。
+ *  返回 { pages, text }；调用方按文字量判断是否「文字版 PDF」，否则走逐页渲染的漫画流程。 */
+async function pdfTextFrom(srcPath) {
+  const pdfjs = await getPdfjs();
+  const standardFontDataUrl = await getPdfStandardFonts();
+  const cMapUrl = await getPdfCmaps();
+  const data = new Uint8Array(await fsp.readFile(srcPath));
+  const doc = await pdfjs.getDocument({
+    data,
+    useSystemFonts: false,
+    disableFontFace: true,
+    isEvalSupported: false,
+    ...(standardFontDataUrl ? { standardFontDataUrl } : {}),
+    ...(cMapUrl ? { cMapUrl, cMapPacked: true } : {}),
+  }).promise;
+  const pageCount = doc.numPages;
+  const parts = [];
+  let chars = 0;
+  for (let i = 1; i <= pageCount; i++) {
+    const page = await doc.getPage(i);
+    const tc = await page.getTextContent();
+    let line = '';
+    const lines = [];
+    for (const it of tc.items) {
+      const str = String(it.str || '');
+      if (!str) continue;
+      line += str;
+      if (it.hasEOL) { lines.push(line); line = ''; }
+    }
+    if (line) lines.push(line);
+    parts.push(lines.join('\n'));
+    chars += lines.join('').length;
+    page.cleanup();
+  }
+  await doc.destroy();
+  return { pages: pageCount, chars, text: parts.join('\n\n') };
+}
+
 app.post('/api/import/novel-file', requireUser, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: '没有收到文件' });
-  const ext = extOf(file.originalname || '').toLowerCase();
+  const fname = utf8Name(file.originalname || '');
+  const ext = extOf(fname).toLowerCase();
   const tmpDir = path.join(TMP_DIR, `novel_${newId('n')}`);
   try {
     if (['txt', 'text', 'md', 'markdown'].includes(ext)) {
       const buf = await fsp.readFile(file.path);
       const text = decodeTextFile(buf);
       const chapters = splitNovelChapters(text);
-      const title = path.basename(file.originalname || '未命名小说').replace(/\.[^.]+$/, '');
+      const title = path.basename(fname || '未命名小说').replace(/\.[^.]+$/, '');
       const author = (text.slice(0, 2000).match(/(?:作者|著者)\s*[:：]\s*([^\n]{1,30})/) || [])[1] || '';
       await cleanupTmp(file);
       return res.json({ kind: 'novel', comic: await createNovelComic(req, { title, author, chapters }) });
+    }
+    if (ext === 'pdf') {
+      // 文字版 PDF（文档/小说转制）直接按文字书导入，秒级完成；扫描版返回 kind:'image' 交给渲染流程
+      const t = await pdfTextFrom(file.path).catch(() => null);
+      await cleanupTmp(file);
+      const clean = t ? t.text.replace(/\s+/g, '') : '';
+      if (!t || clean.length < 500) return res.json({ kind: 'image' });
+      const chapters = splitNovelChapters(t.text);
+      const use = chapters.length ? chapters : [{ title: path.basename(fname, path.extname(fname || '')) || '正文', text: t.text }];
+      const title = path.basename(fname || '未命名文档').replace(/\.[^.]+$/, '');
+      const author = (t.text.slice(0, 2000).match(/(?:作者|著者)\s*[:：]\s*([^\n]{1,30})/) || [])[1] || '';
+      return res.json({ kind: 'novel', comic: await createNovelComic(req, { title, author, chapters: use }) });
     }
     if (ext === 'epub') {
       await ensureDir(tmpDir);
@@ -1730,7 +1840,7 @@ async function addImageToChapter(comic, chapter, src, originalName) {
 app.post('/api/import/archive', requireUser, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: '没有收到文件' });
-  const original = file.originalname || 'archive.bin';
+  const original = utf8Name(file.originalname || 'archive.bin');
   const ext = extOf(original) || '7z';
   if (!SEVENZ_RE.test(original) && !EPUB_OK.test(original) && !PDF_OK.test(original)) {
     await cleanupTmp(file);
@@ -1749,6 +1859,23 @@ app.post('/api/import/archive', requireUser, upload.single('file'), async (req, 
 
   try {
     if (/^pdf$/i.test(ext)) {
+      // 先识别文字层：文档/小说型 PDF 直接按文字书导入（纯文本解析，秒级）；
+      // 扫描/图片型 PDF 才逐页渲染成图片（走漫画流程）
+      try {
+        const t = await pdfTextFrom(srcPath);
+        const clean = t ? t.text.replace(/\s+/g, '') : '';
+        if (t && clean.length >= 1000) {
+          const chapters = splitNovelChapters(t.text);
+          if (chapters.length) {
+            const title = path.basename(original).replace(/\.[^.]+$/, '') || '未命名文档';
+            const author = (t.text.slice(0, 2000).match(/(?:作者|著者)\s*[:：]\s*([^\n]{1,30})/) || [])[1] || '';
+            const comic = await createNovelComic(req, { title, author, chapters });
+            await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+            await cleanupTmp(file).catch(() => {});
+            return res.json({ kind: 'novel', comic });
+          }
+        }
+      } catch { /* 文字层识别失败 → 照旧渲染成图片 */ }
       // PDF 不是压缩包，逐页渲染成图片（与网站端 pdf.js 渲染一致）
       await renderPdfToImages(srcPath, outDir);
     } else {
@@ -2065,6 +2192,13 @@ registerDiscovery(app);
 
 /* 在线书源（通用规则化抓取，导入到个人书库） */
 registerSources(app);
+registerOnline(app, {
+  epubChaptersFromDir,
+  createNovelComic,
+  extractWith7z,
+  ensureDir,
+});
+registerTranslation(app);
 registerUpdates(app);
 
 /* ------------------------ 可安装应用清单 & 客户端运行时 ------------------------ */

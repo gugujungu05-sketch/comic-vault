@@ -1,67 +1,68 @@
 {
   "schema": 1,
-  "version": "3.4.0.9",
-  "webVersion": "2.7.0.13",
+  "version": "3.4.0.14.0",
+  "webVersion": "2.7.0.18.0",
   "versions": {
-    "web": "2.7.0.13",
-    "desktop": "3.4.0.9",
-    "android": "3.4.0.9"
+    "web": "2.7.0.18.0",
+    "desktop": "3.4.0.14.0",
+    "android": "3.4.0.14.0"
   },
   "buildVersion": "3.4.0",
-  "build": 17,
-  "releasedAt": 1794730234235,
-  "generatedAt": 1794730421901,
+  "build": 24,
+  "releasedAt": 1794738237629,
+  "generatedAt": 1794748305831,
   "driveUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
     "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
     "minor": "第 2 段：成体系的新功能（如多选导入、条漫模式）",
     "patch": "第 3 段：一次完整发版里的一组修复",
-    "build": "第 4 段：文案、样式、脚本、文档等小改动，默认只加这一段"
+    "build": "第 4 段：小改动 / 小修复，日常发版默认只加这一段",
+    "hotfix": "第 5 段：同一天内的热修或补丁，不改其它段"
   },
   "packages": [
     {
       "id": "windows-x64-setup",
       "platform": "win",
       "arch": "x64",
-      "file": "ComicVault-3.4.0.9-windows-x64-setup.exe",
-      "sizeBytes": 121661521,
-      "sha256": "8436af8c8a06e1d2fa2c591c61f6adb868cfa7c7fba62768f395104ad22a1077",
+      "file": "ComicVault-3.4.0.14.0-windows-x64-setup.exe",
+      "sizeBytes": 121672520,
+      "sha256": "801f4a51fc359acd8f40b7714c01dc5d6327558ace1cb99ff35ebd7a59b57946",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.9/ComicVault-3.4.0.9-windows-x64-setup.exe",
-      "updatedAt": 1794730295340
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.14.0/ComicVault-3.4.0.14.0-windows-x64-setup.exe",
+      "updatedAt": 1794747272278
     },
     {
       "id": "windows-x64-portable",
       "platform": "win",
       "arch": "x64",
-      "file": "ComicVault-3.4.0.9-windows-x64-portable.exe",
-      "sizeBytes": 110713148,
-      "sha256": "42f0b6ef1d9a6b4660a08f57e159ebedd481cf7b7eef03ade9cd0e6649a153b7",
+      "file": "ComicVault-3.4.0.14.0-windows-x64-portable.exe",
+      "sizeBytes": 110754104,
+      "sha256": "fc7721aa45fadb479ddb55c087320992e66733f936c6d156329bbf2b72655c9d",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.9/ComicVault-3.4.0.9-windows-x64-portable.exe",
-      "updatedAt": 1794730391329
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.14.0/ComicVault-3.4.0.14.0-windows-x64-portable.exe",
+      "updatedAt": 1794748297842
     },
     {
       "id": "linux-x64",
       "platform": "linux",
       "arch": "x64",
-      "file": "ComicVault-3.4.0.9-linux-x64.AppImage",
-      "sizeBytes": 126277605,
-      "sha256": "944bafa2f61188e12fe68583a64013d1bbe4078f73666dca93c2cdce1ed3db4e",
+      "file": "ComicVault-3.4.0.14.0-linux-x64.AppImage",
+      "sizeBytes": 126289844,
+      "sha256": "a199a3c5efd336bf1fc1eafa809f03207ec425585f425fd31bf387042b209840",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.9/ComicVault-3.4.0.9-linux-x64.AppImage",
-      "updatedAt": 1794730403582
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.14.0/ComicVault-3.4.0.14.0-linux-x64.AppImage",
+      "updatedAt": 1794747362616
     },
     {
       "id": "android-apk",
       "platform": "android",
       "arch": "universal",
-      "file": "ComicVault-3.4.0.9-android.apk",
-      "sizeBytes": 103779,
-      "sha256": "d90e882560dd23296d007f0db926414ce92ca0fad44ce97616b2e1f81ffa59b2",
+      "file": "ComicVault-3.4.0.14.0-android.apk",
+      "sizeBytes": 120163,
+      "sha256": "6f302ba00c4f3e66ded2f6b8a141963d5bd7989f1cfc0f5154269ec1e93a604f",
       "local": false,
-      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.9/ComicVault-3.4.0.9-android.apk",
-      "updatedAt": 1794730406575
+      "url": "https://github.com/gugujungu05-sketch/comic-vault/releases/download/v3.4.0.14.0/ComicVault-3.4.0.14.0-android.apk",
+      "updatedAt": 1794747368010
     }
   ],
   "mirror": true,

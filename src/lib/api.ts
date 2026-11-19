@@ -1,7 +1,7 @@
 import type {
   ActivityItem, Announcement, AnnouncementComment, Category, Chapter, Comic, ComicSummary, CommunityComic,
   ImportComicItem, ImportResult, MetaEntry, PlazaAttachment, PlazaBoard, PlazaPost,
-  RankingItem, Settings, ShareLog, SoftwareInfo, Stats, Sticker, UpdateInfo,
+  RankingItem, Settings, ShareLog, SoftwareInfo, Stats, Sticker, TranslateConfig, TranslateResult, UpdateInfo,
   UploadRecord, User,
 } from '../types';
 import { getShareCode } from './util';
@@ -815,18 +815,23 @@ export const social = {
   deletePost: (id: string) => request<{ ok: boolean }>(`/api/plaza/posts/${id}`, { method: 'DELETE' }),
 };
 
-/* ------------------------------ 在线书源（通用规则化抓取） ------------------------------ */
+/* ------------------------------ 在线书源（通用规则化抓取 + JS 脚本源） ------------------------------ */
 export interface SourceInfo {
   id: string;
   name: string;
   baseUrl: string;
   builtin: boolean;
   hasRules: boolean;
+  kind?: 'js' | 'rules';
+  mediaType?: 'comic' | 'novel';
+  version?: string;
 }
 export interface SourceSearchItem {
   title: string;
   link: string;
   cover: string;
+  author?: string;
+  latestChapter?: string | null;
 }
 export interface SourceChapterItem {
   title: string;
@@ -842,6 +847,64 @@ export interface SourceImportResult {
   failed: number;
   chaptersDone: number;
 }
+export interface SourceComicDetail {
+  title: string;
+  cover: string;
+  url: string;
+  author?: string;
+  description?: string;
+  tags?: string[];
+  kind?: 'comic' | 'novel';
+  bookId?: string;
+  chapters: SourceChapterItem[] | null; // null = 小说整本（EPUB）下载
+}
+
+/* 在线书架（收藏在线来源的漫画/小说） */
+export interface OnlineShelfItem {
+  id: string;
+  key: string;
+  sourceKey: string;
+  sourceName: string;
+  bookId: string;
+  title: string;
+  cover: string;
+  coverProxy: string;
+  author: string;
+  kind: 'comic' | 'novel';
+  chaptersTotal: number;
+  progress: { chapterUrl: string; chapterTitle: string; pageIndex: number; updatedAt: number } | null;
+  addedAt: number;
+}
+
+export const online = {
+  shelf: () => request<{ items: OnlineShelfItem[] }>('/api/online/shelf'),
+  addToShelf: (body: {
+    sourceId: string;
+    bookId: string;
+    title: string;
+    cover?: string;
+    author?: string;
+    kind?: 'comic' | 'novel';
+    chaptersTotal?: number;
+  }) =>
+    request<{ ok: boolean; item: OnlineShelfItem }>('/api/online/shelf', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+  removeFromShelf: (id: string) =>
+    request<{ ok: boolean }>(`/api/online/shelf/${id}`, { method: 'DELETE' }),
+  progress: (id: string, body: { chapterUrl: string; chapterTitle: string; pageIndex: number }) =>
+    request<{ ok: boolean }>(`/api/online/shelf/${id}/progress`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+  chapterImages: (sourceKey: string, bookId: string, chapterUrl: string) =>
+    request<{ images: string[]; count: number }>(`/api/online/${sourceKey}/chapter`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookId, chapterUrl }),
+    }),
+  importBook: (sourceKey: string, bookId: string) =>
+    request<{ kind: string; comic: { id: string; chapterCount: number; kind?: string } }>(`/api/online/${sourceKey}/import-book`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookId }),
+    }),
+};
 
 export const sources = {
   list: () => request<{ sources: SourceInfo[] }>('/api/sources'),
@@ -864,8 +927,13 @@ export const sources = {
       `/api/sources/${id}/search?kw=${encodeURIComponent(kw)}&page=${page}`,
     ),
 
+  discover: (id: string, tab = 0, page = 1) =>
+    request<{ tabs: { index: number; title: string; type: string }[]; items: SourceSearchItem[]; maxPage: number; tab: number }>(
+      `/api/sources/${id}/discover?tab=${tab}&page=${page}`,
+    ),
+
   comic: (id: string, url: string) =>
-    request<{ title: string; cover: string; chapters: SourceChapterItem[] }>(`/api/sources/${id}/comic`, {
+    request<SourceComicDetail>(`/api/sources/${id}/comic`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
     }),
 
@@ -876,11 +944,28 @@ export const sources = {
     title?: string;
     cover?: string;
     comicUrl?: string;
+    bookId?: string;
     chapterTitle: string;
     chapterUrl: string;
   }) =>
     request<SourceImportResult>('/api/sources/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+};
+
+/** AI 翻译（生肉漫画 → 中文）：多模态模型看图翻译 + 服务端底图修补/原位渲染 */
+export const translation = {
+  config: () => request<TranslateConfig>('/api/translate/config'),
+  saveConfig: (body: Partial<TranslateConfig>) =>
+    request<{ ok: boolean }>('/api/translate/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+  test: () => request<{ ok: boolean; regions: number; model: string; provider: string }>('/api/translate/test', {
+    method: 'POST',
+  }),
+  page: (url: string) =>
+    request<TranslateResult>('/api/translate/page', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
     }),
 };
 

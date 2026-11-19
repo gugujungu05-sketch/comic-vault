@@ -50,7 +50,13 @@ body {
   backdrop-filter: blur(10px);
   transition: transform .3s ease, opacity .3s ease;
 }
-.r-top { top: 0; border-bottom: 1px solid var(--r-line); }
+.r-top {
+  top: 0; border-bottom: 1px solid var(--r-line);
+  overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.r-top::-webkit-scrollbar { display: none; }
+.r-top > * { flex-shrink: 0; }
 .r-bottom { bottom: 0; border-top: 1px solid var(--r-line); }
 /* 无操作 2.6 秒后自动隐藏上下工具栏，阅读更沉浸 */
 body.idle { cursor: none; }
@@ -101,12 +107,35 @@ body.rtl #slider { transform: scaleX(-1); }
   to { opacity: 1; transform: none; }
 }
 .r-stage.spread img { max-width: 50%; }
+.r-stage.spread.wide-solo img { max-width: 100%; } /* 跨页大图独占时撑满，不被 50% 限制 */
+/* 观看时把合并跨页拆成左右单页：同一张图按背景定位各裁一半，不改原图 */
+.media-half {
+  background-repeat: no-repeat; background-size: 200% 100%; background-position: center center;
+  box-shadow: 0 6px 30px rgba(0,0,0,.6); animation: r-page-in .28s ease;
+}
+.media-half-l { background-position: left center; }
+.media-half-r { background-position: right center; }
+/* 翻页模式：半图高度撑满，宽度按 aspect-ratio 自动；双页下两张并排 */
+.r-stage:not(.webtoon) .media-half { height: 100%; width: auto; max-height: 100%; max-width: 100%; }
+.r-stage.spread:not(.wide-solo) .media-half { flex: 1 1 50%; min-width: 0; }
 /* 条漫：宽度撑满、零间隙、上下连续滚动，长图不被切断 */
 .r-stage.webtoon { display: block; padding: 0; overflow-y: auto; overflow-x: hidden; background: var(--r-bg); }
 .r-stage.webtoon img {
   display: block; width: 100%; height: auto; max-width: none; max-height: none;
   object-fit: initial; box-shadow: none; margin: 0;
 }
+/* 滚动并排：一行 N 页，页序自然顺序不被方向镜像 */
+.r-stage.webtoon .r-wt-row { display: flex; width: 100%; gap: 0; }
+.r-stage.webtoon .r-wt-row img { width: 100%; }
+.r-stage.webtoon .r-wt-row[data-cols="2"] img { width: 50%; }
+.r-stage.webtoon .r-wt-row[data-cols="3"] img { width: 33.333%; }
+.r-stage.webtoon .r-wt-row[data-cols="4"] img { width: 25%; }
+/* 条漫拆出的半图：宽度随分栏，高度由 aspect-ratio 撑出，零间隙无阴影 */
+.r-stage.webtoon .media-half { height: auto; box-shadow: none; margin: 0; }
+.r-stage.webtoon .r-wt-row .media-half { width: 100%; }
+.r-stage.webtoon .r-wt-row[data-cols="2"] .media-half { width: 50%; }
+.r-stage.webtoon .r-wt-row[data-cols="3"] .media-half { width: 33.333%; }
+.r-stage.webtoon .r-wt-row[data-cols="4"] .media-half { width: 25%; }
 .r-webtoon-edge {
   display: block; width: 100%; padding: 20px 14px; border: 0; cursor: pointer;
   background: var(--r-panel); color: var(--r-accent); font-size: 14px; font-weight: 700;
@@ -114,6 +143,14 @@ body.rtl #slider { transform: scaleX(-1); }
 }
 .r-webtoon-edge:hover { background: var(--r-panel-hover); }
 .r-webtoon-edge.done { color: var(--r-muted); font-weight: 500; cursor: default; }
+/* 连续跨章：章节之间的标题分隔 */
+.r-chain-title {
+  display: block; width: 100%; padding: 14px 16px; box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(0,0,0,.55), rgba(0,0,0,.15));
+  color: #fff; font-size: 15px; font-weight: 700; text-align: center;
+  border-top: 2px solid var(--accent); border-bottom: 1px solid rgba(255,255,255,.12);
+  margin-top: 8px;
+}
 .r-loading, .r-empty { color: var(--r-muted); }
 .r-hint {
   position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
@@ -156,3 +193,30 @@ body.mobile #slider { display: none; }
 }
 .novel-article h1 { font-size: 1.5em; text-align: center; margin: 0 0 1.2em; }
 .novel-article p { margin: 0 0 .85em; text-indent: 2em; }
+.novel-seg + .novel-seg { margin-top: 2em; padding-top: 1.2em; border-top: 1px dashed var(--r-line); }
+.novel-seg-title { font-size: 1.05em; font-weight: 700; text-align: center; margin: 0 0 1.2em; color: var(--r-muted); }
+
+/* 阅读设置面板：主题 / 滤镜 / 亮度 / 对比度（默认隐藏，点 ⚙ 唤出） */
+.r-settings {
+  position: fixed; top: 58px; right: 14px; z-index: 60; width: min(320px, 92vw);
+  background: var(--r-bar); backdrop-filter: blur(14px); border: 1px solid var(--r-line);
+  border-radius: 12px; padding: 14px 16px 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45);
+  opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+}
+.r-settings.open { opacity: 1; transform: none; pointer-events: auto; }
+.rs-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.rs-head strong { font-size: 14px; }
+.rs-row { margin: 12px 0; }
+.rs-row > span { display: block; font-size: 12px; color: var(--r-muted); margin-bottom: 7px; }
+.rs-row > span b { color: var(--r-accent); font-weight: 600; }
+.rs-chips, .rs-themes { display: flex; flex-wrap: wrap; gap: 6px; }
+.rs-chips button, .rs-theme {
+  border: 1px solid var(--r-btn-line); background: var(--r-panel); color: var(--r-text);
+  border-radius: 7px; padding: 6px 11px; font-size: 12px; cursor: pointer; transition: .15s;
+}
+.rs-chips button:hover, .rs-theme:hover { background: var(--r-panel-hover); }
+.rs-chips button.active, .rs-theme.active { border-color: var(--r-accent); color: var(--r-accent); background: var(--r-panel-hover); }
+.rs-row input[type=range] { width: 100%; accent-color: var(--r-accent); }
+.rs-tip { margin-top: 12px; font-size: 11px; color: var(--r-muted); text-align: center; }
+body.mobile .r-settings { top: 118px; right: 8px; }

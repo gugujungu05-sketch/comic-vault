@@ -10,7 +10,6 @@ import {
   SEVENZ_ONLY_RE,
   IMPORT_ACCEPT,
   NOVEL_RE,
-  extractEpub,
   filesFromFileList,
   filesFromDataTransfer,
   groupItems,
@@ -69,6 +68,8 @@ export function ImportDialog({
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   /** 小说 / 文字型 EPUB：一次上传由服务端自动分章，不进入图片页列表 */
   const [novelFiles, setNovelFiles] = useState<Pick[]>([]);
+  /** 文字版 PDF：服务端已直接建好小说（解析阶段即完成） */
+  const [novelCreatedId, setNovelCreatedId] = useState('');
   const [phase, setPhase] = useState('');
   /** 几千张图片时一次性渲染全部行会卡死界面，默认只渲染前 300 行 */
   const [listLimit, setListLimit] = useState(300);
@@ -170,15 +171,21 @@ export function ImportDialog({
           msgs.push(`${p.name} 解压失败：${(err as Error).message}`);
         }
       } else if (PDF_RE.test(p.name)) {
-        // PDF 优先交给服务端渲染（大文件明显更快）；失败时退回浏览器 pdf.js 渲染
+        // PDF 交给服务端：先识别文字层（文档/小说型 PDF 直接按章节导入小说，秒级）；
+        // 扫描版由服务端渲染成图片；服务端渲染不可用时退回浏览器 pdf.js 渲染
         try {
           const file = p.blob instanceof File ? p.blob : new File([p.blob], p.name);
           const res = await api.importArchive(file);
-          for (const f of res.files) {
-            next.push({ name: f.name, blob: new Blob(), path: f.path, remote: true });
+          if ((res as { kind?: string }).kind === 'novel' && (res as unknown as { comic?: { id?: string } }).comic?.id) {
+            setNovelCreatedId((res as unknown as { comic: { id: string } }).comic.id);
+            msgs.push(`${p.name}：识别为文字版 PDF，已自动分章导入小说`);
+          } else {
+            for (const f of res.files) {
+              next.push({ name: f.name, blob: new Blob(), path: f.path, remote: true });
+            }
+            setRemote((prev) => prev || { sessionId: res.sessionId });
+            msgs.push(`${p.name}：服务端已渲染，共 ${res.files.length} 页`);
           }
-          setRemote((prev) => prev || { sessionId: res.sessionId });
-          msgs.push(`${p.name}：服务端已渲染，共 ${res.files.length} 页`);
         } catch {
           try {
             const got = await pdfToImages(p.blob, cleanName(p.name), { targetWidth: pdfWidth });
@@ -190,38 +197,11 @@ export function ImportDialog({
           }
         }
       } else if (EPUB_RE.test(p.name)) {
-        try {
-          const { items: got, meta } = await extractEpub(p.blob);
-          if (got.length >= 3) {
-            // 图片漫画 EPUB：按书内阅读顺序排好，整本一话
-            got.forEach((g, i) => {
-              next.push({ name: g.name, blob: g.blob, path: `${String(i + 1).padStart(4, '0')}/${g.name}` });
-            });
-            if (meta) {
-              setMeta((m) => ({
-                title: m.title || meta.title || '',
-                author: m.author || meta.author || '',
-                artist: m.artist || meta.artist || '',
-                tags: m.tags || (meta.tags || []).join(', '),
-                description: m.description || meta.description || '',
-                direction: meta.direction || m.direction,
-                publisher: m.publisher || meta.publisher || '',
-                year: m.year || meta.year || '',
-                rating: m.rating || meta.rating || '',
-                ageRating: m.ageRating || meta.ageRating || '',
-              }));
-            }
-            msgs.push(`${p.name}：已按书内阅读顺序排好，默认「按文件夹」分话时整本为一话`);
-          } else {
-            // 只有封面等零星图片 = 文字小说 EPUB。旧逻辑会把这 1 张封面当成唯一一页，
-            // 导致「导入后只有一页、点进去什么都没有」。改交服务端提取正文并自动分章。
-            novelQueue.push(p);
-            msgs.push(`${p.name}：识别为文字书，将自动生成章节目录，不再只导入封面`);
-          }
-        } catch (err) {
-          novelQueue.push(p);
-          msgs.push(`${p.name} 解析失败，尝试按文字书导入：${(err as Error).message}`);
-        }
+        // EPUB 不在浏览器里整包解压了（几百章的大书要解几十秒，是「EPUB 解析非常慢」的根因）。
+        // 直接上传给服务端：文字书自动分章（秒级）；图片漫画服务端返回 kind:'image'，
+        // 导入时自动回退到压缩包流程，按 spine 顺序出图。
+        novelQueue.push(p);
+        msgs.push(`${p.name}：交给服务端解析，文字书自动分章，图漫自动出页`);
       } else if (NOVEL_RE.test(p.name)) {
         novelQueue.push(p);
         msgs.push(`${p.name}：小说文本，将自动识别章节并生成目录`);
@@ -258,14 +238,23 @@ export function ImportDialog({
   }
 
   async function start() {
-    if (!groups.length && !novelFiles.length) return;
+    if (!groups.length && !novelFiles.length && !novelCreatedId) return;
     setBusy(true);
     const total = groups.reduce((n, g) => n + g.items.length, 0);
     setProgress({ done: 0, total });
     try {
-      let cid = comicId;
+      let cid = comicId || novelCreatedId;
 
-      // 0) 小说 / 文字型 EPUB：一次上传，服务端自动分章并生成目录，不逐页上传
+      // 文字版 PDF 已在解析阶段直接入库：没有别的内容时直接完成
+      if (novelCreatedId && !groups.length && !novelFiles.length) {
+        toast('导入完成，已按章节生成小说目录');
+        onDone(novelCreatedId);
+        return;
+      }
+
+      // 0) 小说 TXT / 文字 EPUB：一次上传，服务端自动分章并生成目录，不逐页上传。
+      //    图片漫画 EPUB 服务端会返回 kind:'image'，这里自动回退：按 spine 解出页面并落盘成话。
+      let novelDone = 0;
       if (novelFiles.length) {
         for (let ni = 0; ni < novelFiles.length; ni++) {
           const nf = novelFiles[ni];
@@ -275,14 +264,49 @@ export function ImportDialog({
             setProgress({ done: Math.round((loaded / 1024 / 1024) * 10) / 10, total: Math.round((tot / 1024 / 1024) * 10) / 10 });
             setPhase(`正在上传 ${nf.name} · ${Math.round((loaded / 1024 / 1024) * 10) / 10} / ${Math.round((tot / 1024 / 1024) * 10) / 10} MB`);
           });
-          if (r.kind === 'image') {
-            throw new Error(`${nf.name} 是图片漫画，请用「添加文件」入口重新导入`);
-          }
           if (r.comic?.id && !cid) cid = r.comic.id;
+          if (r.kind === 'image') {
+            // 图片漫画 EPUB：服务端解出页面后直接落盘，不再回传浏览器
+            setPhase(`正在解出页面：${nf.name}`);
+            const res = await api.importArchive(file);
+            if (res.sessionId && (res.files || []).length) {
+              if (!cid) {
+                const comic = await api.create({
+                  title: meta.title.trim() || nf.name.replace(/\.[^.]+$/, '') || '未命名漫画',
+                  author: meta.author.trim(),
+                  direction: meta.direction,
+                });
+                cid = comic.id;
+              }
+              const gm = new Map<string, string[]>();
+              for (const f of res.files) {
+                const parts = String(f.path || f.name).split('/');
+                const g = parts.length > 1 ? parts[0] : '';
+                if (!gm.has(g)) gm.set(g, []);
+                gm.get(g)!.push(f.path);
+              }
+              const fl = res.fields || {};
+              await api.commitArchive(res.sessionId, {
+                groups: [...gm.entries()].map(([dir, paths], i) => ({
+                  title: dir || nf.name.replace(/\.[^.]+$/, '') || `第 ${i + 1} 话`,
+                  paths,
+                })),
+                comicId: cid,
+                title: meta.title.trim() || fl.title || nf.name.replace(/\.[^.]+$/, '') || '未命名漫画',
+                author: meta.author.trim() || fl.author || '',
+                direction: meta.direction,
+              });
+              if (res.meta) setComicInfo(res.meta);
+            }
+          } else {
+            novelDone += 1;
+          }
         }
         setPhase('');
         if (!groups.length) {
-          toast(`导入完成，已自动生成 ${novelFiles.length} 本小说的章节目录`);
+          toast(novelDone
+            ? `导入完成，已自动生成 ${novelDone} 本小说的章节目录`
+            : '导入完成');
           onDone(cid!);
           return;
         }
