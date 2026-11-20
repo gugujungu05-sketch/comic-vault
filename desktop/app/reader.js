@@ -757,8 +757,12 @@
   stage.addEventListener('touchmove', (e) => {
     if (!tapStart) return;
     const t = e.touches[0];
-    if (t && (Math.abs(t.clientX - tapStart.x) > 10 || Math.abs(t.clientY - tapStart.y) > 10)) tapStart.moved = true;
-  }, { passive: true });
+    if (!t) return;
+    const dx = t.clientX - tapStart.x, dy = t.clientY - tapStart.y;
+    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) tapStart.moved = true;
+    /* 横向翻页手势：阻止浏览器默认的「侧滑返回 / 前进」导航；纵向滚动（条漫 / 连续）放行 */
+    if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2 && e.cancelable) e.preventDefault();
+  }, { passive: false });
   stage.addEventListener('touchend', (e) => {
     const s = tapStart; tapStart = null;
     if (!s) return;

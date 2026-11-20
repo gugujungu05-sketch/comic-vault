@@ -62,11 +62,9 @@ function Header({ theme, onToggleTheme }: { theme: string; onToggleTheme: () => 
         <NavLink to="/plaza" className={({ isActive }) => (isActive ? 'active' : '')}>
           广场
         </NavLink>
-        {user && (
-          <NavLink to="/sources" className={({ isActive }) => (isActive ? 'active' : '')}>
-            在线来源
-          </NavLink>
-        )}
+        <NavLink to="/sources" className={({ isActive }) => (isActive ? 'active' : '')}>
+          在线来源
+        </NavLink>
         {user && (
           <NavLink to={`/u/${user.id}`} className={({ isActive }) => (isActive ? 'active' : '')}>
             我的主页
@@ -288,6 +286,7 @@ function Shell() {
     location.pathname.startsWith('/s/') ||
     location.pathname.startsWith('/community') ||
     location.pathname.startsWith('/plaza') ||
+    location.pathname.startsWith('/sources') ||
     location.pathname.startsWith('/u/') ||
     location.pathname.startsWith('/comic/') ||
     location.pathname.startsWith('/read/') ||

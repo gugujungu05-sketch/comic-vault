@@ -1,4 +1,6 @@
 /* 漫画库 · 独立阅读器样式：颜色全部走主题变量，与主界面 / 网站主题一致 */
+/* 禁止横向滑动被浏览器当成「侧滑返回 / 前进」导航手势 */
+html, body { overscroll-behavior-x: none; }
 :root {
   --r-bg: #07090c;
   --r-bar: rgba(12, 17, 23, .93);
@@ -96,6 +98,7 @@ body.rtl #slider { transform: scaleX(-1); }
 .r-stage {
   position: absolute; inset: 49px 0 49px 0; display: flex; align-items: center;
   justify-content: center; gap: 4px; overflow: auto; padding: 12px;
+  overscroll-behavior: none;
 }
 .r-stage img {
   max-height: 100%; max-width: 100%; object-fit: contain;

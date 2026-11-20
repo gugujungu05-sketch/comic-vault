@@ -681,10 +681,14 @@ textarea {
 .toast.err { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
 
 /* ---------- 阅读器 ---------- */
+/* 横向滑动不要被浏览器当成「侧滑返回 / 前进」导航手势（阅读器全屏时尤其明显） */
+html, body, #root { overscroll-behavior-x: none; }
+
 .reader {
   position: fixed;
   inset: 0;
   z-index: 60;
+  overscroll-behavior: none;
   background: var(--reader-bg, #08090d);
   display: flex;
   flex-direction: column;
@@ -732,6 +736,9 @@ textarea {
   overflow: hidden;
   display: grid;
   place-items: center;
+  /* 横向手势交给阅读器翻页，别让浏览器抢去做侧滑返回；纵向滚动与双指缩放保留 */
+  overscroll-behavior: none;
+  touch-action: pan-y pinch-zoom;
 }
 
 .reader-stage.single img,

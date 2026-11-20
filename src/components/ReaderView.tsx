@@ -778,6 +778,40 @@ export function ReaderView({
   /* 手机端：滑动只翻页/滚动，绝不唤出工具栏；轻点才走 handleTap。
      触摸起点在按键 / 面板 / 弹窗等 UI 上时直接放行——之前面板里的 chip、
      底部翻页键都会被这里抢先处理成「关面板 + 翻页」，导致模式切不动。 */
+  /* 浏览器（尤其手机 Chrome / 平板）会把横向滑动识别成「侧滑返回 / 前进」导航手势，
+     表现为翻页时突然退出阅读器。React 的 onTouchMove 是 passive 监听，preventDefault
+     无效，必须挂原生非 passive 监听。只在阅读画面内、明显横向手势时拦截；
+     纵向滚动（连续 / 条漫）与双指缩放完全放行。 */
+  useEffect(() => {
+    let sx = 0;
+    let sy = 0;
+    let onStage = false;
+    const start = (e: TouchEvent) => {
+      const t = e.touches[0];
+      onStage = !!t && !!(e.target as HTMLElement | null)?.closest?.('.reader-stage');
+      if (t) { sx = t.clientX; sy = t.clientY; }
+    };
+    const move = (e: TouchEvent) => {
+      if (!onStage || !e.cancelable) return;
+      const t = e.touches[0];
+      if (!t) return;
+      const dx = t.clientX - sx;
+      const dy = t.clientY - sy;
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) e.preventDefault();
+    };
+    const end = () => { onStage = false; };
+    document.addEventListener('touchstart', start, { passive: true });
+    document.addEventListener('touchmove', move, { passive: false });
+    document.addEventListener('touchend', end, { passive: true });
+    document.addEventListener('touchcancel', end, { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', start);
+      document.removeEventListener('touchmove', move);
+      document.removeEventListener('touchend', end);
+      document.removeEventListener('touchcancel', end);
+    };
+  }, []);
+
   function onTouchBegin(e: React.TouchEvent) {
     const t = e.touches[0];
     if (!t) return;
