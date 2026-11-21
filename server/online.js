@@ -109,7 +109,8 @@ export function registerOnline(app, helpers) {
   /* ------------------------------ 在线阅读 ------------------------------ */
 
   // 某一话的图片（已换成服务端代理地址）
-  router.post('/:sourceKey/chapter', requireUser, async (req, res) => {
+  // 未登录也可读：在线来源浏览 / 阅读属于公开只读内容，登录态丢失不再导致「不能看」
+  router.post('/:sourceKey/chapter', async (req, res) => {
     const source = getJsSource(req.params.sourceKey);
     if (!source) return res.status(404).json({ error: '来源不存在' });
     const bookId = String(req.body?.bookId || '');
@@ -134,14 +135,22 @@ export function registerOnline(app, helpers) {
     try {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 30000);
+      const ih = jsImageHeaders(source, url) || {};
+      if (!ih.Referer && !ih.referer) ih.Referer = `${source.baseUrl || 'https://' + new URL(url).host}/`;
       const r = await fetch(url, {
-        headers: { 'User-Agent': UA_DEFAULT, ...(jsImageHeaders(source, url) || {}) },
+        headers: { 'User-Agent': UA_DEFAULT, ...ih },
         signal: ac.signal,
         redirect: 'follow',
       });
       clearTimeout(timer);
       if (!r.ok) return res.status(r.status === 404 ? 404 : 502).end('upstream error');
-      const ct = r.headers.get('content-type') || 'image/jpeg';
+      let ct = r.headers.get('content-type') || 'image/jpeg';
+      // 部分源站返回 application/octet-stream，浏览器 <img> 不认：按 URL 扩展名纠正
+      if (!ct.startsWith('image/')) {
+        const m = /\.(jpe?g|png|webp|gif|avif|bmp)(?=\?|$)/i.exec(url);
+        if (m) ct = `image/${m[1].toLowerCase().replace('jpeg', 'jpeg').replace('jpg', 'jpeg')}`;
+        else ct = 'image/jpeg';
+      }
       res.setHeader('Content-Type', ct);
       res.setHeader('Cache-Control', 'public, max-age=86400');
       const buf = Buffer.from(await r.arrayBuffer());

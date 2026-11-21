@@ -245,8 +245,8 @@ async function attachSourceCover(p, comic, coverUrl, imgHeaders) {
   }
 }
 
-/** 下载一张源站图片到临时文件（带防盗链头） */
-async function downloadSourceImage(imgUrl, headers = {}) {
+/** 下载一张源站图片到临时文件（带防盗链头；失败自动补 Referer 重试一次） */
+async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 30000);
   try {
@@ -265,6 +265,31 @@ async function downloadSourceImage(imgUrl, headers = {}) {
     await fsp.mkdir(TMP_DIR, { recursive: true });
     await fsp.writeFile(tmp, buf);
     return tmp;
+  } catch (err) {
+    // 防盗链兜底：源脚本没给 Referer 时用源站域名重试一次
+    if (fallbackReferer && !headers.Referer && !headers.referer) {
+      try {
+        const r2 = await fetch(imgUrl, {
+          headers: { 'User-Agent': UA_DEFAULT, ...headers, Referer: fallbackReferer },
+          signal: ac.signal,
+          redirect: 'follow',
+        });
+        if (r2.ok) {
+          const ct2 = r2.headers.get('content-type') || '';
+          if (ct2.startsWith('image/') || ct2.includes('octet-stream')) {
+            const buf2 = Buffer.from(await r2.arrayBuffer());
+            if (buf2.length >= 32) {
+              const ext2 = ct2.includes('png') ? 'png' : ct2.includes('webp') ? 'webp' : ct2.includes('gif') ? 'gif' : ct2.includes('avif') ? 'avif' : 'jpg';
+              const tmp2 = path.join(TMP_DIR, `src-${nanoid(8)}.${ext2}`);
+              await fsp.mkdir(TMP_DIR, { recursive: true });
+              await fsp.writeFile(tmp2, buf2);
+              return tmp2;
+            }
+          }
+        }
+      } catch { /* 兜底也失败则按原错误抛出 */ }
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -276,7 +301,10 @@ export async function importJsChapter(p) {
   let comic = p.comic || null;
   const { images, headers } = await jsChapterImages(p.source, p.bookId, p.chapterPath);
 
-  if (!comic) comic = createSourceComic(db, p);
+  // createSourceComic 是 async（内部可能下载封面资源），必须 await；
+  // 缺少 await 时 comic 是 Promise，后续 storePage 收到 undefined 目录名，
+  // 所有图片落盘失败 → 用户看到「所有图片都下载失败」/ 0 页空漫画。
+  if (!comic) comic = await createSourceComic(db, p);
 
   const chapter = {
     id: newId('ch'),
@@ -285,19 +313,29 @@ export async function importJsChapter(p) {
     uploadedBy: p.userId,
     uploadedAt: now(),
   };
+  // 并发分批下载（每批 5 张）：几百页不再串行等待；单张失败自动补 Referer 重试
+  const fallbackRef = `${p.source.baseUrl || 'https://' + (() => { try { return new URL(images[0]).host; } catch { return 'example.com'; } })()}/`;
   let stored = 0;
-  for (const imgUrl of images) {
-    let tmp = null;
-    try {
-      tmp = await downloadSourceImage(imgUrl, jsImageHeaders(p.source, imgUrl) || headers);
-      const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id);
-      chapter.pages.push(page);
-      stored++;
-    } catch (err) {
-      if (tmp) await fsp.rm(tmp, { force: true });
-      console.error('[js-sources] 图片下载失败:', err.message);
-    }
+  const pages = new Array(images.length).fill(null);
+  const BATCH = 5;
+  for (let i = 0; i < images.length; i += BATCH) {
+    const batch = images.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async (imgUrl, j) => {
+      let tmp = null;
+      try {
+        const ih = jsImageHeaders(p.source, imgUrl) || headers || {};
+        tmp = await downloadSourceImage(imgUrl, ih, fallbackRef);
+        const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id);
+        return page;
+      } catch (err) {
+        if (tmp) await fsp.rm(tmp, { force: true });
+        console.error('[js-sources] 图片下载失败:', err.message);
+        return null;
+      }
+    }));
+    for (let j = 0; j < results.length; j++) pages[i + j] = results[j];
   }
+  for (const pg of pages) if (pg) { chapter.pages.push(pg); stored++; }
   if (!stored) {
     const e = new Error('所有图片都下载失败，可能被站点防盗链拦截');
     e.status = 422;
@@ -501,7 +539,7 @@ export function registerSources(app) {
   });
 
   // 发现 / 浏览：进入书源不搜索也能看到漫画 / 小说列表
-  router.get('/:id/discover', requireUser, async (req, res) => {
+  router.get('/:id/discover', async (req, res) => {
     const js = jsOf(req.params.id);
     if (!js) return res.status(404).json({ error: '书源不存在' });
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -517,7 +555,7 @@ export function registerSources(app) {
   });
 
   // 搜索
-  router.get('/:id/search', requireUser, async (req, res) => {
+  router.get('/:id/search', async (req, res) => {
     const kw = String(req.query.kw || '').trim();
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     if (!kw) return res.status(400).json({ error: '请输入搜索关键词' });
@@ -547,7 +585,7 @@ export function registerSources(app) {
   });
 
   // 漫画详情 + 章节列表（JS 源：url 即书籍 id）
-  router.post('/:id/comic', requireUser, async (req, res) => {
+  router.post('/:id/comic', async (req, res) => {
     const js = jsOf(req.params.id);
     if (js) {
       const bookId = String(req.body?.url || '').trim();

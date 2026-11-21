@@ -28,6 +28,7 @@ function coverUrl(sid: string | undefined, url: string | undefined): string {
 
 export default function SourcesPage() {
   const [list, setList] = useState<SourceInfo[]>([]);
+  const [loadError, setLoadError] = useState<string>('');
   const [tab, setTab] = useState<MediaTab>('comic');
   const [activeId, setActiveId] = useState('');
   const [kw, setKw] = useState('');
@@ -62,11 +63,13 @@ export default function SourcesPage() {
     try {
       const [r, s] = await Promise.all([sourcesApi.list(), onlineApi.shelf().catch(() => ({ items: [] }))]);
       setList(r.sources);
+      setLoadError('');
       setShelf(s.items || []);
       const first = r.sources.find((x) => (x.mediaType || 'comic') === tab)?.id || ALL_SOURCES;
       setActiveId((cur) => cur || first);
       if (first) loadDiscover(first, 0, 1);
     } catch (err) {
+      setLoadError(err instanceof Error ? err.message : '网络异常');
       errorToast(err, '加载书源失败');
     }
   }
@@ -319,7 +322,7 @@ export default function SourcesPage() {
       {/* 我的在线书架 */}
       {!!shelf.length && !onlineReader && (
         <section className="panel" style={{ marginBottom: 16 }}>
-          <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+          <div className="row" style={{ gap: 10, marginBottom: 12 }}>
             <h2 style={{ margin: 0, fontSize: 16 }}>我的在线书架</h2>
             <span className="muted">{shelf.length} 本 · 在线阅读，进度自动保存</span>
           </div>
@@ -362,7 +365,7 @@ export default function SourcesPage() {
 
       {/* 漫画 / 小说 分类 */}
       {!onlineReader && (
-        <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+        <div className="row" style={{ gap: 10, marginBottom: 12 }}>
           {([['comic', '漫画'], ['novel', '小说']] as [MediaTab, string][]).map(([k, label]) => (
             <button key={k} className={`chip ${tab === k ? 'active' : ''}`} onClick={() => {
               setTab(k); setResults([]); setDetail(null); setKw(''); setSearched(false);
@@ -379,7 +382,7 @@ export default function SourcesPage() {
       {!onlineReader && (
         <>
           {/* 书源选择 */}
-          <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
             <button
               className={`btn sm ${isAll ? 'primary' : ''}`}
               onClick={() => { setActiveId(ALL_SOURCES); setDetail(null); setKw(''); setSearched(false); loadDiscover(ALL_SOURCES, 0, 1); }}
@@ -396,7 +399,14 @@ export default function SourcesPage() {
                 <Icon name="globe" size={14} /> {s.name}
               </button>
             ))}
-            {!tabSources.length && <span className="muted">这个分类还没有来源</span>}
+            {!tabSources.length && (
+              loadError ? (
+                <span className="muted" style={{ color: 'var(--danger, #e5484d)' }}>
+                  书源加载失败：{loadError}
+                  <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => { setLoadError(''); load(); }}>重试</button>
+                </span>
+              ) : <span className="muted">这个分类还没有来源</span>
+            )}
           </div>
 
           {/* 搜索 */}
@@ -426,7 +436,7 @@ export default function SourcesPage() {
           )}
           {!searched && !detail && (
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <h2 style={{ margin: 0, fontSize: 15 }}>发现 · {isAll ? `全部${tab === 'comic' ? '漫画' : '小说'}` : (active?.name || '')}</h2>
+              <h2 style={{ margin: 0, fontSize: 15, marginTop: 4 }}>发现 · {isAll ? `全部${tab === 'comic' ? '漫画' : '小说'}` : (active?.name || '')}</h2>
               {!searched && discoverMaxPage > 1 && (
                 <div className="row" style={{ gap: 6 }}>
                   <button className="btn sm" disabled={discovering || discoverPage <= 1}
