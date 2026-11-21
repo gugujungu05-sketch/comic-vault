@@ -2325,6 +2325,9 @@ html, body, #root { overscroll-behavior-x: none; }
 }
 
 /* ---------- 书库多选 / 批量操作 ---------- */
+/* 章节合并多选：勾选框与选中态 */
+.chapter-item .ch-check { width: 18px; height: 18px; accent-color: var(--accent); flex: none; margin-right: 4px; }
+.chapter-item.sel { outline: 2px solid var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 10px; }
 .comic-card.selecting { cursor: pointer; }
 .comic-card.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 .comic-card .card-check,

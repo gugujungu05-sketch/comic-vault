@@ -729,6 +729,8 @@
         <button class="btn" data-action="edit-comic">✎ 编辑漫画信息</button>
         <button class="btn" data-action="add-chapter">＋ 新建一话</button>
         <button class="btn" data-action="add-pages" data-id="${esc(chapters[0]?.id || '')}">↑ 追加页面到第一话（可排序）</button>
+        <button class="btn" data-action="merge-chapters" ${chapters.length > 1 ? '' : 'hidden'} title="把连续几话按顺序合并成一话（小说拼正文 / 漫画拼页面）">⇒ 合并章节</button>
+        <button class="btn" data-action="undo-merge" id="undoMergeBtn" hidden title="恢复到最近一次合并前">↶ 撤销合并</button>
         <span class="spacer"></span>
         <button class="btn primary" data-action="share-comic">↗ 分享链接 / 二维码</button>
         <button class="btn" data-action="export-comic">⇩ 下载 / 导出（分话）</button>
@@ -749,6 +751,10 @@
             <button class="btn sm danger" data-action="del-chapter" data-id="${esc(ch.id)}">删除</button>
           </td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">还没有话，点「新建一话」开始</div>'}`;
+    // 「撤销合并」按钮：有可撤销记录才显示（失败不影响主界面）
+    api('GET', `/api/comics/${id}/chapters/merge/undo/status`).then((st) => {
+      const b = $('#undoMergeBtn'); if (b) b.hidden = !st.canUndo;
+    }).catch(() => {});
   }
   /* ------------------------------ 漫画整本编辑 ------------------------------ */
   function openComicEditor(c) {
@@ -1117,6 +1123,37 @@
     if (!paths || !paths.length) return;
     /* 「加页」也走带勾选 / 拖拽 / ↑↓ / 倒序的排序网格，不再无脑直接上传 */
     await startImport(paths, { intoChapterId: chapterId });
+  }
+
+  /** 章节合并：按话号范围把连续几话合并进第一话（小说拼正文 / 漫画拼页面），可撤销 */
+  async function mergeChaptersDialog() {
+    const chs = state.comicData?.chapters || [];
+    if (chs.length < 2) return toast('至少要有两话才能合并', true);
+    const range = prompt(`把第几话到第几话合并成一话？填话号范围，例如 3-5（共 ${chs.length} 话）`, `1-${chs.length}`);
+    if (!range) return;
+    const m = range.trim().match(/^(\d+)\s*-\s*(\d+)$/);
+    if (!m) return toast('格式应为「起始话号-结束话号」，例如 3-5', true);
+    let a = Math.max(1, Number(m[1])), b = Math.min(chs.length, Number(m[2]));
+    if (a > b) [a, b] = [b, a];
+    if (b - a + 1 < 2) return toast('至少要选两话', true);
+    const ids = chs.slice(a - 1, b).map((x) => x.id);
+    const title = prompt('合并后的标题（留空保留第一话标题）', chs[a - 1].title);
+    if (title === null) return;
+    if (!confirm(`将把第 ${a} 到 ${b} 话（共 ${ids.length} 话）按顺序合并进「${chs[a - 1].title}」，合并后可一键撤销。继续？`)) return;
+    try {
+      await api('POST', `/api/comics/${state.comic}/chapters/merge`, { body: { chapterIds: ids, title: title.trim() || undefined } });
+      await renderComic();
+      toast(`已合并 ${ids.length} 话`);
+    } catch (err) { toast(err.message, true); }
+  }
+  /** 撤销最近一次章节合并：目录与内容恢复到合并前 */
+  async function undoChapterMerge() {
+    if (!confirm('撤销最近一次章节合并？目录与内容会恢复到合并前的状态。')) return;
+    try {
+      const res = await api('POST', `/api/comics/${state.comic}/chapters/merge/undo`);
+      await renderComic();
+      toast(res.ok ? '已撤销合并，目录已恢复' : '没有可撤销的合并');
+    } catch (err) { toast(err.message, true); }
   }
 
   /* ------------------------------ 页面管理（每话：查看 / 排序 / 删除） ------------------------------ */
@@ -2146,6 +2183,8 @@
       else if (a === 'manage-pages') await openPageManager(id);
       else if (a === 'move-chapter') await moveChapter(id, Number(el.dataset.dir));
       else if (a === 'del-chapter') await delChapter(id);
+      else if (a === 'merge-chapters') await mergeChaptersDialog();
+      else if (a === 'undo-merge') await undoChapterMerge();
       else if (a === 'export-chapter') await exportCbz([id]);
       else if (a === 'export-comic') openExportDialog();
       else if (a === 'sub-check') await subCheck(id);
