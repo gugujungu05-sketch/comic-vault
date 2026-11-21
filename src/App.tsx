@@ -114,6 +114,7 @@ function MobileTabs() {
   const tabs = [
     { to: '/', label: '书架', icon: 'book' },
     { to: '/community', label: '书库', icon: 'globe' },
+    { to: '/sources', label: '来源', icon: 'link' },
     { to: '/plaza', label: '广场', icon: 'message' },
     { to: '/downloads', label: '软件', icon: 'download' },
     { to: '/settings', label: '设置', icon: 'settings' },

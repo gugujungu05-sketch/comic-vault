@@ -37,7 +37,7 @@ import { registerOnline } from './online.js';
 import { registerTranslation } from './translate.js';
 import { registerUpdates } from './updates.js';
 import { storePage } from './page-store.js';
-import { snapshotChapter, undoChapter, undoStatus, clearUndo } from './page-undo.js';
+import { snapshotChapter, undoChapter, undoStatus, clearUndo, snapshotChapterMerge, undoChapterMerge, mergeUndoStatus } from './page-undo.js';
 import { recordActivity, recordUpload } from './activity.js';
 import { registerDiscovery, ensureSamples, APP_VERSION } from './discovery.js';
 
@@ -1035,6 +1035,85 @@ app.put('/api/comics/:id/chapters/:chapterId/pages/reorder', async (req, res) =>
 });
 
 /* 撤销：查看可撤销步数 / 恢复上一次页面编辑（含被删除、被覆盖的原图） */
+/* ---------- 章节合并（小说拼正文 / 漫画拼页面，均可撤销） ---------- */
+
+app.get('/api/comics/:id/chapters/merge/undo/status', async (req, res) => {
+  const comic = getComic(req.params.id);
+  if (!comic) return res.status(404).json({ error: '漫画不存在' });
+  res.json(await mergeUndoStatus(comic.id));
+});
+
+app.post('/api/comics/:id/chapters/merge/undo', async (req, res) => {
+  const comic = getComic(req.params.id);
+  if (!comic) return res.status(404).json({ error: '漫画不存在' });
+  const result = await undoChapterMerge(comic);
+  if (!result.ok) return res.status(400).json(result);
+  res.json({ ...result, comic: { ...summarize(comic), chapters: comic.chapters.map((c) => withPageUrls(comic, c)) } });
+});
+
+app.post('/api/comics/:id/chapters/merge', async (req, res) => {
+  const comic = getComic(req.params.id);
+  if (!comic) return res.status(404).json({ error: '漫画不存在' });
+  const ids = Array.isArray(req.body?.chapterIds) ? req.body.chapterIds.filter(Boolean) : [];
+  if (ids.length < 2) return res.status(400).json({ error: '请选择至少 2 个章节' });
+  const picked = ids.map((cid) => comic.chapters.find((c) => c.id === cid)).filter(Boolean);
+  if (picked.length !== ids.length) return res.status(400).json({ error: '部分章节不存在，请刷新后重试' });
+  const target = picked[0];
+  const rest = picked.slice(1);
+
+  // 合并前先整本快照，支持一键撤销
+  await snapshotChapterMerge(comic, picked, `合并 ${picked.length} 章`);
+
+  try {
+    if ((comic.kind || 'comic') === 'novel') {
+      // 小说：按顺序把各章正文拼接进第一章，删除其余章节的正文文件
+      const dir = novelDir(comic.id);
+      const texts = [];
+      for (const ch of picked) {
+        let text = '';
+        try { text = await fsp.readFile(path.join(dir, ch.textFile), 'utf8'); } catch { /* 缺失按空处理 */ }
+        texts.push(text.trim());
+        if (ch.id !== target.id) await fsp.rm(path.join(dir, ch.textFile), { force: true });
+      }
+      await fsp.writeFile(path.join(dir, target.textFile), texts.filter(Boolean).join('\n\n'), 'utf8');
+    } else {
+      // 漫画：把其余章节的页面文件与缩略图搬进第一章目录，页序拼接
+      const dest = chapterDir(comic.id, target.id);
+      const destThumb = path.join(comicDir(comic.id), '_thumbs', target.id);
+      await fsp.mkdir(dest, { recursive: true });
+      await fsp.mkdir(destThumb, { recursive: true });
+      for (const ch of rest) {
+        const srcDir = chapterDir(comic.id, ch.id);
+        const srcThumb = path.join(comicDir(comic.id), '_thumbs', ch.id);
+        for (const p of ch.pages || []) {
+          if (!p.file) continue;
+          try {
+            await fsp.rename(path.join(srcDir, p.file), path.join(dest, p.file));
+          } catch {
+            try { await fsp.copyFile(path.join(srcDir, p.file), path.join(dest, p.file)); await fsp.rm(path.join(srcDir, p.file), { force: true }); } catch { /* 忽略 */ }
+          }
+          try { await fsp.rename(path.join(srcThumb, `${p.id}.webp`), path.join(destThumb, `${p.id}.webp`)); } catch { /* 无缩略图忽略 */ }
+        }
+        await removeChapterFiles(comic.id, ch.id);
+      }
+      target.pages = picked.flatMap((ch) => ch.pages || []);
+    }
+
+    const title = String(req.body?.title || '').trim();
+    if (title) target.title = title.slice(0, 120);
+    // 从目录中移除被合并章节并重新编号
+    comic.chapters = comic.chapters.filter((c) => !rest.some((r) => r.id === c.id));
+    comic.chapters.forEach((c, i) => { c.number = i + 1; });
+    comic.updatedAt = now();
+    saveDbSoon();
+    res.json({ ok: true, merged: picked.length, comic: { ...summarize(comic), chapters: comic.chapters.map((c) => withPageUrls(comic, c)) } });
+  } catch (err) {
+    console.error('[merge] 章节合并失败:', err);
+    res.status(500).json({ error: `合并失败：${err.message || err}` });
+  }
+});
+
+
 app.get('/api/comics/:id/chapters/:chapterId/undo/status', async (req, res) => {
   const comic = getComic(req.params.id);
   if (!comic) return res.status(404).json({ error: '漫画不存在' });

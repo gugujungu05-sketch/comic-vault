@@ -422,6 +422,24 @@ export const api = {
       { method: 'POST' },
     ),
 
+  /** 章节合并：把选中章节按顺序合并进第一章（小说拼正文 / 漫画拼页面），可撤销 */
+  mergeChapters: (comicId: string, chapterIds: string[], title?: string) =>
+    request<{ ok: boolean; merged: number; comic: Comic }>(`/api/comics/${comicId}/chapters/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chapterIds, title }),
+    }),
+  /** 章节合并撤销：查询状态 / 恢复最近一次合并前的完整章节列表 */
+  mergeUndoStatus: (comicId: string) =>
+    request<{ canUndo: number; latest: { op: string; label: string; ts: number } | null }>(
+      `/api/comics/${comicId}/chapters/merge/undo/status`,
+    ),
+  undoChapterMerge: (comicId: string) =>
+    request<{ ok: boolean; label?: string; remaining: number; chapterCount: number; comic: Comic }>(
+      `/api/comics/${comicId}/chapters/merge/undo`,
+      { method: 'POST' },
+    ),
+
   movePages: (comicId: string, chapterId: string, pageIds: string[], targetChapterId: string) =>
     request<{ ok: boolean; moved: number }>(`/api/comics/${comicId}/chapters/${chapterId}/pages/move`, {
       method: 'POST',

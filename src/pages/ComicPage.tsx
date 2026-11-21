@@ -31,6 +31,10 @@ export function ComicPage() {
   const [fixing, setFixing] = useState(false);
   const [undoInfo, setUndoInfo] = useState<Record<string, number>>({});
   const [addingToChapter, setAddingToChapter] = useState<string | null>(null);
+  // 章节多选合并模式 + 漫画级「撤销合并」剩余步数
+  const [selChMode, setSelChMode] = useState(false);
+  const [selCh, setSelCh] = useState<Record<string, boolean>>({});
+  const [mergeUndoN, setMergeUndoN] = useState(0);
   const addPagesRef = useMemo(() => ({ current: null as HTMLInputElement | null }), []);
   const { user } = useSession();
   const isOwner = !!user && (comic?.ownerId === user.id || comic?.createdBy === user.id);
@@ -47,6 +51,8 @@ export function ComicPage() {
         try { info[ch.id] = (await api.undoStatus(c.id, ch.id)).canUndo; } catch { info[ch.id] = 0; }
       }));
       setUndoInfo(info);
+      // 拉取漫画级「撤销合并」状态；失败不影响主流程
+      try { setMergeUndoN((await api.mergeUndoStatus(c.id)).canUndo); } catch { setMergeUndoN(0); }
     } catch (err) {
       errorToast(err, '加载失败');
     } finally {
@@ -251,6 +257,49 @@ export function ComicPage() {
     }
   }
 
+  /** 章节合并：把勾选的章节按列表顺序合并进第一章（小说拼正文 / 漫画拼页面） */
+  async function mergeSelectedChapters() {
+    if (!comic) return;
+    const ids = comic.chapters.filter((c) => selCh[c.id]).map((c) => c.id);
+    if (ids.length < 2) {
+      toast('请先勾选至少 2 个章节（按列表顺序合并）');
+      return;
+    }
+    const first = comic.chapters.find((c) => c.id === ids[0])!;
+    const title = prompt(`合并后的章节标题（留空保留「${first.title}」）`, first.title);
+    if (title === null) return;
+    if (!confirm(`将把选中的 ${ids.length} 个章节按顺序合并进「${first.title}」，其余章节从目录移除；合并后可一键撤销。继续？`)) return;
+    setFixing(true);
+    try {
+      const res = await api.mergeChapters(comic.id, ids, title.trim() || undefined);
+      setSelCh({});
+      setSelChMode(false);
+      await load();
+      toast(`已合并 ${res.merged} 个章节`);
+    } catch (err) {
+      errorToast(err, '合并章节失败');
+    } finally {
+      setFixing(false);
+    }
+  }
+
+  /** 撤销最近一次章节合并：整本目录与内容恢复到合并前 */
+  async function undoLastChapterMerge() {
+    if (!comic) return;
+    if (!confirm('撤销最近一次章节合并？目录与内容会恢复到合并前的状态。')) return;
+    setFixing(true);
+    try {
+      const res = await api.undoChapterMerge(comic.id);
+      setSelCh({});
+      await load();
+      toast(res.ok ? `已撤销合并${res.label ? `（${res.label}）` : ''}` : '没有可撤销的合并');
+    } catch (err) {
+      errorToast(err, '撤销合并失败');
+    } finally {
+      setFixing(false);
+    }
+  }
+
   async function movePage(ch: Chapter, idx: number, dir: -1 | 1) {
     const to = idx + dir;
     if (to < 0 || to >= ch.pages.length) return;
@@ -430,17 +479,43 @@ export function ComicPage() {
 
       {comic && <AccessPanel comic={comic} isOwner={isOwner} onChanged={load} />}
 
-      <div className="row" style={{ margin: '18px 0 10px' }}>
+      <div className="row" style={{ margin: '18px 0 10px', flexWrap: 'wrap', gap: 6 }}>
         <h2 style={{ fontSize: 17, margin: 0 }}>章节（{comic.chapters.length}）</h2>
-        <div className="row" style={{ marginLeft: 'auto' }}>
-          {canWrite && (
+        <div className="row" style={{ marginLeft: 'auto', flexWrap: 'wrap', gap: 6 }}>
+          {canWrite && selChMode ? (
             <>
-              <button className="btn sm" onClick={addChapter}>
-                <Icon name="plus" size={14} /> 新建空章节
+              <button className="btn sm primary" onClick={mergeSelectedChapters} disabled={fixing}>
+                <Icon name="copy" size={14} /> 合并选中（{comic.chapters.filter((c) => selCh[c.id]).length}）
               </button>
-              <button className="btn sm" onClick={() => setImporting(true)}>
-                <Icon name="upload" size={14} /> 导入图片
+              <button className="btn sm" onClick={() => setSelCh(Object.fromEntries(comic.chapters.map((c) => [c.id, true])))}>
+                全选
               </button>
+              <button className="btn sm ghost" onClick={() => { setSelChMode(false); setSelCh({}); }}>
+                取消
+              </button>
+            </>
+          ) : (
+            <>
+              {canWrite && (
+                <>
+                  {comic.chapters.length > 1 && (
+                    <button className="btn sm" onClick={() => { setSelChMode(true); setSelCh({}); }} title="把多个章节按顺序合并为一章">
+                      <Icon name="copy" size={14} /> 合并章节
+                    </button>
+                  )}
+                  {mergeUndoN > 0 && (
+                    <button className="btn sm ghost" onClick={undoLastChapterMerge} disabled={fixing} title="恢复到最近一次合并前">
+                      撤销合并（{mergeUndoN}）
+                    </button>
+                  )}
+                  <button className="btn sm" onClick={addChapter}>
+                    <Icon name="plus" size={14} /> 新建空章节
+                  </button>
+                  <button className="btn sm" onClick={() => setImporting(true)}>
+                    <Icon name="upload" size={14} /> 导入图片
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -452,7 +527,19 @@ export function ComicPage() {
           const open = expanded === ch.id;
           return (
             <div key={ch.id}>
-              <div className="chapter-item">
+              <div className={`chapter-item${selChMode && selCh[ch.id] ? ' sel' : ''}`}
+                style={selChMode ? { cursor: 'pointer' } : undefined}
+                onClick={selChMode ? () => setSelCh({ ...selCh, [ch.id]: !selCh[ch.id] }) : undefined}
+              >
+                {selChMode && (
+                  <input
+                    type="checkbox"
+                    className="ch-check"
+                    checked={!!selCh[ch.id]}
+                    onChange={(e) => setSelCh({ ...selCh, [ch.id]: e.target.checked })}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                )}
                 <div className="chapter-thumb">
                   {first && <img src={first.thumbUrl || first.url} alt="" loading="lazy" />}
                 </div>
@@ -465,6 +552,7 @@ export function ComicPage() {
                     {comic.kind === 'novel' ? '文字章节' : `${ch.pages.length} 页`}{ch.uploadedByName ? ` · 由 ${ch.uploadedByName} 上传` : ''}
                   </div>
                 </div>
+                {!selChMode && (
                 <div className="row">
                   <button className="btn sm" onClick={() => navigate(`/read/${comic.id}?chapter=${ch.id}`)}>
                     <Icon name="play" size={14} />
@@ -501,6 +589,7 @@ export function ComicPage() {
                     </>
                   )}
                 </div>
+                )}
               </div>
 
               {open && (
