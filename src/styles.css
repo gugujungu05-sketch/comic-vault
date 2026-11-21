@@ -2108,16 +2108,17 @@ html, body, #root { overscroll-behavior-x: none; }
   .user-trigger { min-height: 44px; }
 
   /* 内容区底部预留 Tab 栏 + iOS 安全区 */
-  .page { padding: 14px 12px calc(88px + env(safe-area-inset-bottom, 0px)); }
+  .page { padding: 14px 12px calc(96px + env(safe-area-inset-bottom, 0px)); }
   .page-head { flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 14px; }
   .page-title { font-size: 21px; }
   .page-sub { font-size: 12.5px; line-height: 1.55; }
 
   .mobile-tabs {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    /* 标签数可变：书架/书库/来源/广场/软件/设置，自动均分不再挤压 */
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
-    height: calc(60px + env(safe-area-inset-bottom, 0px));
+    height: calc(64px + env(safe-area-inset-bottom, 0px));
     padding-bottom: env(safe-area-inset-bottom, 0px);
     background: color-mix(in srgb, var(--bg) 92%, transparent);
     backdrop-filter: blur(16px);
@@ -2126,8 +2127,9 @@ html, body, #root { overscroll-behavior-x: none; }
   }
   .mobile-tabs a {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 3px; min-height: 58px; color: var(--muted);
-    font-size: 11px; font-weight: 600; letter-spacing: 0.2px;
+    gap: 4px; min-height: 62px; color: var(--muted);
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px;
+    padding: 4px 2px;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
   }
