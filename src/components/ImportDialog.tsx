@@ -31,10 +31,13 @@ export function ImportDialog({
   comicId,
   onClose,
   onDone,
+  initialFiles,
 }: {
   comicId?: string;
   onClose: () => void;
   onDone: (comicId: string) => void;
+  /** 从书架大拖放区直接拖进来的文件，打开对话框时自动载入 */
+  initialFiles?: File[];
 }) {
   const toast = useToast();
   const errorToast = useErrorToast();
@@ -84,6 +87,15 @@ export function ImportDialog({
       dirRef.current.setAttribute('directory', '');
     }
   }, []);
+
+  // 拖进来的文件直接载入，不必再选一次（否则用户以为"这个大框只能导入图片"）
+  const initialLoaded = useRef(false);
+  useEffect(() => {
+    if (initialLoaded.current || !initialFiles?.length) return;
+    initialLoaded.current = true;
+    ingest(filesFromFileList(initialFiles));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFiles]);
 
   const { groups, remoteGroupCount } = useMemo(() => {
     const remoteItems = items.filter((i) => i.remote);

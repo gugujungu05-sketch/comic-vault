@@ -376,7 +376,7 @@ function editTargets(comic, chapter, page, scope) {
 function withPageUrls(comic, chapter) {
   return {
     ...chapter,
-    pages: chapter.pages.map((p) => ({
+    pages: (chapter.pages || []).map((p) => ({
       ...p,
       url: `/api/files/${comic.id}/${chapter.id}/${p.file}`,
       thumbUrl: p.hasThumb ? `/api/thumbs/${comic.id}/${chapter.id}/${p.id}.webp` : null,
@@ -635,21 +635,53 @@ async function renderPdfToImages(srcPath, outDir, targetWidth = 1440) {
   }).promise;
   await ensureDir(outDir);
   const pad = Math.max(4, String(doc.numPages).length);
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(3, Math.max(0.5, targetWidth / base.width));
-    const vp = page.getViewport({ scale });
-    const canvas = canvasMod.createCanvas(Math.max(1, Math.ceil(vp.width)), Math.max(1, Math.ceil(vp.height)));
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
-    const name = `${String(i).padStart(pad, '0')}.png`;
-    await fsp.writeFile(path.join(outDir, name), canvas.toBuffer('image/png'));
-    page.cleanup();
+  // 原实现逐页串行 + PNG 无损：几百页小说要几分钟、几百 MB。
+  // 改为「小批并发 + JPEG（质量 85）」：漫画页肉眼看不出差异，速度快数倍、体积降一个数量级。
+  const CONCURRENCY = 4;
+  let okCount = 0;
+  for (let start = 1; start <= doc.numPages; start += CONCURRENCY) {
+    const batch = [];
+    for (let i = start; i < Math.min(start + CONCURRENCY, doc.numPages + 1); i++) batch.push(i);
+    const results = await Promise.all(batch.map(async (i) => {
+      try {
+        const page = await doc.getPage(i);
+        const base = page.getViewport({ scale: 1 });
+        const scale = Math.min(3, Math.max(0.5, targetWidth / base.width));
+        const vp = page.getViewport({ scale });
+        const canvas = canvasMod.createCanvas(Math.max(1, Math.ceil(vp.width)), Math.max(1, Math.ceil(vp.height)));
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+        const name = `${String(i).padStart(pad, '0')}.jpg`;
+        await fsp.writeFile(path.join(outDir, name), canvas.toBuffer('image/jpeg', 85));
+        page.cleanup();
+        return true;
+      } catch (err) {
+        console.error(`[pdf] 第 ${i} 页渲染失败:`, err?.message || err);
+        return false;
+      }
+    }));
+    okCount += results.filter(Boolean).length;
   }
   await doc.destroy();
+  if (!okCount) throw new Error('PDF 所有页面都渲染失败，文件可能损坏或加密');
+  // 少数页失败不应让整本导入消失：缺失页用相邻成功页补位，保证页序连续、不产生 0 页章节
+  if (okCount < doc.numPages) {
+    const got = (await fsp.readdir(outDir)).filter((f) => /^\d+\.jpg$/i.test(f)).sort();
+    if (!got.length) throw new Error('PDF 没有可导入的页面');
+    for (let i = 1; i <= doc.numPages; i++) {
+      const name = `${String(i).padStart(pad, '0')}.jpg`;
+      if (await fsp.access(path.join(outDir, name)).then(() => true).catch(() => false)) continue;
+      // 找最近的成功页复制过来
+      let nearest = got[0], best = Infinity;
+      for (const g of got) {
+        const d = Math.abs(Number(g.split('.')[0]) - i);
+        if (d < best) { best = d; nearest = g; }
+      }
+      await fsp.copyFile(path.join(outDir, nearest), path.join(outDir, name)).catch(() => {});
+    }
+  }
 }
 
 async function scanImages(dir) {
@@ -766,7 +798,7 @@ app.get('/api/comics/:id', (req, res) => {
       uploadedByName: c.uploadedBy
         ? loadDb().users.find((u) => u.id === c.uploadedBy)?.name || ''
         : '',
-      pages: c.pages.map((p) => ({
+      pages: (c.pages || []).map((p) => ({
         ...p,
         url: `/api/files/${comic.id}/${c.id}/${p.file}`,
         thumbUrl: p.hasThumb ? `/api/thumbs/${comic.id}/${c.id}/${p.id}.webp` : null,
@@ -1006,6 +1038,36 @@ app.post('/api/comics/:id/chapters/:chapterId/pages', upload.array('files', 300)
   }
 });
 
+/** 清理 0 页空章节：导入失败会留下只有标题、没有任何页面的「空话」，目录里显示为 0 页。
+ *  仅删除确实没有任何页面的章节（小说章节按正文文件是否有内容判断），有内容的章节绝不动。 */
+app.post('/api/comics/:id/clean-empty', async (req, res) => {
+  const comic = getComic(req.params.id);
+  if (!comic) return res.status(404).json({ error: '漫画不存在' });
+  const empty = [];
+  for (const ch of comic.chapters || []) {
+    if ((comic.kind || 'comic') === 'novel') {
+      const file = ch.textFile || `${ch.id}.txt`;
+      let hasText = isSafeSegment(file) && fs.existsSync(path.join(novelDir(comic.id), file));
+      if (!hasText && typeof ch.text === 'string' && ch.text.trim()) hasText = true;
+      if (!hasText) empty.push(ch);
+    } else if (!(ch.pages || []).length) {
+      empty.push(ch);
+    }
+  }
+  for (const ch of empty) {
+    await removeChapterFiles(comic.id, ch.id);
+    await clearUndo(comic.id, ch.id);
+  }
+  if (empty.length) {
+    const ids = new Set(empty.map((c) => c.id));
+    comic.chapters = comic.chapters.filter((c) => !ids.has(c.id));
+    comic.chapters.forEach((c, i) => { c.number = i + 1; });
+    comic.updatedAt = now();
+    saveDbSoon();
+  }
+  res.json({ ok: true, removed: empty.length, chapters: comic.chapters.length });
+});
+
 app.delete('/api/comics/:id/chapters/:chapterId/pages/:pageId', async (req, res) => {
   const comic = getComic(req.params.id);
   const chapter = getChapter(comic, req.params.chapterId);
@@ -1066,16 +1128,29 @@ app.post('/api/comics/:id/chapters/merge', async (req, res) => {
 
   try {
     if ((comic.kind || 'comic') === 'novel') {
-      // 小说：按顺序把各章正文拼接进第一章，删除其余章节的正文文件
+      // 小说：按顺序把各章正文拼接进第一章，删除其余章节的正文文件。
+      // 兼容老数据：早期章节正文内联在 text 字段、或 textFile 缺失时按 <chapterId>.txt 推导。
       const dir = novelDir(comic.id);
+      await fsp.mkdir(dir, { recursive: true });
       const texts = [];
       for (const ch of picked) {
         let text = '';
-        try { text = await fsp.readFile(path.join(dir, ch.textFile), 'utf8'); } catch { /* 缺失按空处理 */ }
+        const file = ch.textFile || `${ch.id}.txt`;
+        if (isSafeSegment(file)) {
+          try { text = await fsp.readFile(path.join(dir, file), 'utf8'); } catch { /* 缺失按空处理 */ }
+        }
+        if (!text && typeof ch.text === 'string' && ch.text) text = ch.text;
         texts.push(text.trim());
-        if (ch.id !== target.id) await fsp.rm(path.join(dir, ch.textFile), { force: true });
+        if (ch.id !== target.id && isSafeSegment(file)) {
+          await fsp.rm(path.join(dir, file), { force: true });
+        }
       }
-      await fsp.writeFile(path.join(dir, target.textFile), texts.filter(Boolean).join('\n\n'), 'utf8');
+      const mergedText = texts.filter(Boolean).join('\n\n');
+      const targetFile = target.textFile || `${target.id}.txt`;
+      if (!isSafeSegment(targetFile)) throw new Error('目标章节正文文件名非法');
+      target.textFile = targetFile;
+      delete target.text; // 内联正文已被合并进文件，避免重复
+      await fsp.writeFile(path.join(dir, targetFile), mergedText, 'utf8');
     } else {
       // 漫画：把其余章节的页面文件与缩略图搬进第一章目录，页序拼接
       const dest = chapterDir(comic.id, target.id);
@@ -1509,8 +1584,21 @@ function epubResolve(baseDir, href) {
  * - 文字小说（xhtml 是正文）→ 按 spine 每章提取文字并自动分目录
  */
 async function epubChaptersFromDir(outDir) {
+  /** EPUB 内 XHTML/OPF 编码智能识别：BOM → UTF-8 → GB18030（番茄/部分阅读器导出的 EPUB 是 GBK） */
   const read = async (rel) => {
-    try { return await fsp.readFile(path.join(outDir, rel), 'utf8'); } catch { return ''; }
+    try {
+      const buf = await fsp.readFile(path.join(outDir, rel));
+      if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return buf.toString('utf8').slice(1);
+      if (buf[0] === 0xff && buf[1] === 0xfe) return buf.toString('utf16le').slice(1);
+      const utf8 = buf.toString('utf8');
+      // 乱码特征：大量替换字符；或声明了 GBK/GB2312 编码
+      const declared = (utf8.match(/charset\s*=\s*["']?(gb2312|gbk|gb18030)/i) || [])[1];
+      const bad = (utf8.match(/\uFFFD/g) || []).length;
+      if (declared || bad > Math.max(2, Math.floor(buf.length / 3000))) {
+        try { return new TextDecoder('gb18030').decode(buf); } catch { /* 回落 utf8 */ }
+      }
+      return utf8;
+    } catch { return ''; }
   };
   const container = await read('META-INF/container.xml');
   let opfRel = (container.match(/full-path\s*=\s*["']([^"']+)["']/i) || [])[1] || '';
@@ -1561,7 +1649,9 @@ async function epubChaptersFromDir(outDir) {
       .replace(/<\/(p|div|h[1-6]|li|blockquote|section)>/gi, '\n')
       .replace(/<[^>]+>/g, '')
       .replace(/&nbsp;/gi, ' ').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
-      .replace(/&quot;/gi, '"').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+      .replace(/&quot;/gi, '"').replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      .replace(/&apos;/gi, "'").replace(/&mdash;/gi, '—').replace(/&hellip;/gi, '…')
       .replace(/&amp;/gi, '&')
       .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
     if (body.length < 30) continue;
