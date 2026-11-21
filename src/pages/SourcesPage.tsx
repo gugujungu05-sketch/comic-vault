@@ -4,7 +4,7 @@ import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { ReaderView } from '../components/ReaderView';
 import { useErrorToast, useToast } from '../components/Toasts';
-import { online as onlineApi, sources as sourcesApi } from '../lib/api';
+import { online as onlineApi, sources as sourcesApi, mediaUrl } from '../lib/api';
 import type {
   OnlineShelfItem,
   SourceChapterItem,
@@ -16,11 +16,14 @@ import type { Chapter, Page } from '../types';
 
 type MediaTab = 'comic' | 'novel';
 
+/** 「全部漫画 / 全部小说」虚拟聚合源 */
+const ALL_SOURCES = '__all__';
+
 /** 在线来源封面统一走服务端代理：绕过跨域 / 防盗链 / 浏览器无法直连源站域名的问题 */
 function coverUrl(sid: string | undefined, url: string | undefined): string {
   if (!url) return '';
-  if (!sid) return url;
-  return `/api/online/img?sid=${encodeURIComponent(sid.replace(/^js:/, ''))}&u=${encodeURIComponent(url)}`;
+  if (!sid) return mediaUrl(url);
+  return mediaUrl(`/api/online/img?sid=${encodeURIComponent(sid.replace(/^js:/, ''))}&u=${encodeURIComponent(url)}`);
 }
 
 export default function SourcesPage() {
@@ -36,7 +39,7 @@ export default function SourcesPage() {
   const [discoverMaxPage, setDiscoverMaxPage] = useState(1);
   const [discovering, setDiscovering] = useState(false);
   const [searched, setSearched] = useState(false);
-  const [detail, setDetail] = useState<(SourceComicDetail & { checked: Set<number> }) | null>(null);
+  const [detail, setDetail] = useState<(SourceComicDetail & { checked: Set<number>; sourceId?: string; sourceName?: string }) | null>(null);
   const [importing, setImporting] = useState<{ done: number; total: number; failed: number } | null>(null);
   const [importedComicId, setImportedComicId] = useState('');
   const [shelf, setShelf] = useState<OnlineShelfItem[]>([]);
@@ -49,13 +52,18 @@ export default function SourcesPage() {
 
   const active = list.find((s) => s.id === activeId) || null;
   const tabSources = useMemo(() => list.filter((s) => (s.mediaType || 'comic') === tab), [list, tab]);
+  /** 聚合模式：跨当前分类的所有书源搜索/发现，结果去重 */
+  const isAll = activeId === ALL_SOURCES;
+  // 详情可能来自「全部」聚合结果，必须用结果自带的来源，而不是当前选中的虚拟源
+  const detailSourceId = detail?.sourceId || activeId;
+  const detailSourceName = detail?.sourceName || active?.name || '';
 
   async function load() {
     try {
       const [r, s] = await Promise.all([sourcesApi.list(), onlineApi.shelf().catch(() => ({ items: [] }))]);
       setList(r.sources);
       setShelf(s.items || []);
-      const first = r.sources.find((x) => (x.mediaType || 'comic') === tab)?.id || '';
+      const first = r.sources.find((x) => (x.mediaType || 'comic') === tab)?.id || ALL_SOURCES;
       setActiveId((cur) => cur || first);
       if (first) loadDiscover(first, 0, 1);
     } catch (err) {
@@ -84,26 +92,61 @@ export default function SourcesPage() {
     if (!sid) return;
     setDiscovering(true);
     try {
-      const r = await sourcesApi.discover(sid, tab, page);
-      setDiscoverTabs(r.tabs || []);
-      setResults(r.items || []);
-      setDiscoverMaxPage(r.maxPage || 1);
-      setDiscoverTab(r.tab ?? tab);
-      setDiscoverPage(page);
-      setSearched(false);
+      if (sid === ALL_SOURCES) {
+        // 聚合发现：并发拉所有同类书源，按标题去重
+        const rs = await Promise.all(tabSources.map((s) => sourcesApi.discover(s.id, tab, page).catch(() => null)));
+        const seen = new Set<string>();
+        const merged: SourceSearchItem[] = [];
+        for (let i = 0; i < rs.length; i++) {
+          const r = rs[i]; if (!r) continue;
+          for (const it of r.items || []) {
+            const key = it.title.trim();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push({ ...it, sourceId: tabSources[i].id, sourceName: tabSources[i].name });
+          }
+        }
+        setDiscoverTabs(rs.find((r) => r?.tabs?.length)?.tabs || []);
+        setResults(merged);
+        setDiscoverMaxPage(Math.max(1, ...rs.map((r) => r?.maxPage || 1)));
+        setDiscoverTab(tab);
+        setDiscoverPage(page);
+        setSearched(false);
+      } else {
+        const r = await sourcesApi.discover(sid, tab, page);
+        setDiscoverTabs(r.tabs || []);
+        setResults(r.items || []);
+        setDiscoverMaxPage(r.maxPage || 1);
+        setDiscoverTab(r.tab ?? tab);
+        setDiscoverPage(page);
+        setSearched(false);
+      }
     } catch { setResults([]); setDiscoverTabs([]); }
     finally { setDiscovering(false); }
   }
 
   async function doSearch() {
-    if (!active || !kw.trim()) return;
+    if (!kw.trim()) return;
+    const targets = isAll ? tabSources : (active ? [active] : []);
+    if (!targets.length) return;
     setSearching(true);
     setResults([]);
     try {
-      const r = await sourcesApi.search(active.id, kw.trim());
-      setResults(r.items);
+      const rs = await Promise.all(targets.map((s) => sourcesApi.search(s.id, kw.trim()).catch(() => ({ items: [] as SourceSearchItem[] }))));
+      const seen = new Set<string>();
+      const merged: SourceSearchItem[] = [];
+      for (let i = 0; i < rs.length; i++) {
+        for (const it of rs[i].items || []) {
+          const key = `${it.title.trim()}|${it.author || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push({ ...it, sourceId: targets[i].id, sourceName: targets[i].name });
+        }
+      }
+      setResults(merged);
       setSearched(true);
-      if (!r.items.length) toast('没有搜到结果，试试别的关键词或换个书源');
+      if (!merged.length) toast('没有搜到结果，试试别的关键词或换个书源');
+      else if (isAll) toast(`合并 ${targets.length} 个来源，找到 ${merged.length} 个结果`);
     } catch (err) {
       errorToast(err, '搜索失败');
     } finally {
@@ -115,14 +158,17 @@ export default function SourcesPage() {
     if (!active) return;
     setSearching(true);
     try {
-      const r = await sourcesApi.comic(active.id, item.link);
+      const sid = item.sourceId || activeId;
+      const r = await sourcesApi.comic(sid, item.link);
       setDetail({
         ...r,
+        sourceId: sid,
+        sourceName: item.sourceName || active?.name || '',
         bookId: r.bookId || item.link,
         checked: new Set((r.chapters || []).map((_, i) => i)),
       });
       const s = await onlineApi.shelf().catch(() => ({ items: [] as OnlineShelfItem[] }));
-      setBookmarked(!!(s.items || []).find((x) => x.key === `${active.id.replace(/^js:/, '')}:${r.bookId || item.link}`));
+      setBookmarked(!!(s.items || []).find((x) => x.key === `${sid.replace(/^js:/, '')}:${r.bookId || item.link}`));
     } catch (err) {
       errorToast(err, '读取章节失败');
     } finally {
@@ -153,22 +199,23 @@ export default function SourcesPage() {
     }
   }
 
-  async function bookmark(detail2: SourceComicDetail & { checked: Set<number> }) {
-    if (!active) return;
+  async function bookmark(detail2: SourceComicDetail & { checked: Set<number>; sourceId?: string; sourceName?: string }) {
+    const sid = detail2.sourceId || detailSourceId;
+    if (!sid) return;
     try {
       if (bookmarked) {
-        const it = shelf.find((x) => x.key === `${active.id.replace(/^js:/, '')}:${detail2.bookId}`);
+        const it = shelf.find((x) => x.key === `${sid.replace(/^js:/, '')}:${detail2.bookId}`);
         if (it) await onlineApi.removeFromShelf(it.id);
         setBookmarked(false);
         toast('已从书架移除');
       } else {
         await onlineApi.addToShelf({
-          sourceId: active.id,
+          sourceId: sid,
           bookId: detail2.bookId || '',
           title: detail2.title,
           cover: detail2.cover,
           author: detail2.author || '',
-          kind: detail2.kind || (active.mediaType as MediaTab) || 'comic',
+          kind: detail2.kind || tab,
           chaptersTotal: detail2.chapters?.length || 0,
         });
         setBookmarked(true);
@@ -181,7 +228,7 @@ export default function SourcesPage() {
   }
 
   async function importChapters() {
-    if (!active || !detail) return;
+    if (!detail) return;
     const chapters = detail.chapters || [];
     const picked = chapters.filter((_, i) => detail.checked.has(i));
     if (!picked.length) return toast('请先勾选要导入的章节');
@@ -193,8 +240,8 @@ export default function SourcesPage() {
       try {
         const r = await sourcesApi.importChapter({
           comicId: comicId || undefined,
-          sourceId: active.id,
-          sourceName: active.name,
+          sourceId: detailSourceId,
+          sourceName: detailSourceName,
           title: detail.title,
           cover: detail.cover,
           comicUrl: detail.bookId || detail.url,
@@ -218,10 +265,10 @@ export default function SourcesPage() {
   }
 
   async function importNovelBook() {
-    if (!active || !detail?.bookId) return;
+    if (!detailSourceId || !detail?.bookId) return;
     setNovelImporting(true);
     try {
-      const r = await onlineApi.importBook(active.id, detail.bookId);
+      const r = await onlineApi.importBook(detailSourceId, detail.bookId);
       toast(`已加入书库：《${detail.title}》共 ${r.comic.chapterCount} 章，可在书库里编辑`);
       onImportedNavigate(r.comic.id);
     } catch (err) {
@@ -236,10 +283,10 @@ export default function SourcesPage() {
   }
 
   async function startOnlineRead(bookId: string, chapters: SourceChapterItem[], index: number, shelfItem?: OnlineShelfItem | null) {
-    if (!active) return;
+    if (!detailSourceId) return;
     setOnlineReader({
-      sourceKey: active.id.replace(/^js:/, ''),
-      sourceId: active.id,
+      sourceKey: detailSourceId.replace(/^js:/, ''),
+      sourceId: detailSourceId,
       bookId,
       title: detail?.title || shelfItem?.title || '在线阅读',
       chapters: chapters.map((c, i) => ({
@@ -319,9 +366,9 @@ export default function SourcesPage() {
           {([['comic', '漫画'], ['novel', '小说']] as [MediaTab, string][]).map(([k, label]) => (
             <button key={k} className={`chip ${tab === k ? 'active' : ''}`} onClick={() => {
               setTab(k); setResults([]); setDetail(null); setKw(''); setSearched(false);
-              const first = list.find((s) => (s.mediaType || 'comic') === k)?.id || '';
-              setActiveId(first);
-              if (first) loadDiscover(first, 0, 1);
+      const first = list.find((s) => (s.mediaType || 'comic') === k)?.id || ALL_SOURCES;
+      setActiveId(first);
+      if (first) loadDiscover(first, 0, 1);
             }}>
               {label}
             </button>
@@ -333,6 +380,13 @@ export default function SourcesPage() {
         <>
           {/* 书源选择 */}
           <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+            <button
+              className={`btn sm ${isAll ? 'primary' : ''}`}
+              onClick={() => { setActiveId(ALL_SOURCES); setDetail(null); setKw(''); setSearched(false); loadDiscover(ALL_SOURCES, 0, 1); }}
+              title="跨所有来源聚合搜索与发现，按标题去重"
+            >
+              <Icon name="grid" size={14} /> 全部{tab === 'comic' ? '漫画' : '小说'}（{tabSources.length} 源）
+            </button>
             {tabSources.map((s) => (
               <button
                 key={s.id}
@@ -355,7 +409,7 @@ export default function SourcesPage() {
               onChange={(e) => setKw(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && doSearch()}
             />
-            <button className="btn primary" onClick={doSearch} disabled={searching || !active}>
+            <button className="btn primary" onClick={doSearch} disabled={searching || (!active && !isAll)}>
               {searching ? <Icon name="spinner" size={16} className="spin" /> : <Icon name="search" size={16} />}
               搜索
             </button>
@@ -366,20 +420,20 @@ export default function SourcesPage() {
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
               {discoverTabs.map((t) => (
                 <button key={t.index} className={`chip ${discoverTab === t.index ? 'active' : ''}`}
-                  onClick={() => loadDiscover(active!.id, t.index, 1)}>{t.title}</button>
+                  onClick={() => loadDiscover(activeId, t.index, 1)}>{t.title}</button>
               ))}
             </div>
           )}
           {!searched && !detail && (
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <h2 style={{ margin: 0, fontSize: 15 }}>发现 · {active?.name || ''}</h2>
+              <h2 style={{ margin: 0, fontSize: 15 }}>发现 · {isAll ? `全部${tab === 'comic' ? '漫画' : '小说'}` : (active?.name || '')}</h2>
               {!searched && discoverMaxPage > 1 && (
                 <div className="row" style={{ gap: 6 }}>
                   <button className="btn sm" disabled={discovering || discoverPage <= 1}
-                    onClick={() => loadDiscover(active!.id, discoverTab, discoverPage - 1)}>← 上一页</button>
+                    onClick={() => loadDiscover(activeId, discoverTab, discoverPage - 1)}>← 上一页</button>
                   <span className="muted">{discoverPage} / {discoverMaxPage}</span>
                   <button className="btn sm" disabled={discovering || discoverPage >= discoverMaxPage}
-                    onClick={() => loadDiscover(active!.id, discoverTab, discoverPage + 1)}>下一页 →</button>
+                    onClick={() => loadDiscover(activeId, discoverTab, discoverPage + 1)}>下一页 →</button>
                 </div>
               )}
             </div>
@@ -391,7 +445,7 @@ export default function SourcesPage() {
               {results.map((r, i) => (
                 <div key={i} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openComic(r)}>
                   <div className="cover">
-                    {r.cover ? <img src={coverUrl(active?.id, r.cover)} alt={r.title} loading="lazy" /> : (
+                    {r.cover ? <img src={coverUrl(r.sourceId || activeId, r.cover)} alt={r.title} loading="lazy" /> : (
                       <div className="cover-empty"><Icon name="book" size={30} /></div>
                     )}
                   </div>
@@ -409,7 +463,7 @@ export default function SourcesPage() {
             <div className="panel" style={{ marginTop: 4 }}>
               <div className="row" style={{ alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
                 {detail.cover && (
-                  <img src={coverUrl(active?.id, detail.cover)} alt="" style={{ width: 120, borderRadius: 10, flex: 'none' }} />
+                  <img src={coverUrl(detailSourceId, detail.cover)} alt="" style={{ width: 120, borderRadius: 10, flex: 'none' }} />
                 )}
                 <div style={{ flex: 1, minWidth: 220 }}>
                   <h2 style={{ margin: '0 0 8px' }}>{detail.title}</h2>
@@ -487,7 +541,7 @@ export default function SourcesPage() {
                         title="在线阅读（不下载）"
                         onClick={(e) => {
                           e.preventDefault();
-                          startOnlineRead(detail.bookId || '', detail.chapters || [], i, shelf.find((x) => x.key === `${active?.id.replace(/^js:/, '')}:${detail.bookId}`));
+                          startOnlineRead(detail.bookId || '', detail.chapters || [], i, shelf.find((x) => x.key === `${detailSourceId.replace(/^js:/, '')}:${detail.bookId}`));
                         }}
                       >▶</button>
                     </label>

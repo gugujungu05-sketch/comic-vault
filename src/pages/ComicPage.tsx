@@ -508,6 +508,18 @@ export function ComicPage() {
                       撤销合并（{mergeUndoN}）
                     </button>
                   )}
+                  <button className="btn sm ghost" onClick={async () => {
+                    if (!comic || !confirm('清理所有 0 页 / 无正文的空章节？有内容的章节不会受影响。')) return;
+                    setFixing(true);
+                    try {
+                      const r = await api.cleanEmptyChapters(comic.id);
+                      await load();
+                      toast(r.removed ? `已清理 ${r.removed} 个空章节` : '没有空章节需要清理');
+                    } catch (err) { errorToast(err, '清理失败'); }
+                    finally { setFixing(false); }
+                  }} disabled={fixing} title="删除导入失败留下的空话">
+                    <Icon name="trash" size={14} /> 清理空章
+                  </button>
                   <button className="btn sm" onClick={addChapter}>
                     <Icon name="plus" size={14} /> 新建空章节
                   </button>

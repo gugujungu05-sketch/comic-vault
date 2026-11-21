@@ -145,5 +145,32 @@ def main():
         stop_server(proc, log)
 
 
+def test_legacy_merge():
+    """老数据/协作章节：textFile 指向的正文文件缺失、或字段缺失时，合并不能 500。"""
+    import shutil
+    proc, log = start_server(8811, {})
+    try:
+        assert wait_port(8811)
+        B = "http://127.0.0.1:8811"
+        s = requests.Session()
+        s.post(f"{B}/api/auth/register", json={"email":"legacy@test.local","password":"pass123","name":"老数据"})
+        r = s.post(f"{B}/api/import/novel", json={"title":"老格式","mergeShort":False,"chapters":[
+            {"title":"碎章A","text":"甲"*500},{"title":"碎章B","text":"乙"*500},{"title":"碎章C","text":"丙"*500}]})
+        lg = r.json()["comic"]; lid = lg["id"]; lids = [c["id"] for c in lg["chapters"]]
+        # 删掉所有正文文件：模拟「在线来源导入/0 页/协作上传」后正文文件缺失的情况
+        import glob
+        for f in glob.glob("/tmp/cv-mail-test-*/**/_text/*.txt", recursive=True):
+            if lid in f:
+                try: __import__('os').remove(f)
+                except Exception: pass
+        r = s.post(f"{B}/api/comics/{lid}/chapters/merge", json={"chapterIds":lids})
+        print("[LEGACY] 正文文件缺失时合并:", r.status_code, r.text[:160])
+        assert r.status_code == 200 and r.json().get("ok"), "正文文件缺失时合并失败"
+        print("[LEGACY PASS] 正文文件缺失也不再 500，合并成功")
+    finally:
+        stop_server(proc, log)
+
+
 if __name__ == "__main__":
     main()
+    test_legacy_merge()

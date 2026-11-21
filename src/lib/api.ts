@@ -152,6 +152,14 @@ export async function networkDiag(): Promise<{ ok: boolean; ms: number; base: st
   return { ok: ok !== null, ms: Date.now() - t0, base: ok !== null ? (ok || '同源服务') : String(candidates[0] || DEFAULT_API_BASE) };
 }
 
+/**
+ * 组件里手工构造的媒体地址（如在线来源封面 /api/online/img?...）也必须走这里：
+ * 直接写相对路径会在 GitHub Pages 上打到静态站返回 404，且丢失 sharecode 凭据。
+ */
+export function mediaUrl(url: string | null | undefined): string {
+  return absoluteUrl(url);
+}
+
 /** 把服务端返回的相对媒体地址补全成可访问的绝对地址（跨域后端时必须） */
 export function absoluteUrl(url: string | null | undefined): string {
   if (!url) return '';
@@ -437,6 +445,12 @@ export const api = {
   undoChapterMerge: (comicId: string) =>
     request<{ ok: boolean; label?: string; remaining: number; chapterCount: number; comic: Comic }>(
       `/api/comics/${comicId}/chapters/merge/undo`,
+      { method: 'POST' },
+    ),
+  /** 清理导入失败留下的 0 页空章节 */
+  cleanEmptyChapters: (comicId: string) =>
+    request<{ ok: boolean; removed: number; chapters: number }>(
+      `/api/comics/${comicId}/clean-empty`,
       { method: 'POST' },
     ),
 
@@ -861,6 +875,9 @@ export interface SourceSearchItem {
   cover: string;
   author?: string;
   latestChapter?: string | null;
+  /** 前端「全部漫画 / 合并搜索」聚合时注入，标识结果来自哪个书源 */
+  sourceId?: string;
+  sourceName?: string;
 }
 export interface SourceChapterItem {
   title: string;

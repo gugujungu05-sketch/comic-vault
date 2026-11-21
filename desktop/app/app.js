@@ -731,6 +731,7 @@
         <button class="btn" data-action="add-pages" data-id="${esc(chapters[0]?.id || '')}">↑ 追加页面到第一话（可排序）</button>
         <button class="btn" data-action="merge-chapters" ${chapters.length > 1 ? '' : 'hidden'} title="把连续几话按顺序合并成一话（小说拼正文 / 漫画拼页面）">⇒ 合并章节</button>
         <button class="btn" data-action="undo-merge" id="undoMergeBtn" hidden title="恢复到最近一次合并前">↶ 撤销合并</button>
+        <button class="btn" data-action="clean-empty" title="删除导入失败留下的 0 页空话">清理空章</button>
         <span class="spacer"></span>
         <button class="btn primary" data-action="share-comic">↗ 分享链接 / 二维码</button>
         <button class="btn" data-action="export-comic">⇩ 下载 / 导出（分话）</button>
@@ -1153,6 +1154,15 @@
       const res = await api('POST', `/api/comics/${state.comic}/chapters/merge/undo`);
       await renderComic();
       toast(res.ok ? '已撤销合并，目录已恢复' : '没有可撤销的合并');
+    } catch (err) { toast(err.message, true); }
+  }
+  /** 清理导入失败留下的 0 页空话（有内容的章节不动） */
+  async function cleanEmptyChapters() {
+    if (!confirm('清理所有 0 页 / 无正文的空话？有内容的章节不会受影响。')) return;
+    try {
+      const res = await api('POST', `/api/comics/${state.comic}/clean-empty`);
+      await renderComic();
+      toast(res.removed ? `已清理 ${res.removed} 个空话` : '没有空话需要清理');
     } catch (err) { toast(err.message, true); }
   }
 
@@ -2185,6 +2195,7 @@
       else if (a === 'del-chapter') await delChapter(id);
       else if (a === 'merge-chapters') await mergeChaptersDialog();
       else if (a === 'undo-merge') await undoChapterMerge();
+      else if (a === 'clean-empty') await cleanEmptyChapters();
       else if (a === 'export-chapter') await exportCbz([id]);
       else if (a === 'export-comic') openExportDialog();
       else if (a === 'sub-check') await subCheck(id);

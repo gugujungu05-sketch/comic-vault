@@ -31,6 +31,7 @@ export function LibraryPage() {
   const [showImport, setShowImport] = useState(false);
   const [shareComic, setShareComic] = useState<ComicSummary | null>(null);
   const [dropped, setDropped] = useState(false);
+  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const dragDepth = useRef(0);
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -171,6 +172,8 @@ export function LibraryPage() {
         e.preventDefault();
         dragDepth.current = 0;
         setDropped(false);
+        const fs = Array.from(e.dataTransfer?.files || []);
+        if (fs.length) setDroppedFiles(fs);
         setShowImport(true);
       }}
     >
@@ -188,8 +191,8 @@ export function LibraryPage() {
           }}
         >
           <div className="dropzone over" style={{ padding: '40px 60px', pointerEvents: 'none' }}>
-            <div className="big">松开即可导入漫画</div>
-            <div>支持图片 / 文件夹 / ZIP·CBZ / PDF，自动分话</div>
+            <div className="big">松开即可导入（图片 / 漫画 / 小说 / PDF / EPUB）</div>
+            <div>支持图片 / 文件夹 / ZIP·CBZ·RAR / PDF / EPUB / TXT，自动分话或分章</div>
           </div>
         </div>
       )}
@@ -213,7 +216,7 @@ export function LibraryPage() {
                 </button>
               )}
               <button className="btn" onClick={() => setShowImport(true)}>
-                <Icon name="upload" size={16} /> 导入漫画
+                <Icon name="upload" size={16} /> 导入
               </button>
               <button className="btn primary" onClick={() => setShowNew(true)}>
                 <Icon name="plus" size={16} /> 新建漫画
@@ -321,15 +324,17 @@ export function LibraryPage() {
           onDrop={(e) => {
             e.preventDefault();
             setDropped(false);
+            const fs = Array.from(e.dataTransfer?.files || []);
+            if (fs.length) setDroppedFiles(fs);
             setShowImport(true);
           }}
         >
           <Icon name="book" size={34} />
           <h3>书架还是空的</h3>
-          <div>把图片、文件夹、ZIP/CBZ 或 PDF 拖到这里，或直接点击「导入漫画」</div>
+          <div>把图片、文件夹、ZIP/CBZ、PDF、EPUB、TXT 拖到这里，或直接点击「导入」</div>
           <div className="row" style={{ justifyContent: 'center', marginTop: 14 }}>
             <button className="btn primary" onClick={() => setShowImport(true)}>
-              <Icon name="upload" size={16} /> 导入第一本漫画
+              <Icon name="upload" size={16} /> 导入第一本书
             </button>
           </div>
         </div>
@@ -407,9 +412,11 @@ export function LibraryPage() {
       {showNew && <NewComicDialog onClose={() => setShowNew(false)} onCreated={(id) => navigate(`/comic/${id}`)} />}
       {showImport && (
         <ImportDialog
-          onClose={() => setShowImport(false)}
+          initialFiles={droppedFiles}
+          onClose={() => { setShowImport(false); setDroppedFiles([]); }}
           onDone={(id) => {
             setShowImport(false);
+            setDroppedFiles([]);
             toast('导入完成');
             navigate(`/comic/${id}`);
           }}
