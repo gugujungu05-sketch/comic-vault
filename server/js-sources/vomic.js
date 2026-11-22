@@ -205,14 +205,17 @@ class VomicSource extends ComicSource {
             title: "vomic 账号",
             type: "singlePageWithMultiPart",
             load: async () => {
-                const registerCard = new Comic({
-                    id: "__register__",
-                    title: "📝 注册 vomic 账号（点此开始）",
+                const hasLogin = !!(this.loadData && this.loadData("token"));
+                const guide = new Comic({
+                    id: "__account_guide__",
+                    title: hasLogin ? "✅ vomic 账号已登录" : "🔑 vomic 需要登录账号",
                     cover: "",
-                    subtitle: "免费注册 · 邮箱验证码",
-                    tags: ["账号"]
+                    subtitle: hasLogin
+                        ? "已保存会话，可浏览完整内容"
+                        : "本源来自需登录的网站；游客可看「最新更新 / 分类」。账号登录后才能访问会员内容。",
+                    tags: ["账号", "说明"]
                 });
-                return { "账号": [registerCard] };
+                return { "账号": [guide] };
             }
         },
         {

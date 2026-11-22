@@ -409,7 +409,20 @@ export async function jsDiscoverLoad(source, tabIndex, page = 1) {
   const tab = ex[tabIndex];
   if (!tab || typeof tab.load !== 'function') throw new Error('这个来源没有可浏览的分类');
   const out = await tab.load(Math.max(1, Number(page) || 1));
-  const comics = Array.isArray(out) ? out : (out?.comics || []);
+  let comics;
+  if (Array.isArray(out)) comics = out;
+  else if (out?.comics) comics = out.comics;
+  else {
+    // singlePageWithMultiPart：{ "分组名": [cards], ... } —— 把所有分组的卡片合并
+    // 兼容 vomic 等源的「账号 / 注册引导」多分区结构，避免发现页 tab 空白。
+    comics = [];
+    if (out && typeof out === 'object') {
+      for (const key of Object.keys(out)) {
+        const v = out[key];
+        if (Array.isArray(v)) comics.push(...v);
+      }
+    }
+  }
   return {
     items: comics.map((c) => ({
       title: c.title || '',

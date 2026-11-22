@@ -31,6 +31,10 @@ import {
 
 const now = () => Date.now();
 
+/** 发现页缓存：切源/重复点击秒开。key=源:tab:页，5 分钟有效，失败结果不缓存。 */
+const discoverCache = new Map();
+const DISCOVER_TTL = 5 * 60 * 1000;
+
 /** 导入实时进度：key = userId，值 = { chapterIndex, chapterTotal, imageDone, imageTotal, title, ts }。
  *  前端轮询 /api/sources/import/progress 显示，避免「卡住不动」的体感。 */
 const importProgress = new Map();
@@ -316,15 +320,16 @@ export async function importJsChapter(p, onProgress) {
   const chapter = {
     id: newId('ch'),
     title: (p.chapterTitle || `第 ${comic.chapters.length + 1} 话`).trim(),
+    sourceUrl: p.chapterPath || '',
     pages: [],
     uploadedBy: p.userId,
     uploadedAt: now(),
   };
-  // 并发分批下载（每批 5 张）：几百页不再串行等待；单张失败自动补 Referer 重试
+  // 并发分批下载（每批 10 张）：几百页不再串行等待；单张失败自动补 Referer 重试
   const fallbackRef = `${p.source.baseUrl || 'https://' + (() => { try { return new URL(images[0]).host; } catch { return 'example.com'; } })()}/`;
   let stored = 0;
   const pages = new Array(images.length).fill(null);
-  const BATCH = 5;
+  const BATCH = 10;
   for (let i = 0; i < images.length; i += BATCH) {
     const batch = images.slice(i, i + BATCH);
     const results = await Promise.all(batch.map(async (imgUrl, j) => {
@@ -556,8 +561,15 @@ export function registerSources(app) {
       const tabs = jsDiscoverTabs(js);
       if (!tabs.length) return res.json({ tabs: [], items: [], maxPage: 1 });
       const tabIndex = Math.min(Math.max(0, parseInt(req.query.tab, 10) || 0), tabs.length - 1);
+      const ck = `${js.key}:${tabIndex}:${page}`;
+      const hit = discoverCache.get(ck);
+      if (hit && now() - hit.at < DISCOVER_TTL) {
+        return res.json({ ...hit.data, tabs, tab: tabIndex, cached: true });
+      }
       const r = await jsDiscoverLoad(js, tabIndex, page);
-      return res.json({ tabs, items: r.items, maxPage: r.maxPage, tab: tabIndex });
+      const data = { items: r.items, maxPage: r.maxPage };
+      if (r.items && r.items.length) discoverCache.set(ck, { at: now(), data });
+      return res.json({ ...data, tabs, tab: tabIndex });
     } catch (err) {
       return sourceError(res, err);
     }
@@ -702,6 +714,22 @@ export function registerSources(app) {
         chapterTitle: b.chapterTitle || '正在导入', imageDone: 0, imageTotal: 0, phase: 'fetch',
       });
       try {
+        // 断点续导：若这本已有同名章节（上次导入中断前已完成），直接跳过不重复下载。
+        // 章节可能存源 URL（sourceUrl）或标题，两者任一命中即视为已导入。
+        const wantTitle = String(b.chapterTitle || '').trim();
+        const wantUrl = String(chapterPath || '').trim();
+        const dup = comic && (comic.chapters || []).find((ch) => {
+          const t = String(ch.title || '').trim();
+          const u = String(ch.sourceUrl || ch.url || '').trim();
+          return (wantTitle && t === wantTitle) || (wantUrl && u === wantUrl);
+        });
+        if (dup) {
+          return res.json({
+            comicId: comic.id, chapterId: dup.id, chapterTitle: dup.title,
+            stored: (dup.pages || []).length, failed: 0,
+            chaptersDone: comic.chapters.length, skipped: true,
+          });
+        }
         const r = await importJsChapter({
           source: js, userId: req.user.id, comic,
           title: b.title, cover: b.cover, comicUrl: b.comicUrl,

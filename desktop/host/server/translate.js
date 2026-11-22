@@ -124,20 +124,34 @@ async function resolveImageBuffer(url) {
     const real = String(q.get('u') || '');
     if (!/^https?:\/\//i.test(real)) throw new Error('在线图片地址无效');
     const headers = { 'User-Agent': UA_DEFAULT, ...(source ? (jsImageHeaders(source, real) || {}) : {}) };
-    return await fetchBuffer(real, headers);
+    let buf = await fetchBuffer(real, headers);
+    // 在线源图片常是 avif / 混淆字节，直接送模型会 Unsupported image type → 先归一化
+    if (!looksLikeImage(buf) || /\.(avif|heif|heic)(\?|$)/i.test(real)) {
+      try {
+        const norm = await normalizeSourceImage(buf, null, { forceJpeg: true });
+        if (norm?.buf) buf = norm.buf;
+      } catch { /* 归一化失败交给模型判断 */ }
+    }
+    return buf;
   }
   if (/^https?:\/\//i.test(url)) return await fetchBuffer(url, { 'User-Agent': UA_DEFAULT });
   throw new Error('不支持的图片地址格式');
 }
 
 async function fetchBuffer(url, headers) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 30000);
-  try {
-    const r = await fetch(url, { headers, signal: ac.signal, redirect: 'follow' });
-    if (!r.ok) throw new Error(`图片下载失败 HTTP ${r.status}`);
-    return Buffer.from(await r.arrayBuffer());
-  } finally { clearTimeout(timer); }
+  // 在线图片站点常有防盗链/临时 403：失败后用简化请求头重试一次
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 30000);
+    try {
+      const h = attempt === 0 ? headers : { 'User-Agent': UA_DEFAULT };
+      const r = await fetch(url, { headers: h, signal: ac.signal, redirect: 'follow' });
+      if (!r.ok) throw new Error(`图片下载失败 HTTP ${r.status}`);
+      return Buffer.from(await r.arrayBuffer());
+    } catch (err) {
+      if (attempt === 1) throw err;
+    } finally { clearTimeout(timer); }
+  }
 }
 
 /* ------------------------------ 多模态模型调用 ------------------------------ */
