@@ -1639,29 +1639,25 @@ function epubResolve(baseDir, href) {
  */
 async function epubChaptersFromDir(outDir) {
   /** EPUB 内 XHTML/OPF 编码智能识别：BOM → UTF-8 → GB18030（番茄/部分阅读器导出的 EPUB 是 GBK） */
-  const images = new Map(); // 文件名(唯一) → { buf, ext }，正文里用 [[IMG:name]] 占位，导入时落盘
+  const images = new Map(); // 文件名(唯一) → { src, remote }，正文里用 [[IMG:name]] 占位，导入时落盘
   let imgSeq = 0;
   const collectImages = (html, baseRel) => {
     let out = html;
     const dirOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/') + 1) : '');
-    const resolve = (src) => epubResolve(dirOf(baseRel), src);
-    // <img src="..."> 与 <image ... xlink:href="...">
-    out = out.replace(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (full, src) => {
-      const rel = resolve(src);
-      const ext = (rel.match(/\.(jpe?g|png|webp|gif|bmp|svg)(?=\?|$)/i) || [])[1] || 'png';
+    const addImg = (src) => {
+      // 在线逐章小说（lnovel 等）正文里的插图是远程绝对 URL，需联网下载；
+      // 本地 EPUB 里的 <img> 是相对包内路径。两者分开处理。
+      const remote = /^https?:\/\//i.test(src);
+      const pathForExt = remote ? (src.split('?')[0]) : epubResolve(dirOf(baseRel), src);
+      const ext = (pathForExt.match(/\.(jpe?g|png|webp|gif|bmp|svg)(?=\?|$)/i) || [])[1] || 'png';
       if (/\.svg$/i.test(ext)) return ''; // svg 插图跳过（阅读器不渲染，避免占位空白）
       const name = `img_${String(++imgSeq).padStart(4, '0')}.${ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()}`;
-      images.set(name, rel);
+      images.set(name, { src: remote ? src : pathForExt, remote });
       return `\n[[IMG:${name}]]\n`;
-    });
-    out = out.replace(/<image\b[^>]*?\b(?:xlink:)?href\s*=\s*["']([^"']+)["'][^>]*\/?>/gi, (full, src) => {
-      const rel = resolve(src);
-      const ext = (rel.match(/\.(jpe?g|png|webp|gif|bmp|svg)(?=\?|$)/i) || [])[1] || 'png';
-      if (/\.svg$/i.test(ext)) return '';
-      const name = `img_${String(++imgSeq).padStart(4, '0')}.${ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()}`;
-      images.set(name, rel);
-      return `\n[[IMG:${name}]]\n`;
-    });
+    };
+    // <img src="..."> 与 <image ... xlink:href="...">
+    out = out.replace(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (full, src) => addImg(src));
+    out = out.replace(/<image\b[^>]*?\b(?:xlink:)?href\s*=\s*["']([^"']+)["'][^>]*\/?>/gi, (full, src) => addImg(src));
     return out;
   };
   const read = async (rel) => {
@@ -1745,9 +1741,23 @@ async function epubChaptersFromDir(outDir) {
   if (!chapters.length || (imageCount >= 3 && totalText < 500)) return { kind: 'image' };
   // 把收集到的插图文件读成 Buffer（相对 outDir），交给 createNovelComic 落盘
   const imageFiles = [];
-  for (const [name, rel] of images) {
+  for (const [name, info] of images) {
     try {
-      const buf = await fsp.readFile(path.join(outDir, rel));
+      let buf;
+      if (info.remote) {
+        // 在线小说插图：联网抓取（带 Referer 防盗链），并发限制由外层控制
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 20000);
+        const r = await fetch(info.src, {
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': new URL(info.src).origin + '/' },
+          signal: ctl.signal,
+        });
+        clearTimeout(timer);
+        if (!r.ok) continue;
+        buf = Buffer.from(await r.arrayBuffer());
+      } else {
+        buf = await fsp.readFile(path.join(outDir, info.src));
+      }
       if (buf.length > 32) imageFiles.push({ name, buf });
     } catch { /* 单张缺失不影响正文 */ }
   }

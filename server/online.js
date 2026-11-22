@@ -38,23 +38,62 @@ async function buildTextNovelEpub(source, bookId, helpers) {
   const volumes = Array.isArray(info.volumes) ? info.volumes : [];
   if (!volumes.length) throw new Error('这本书没有可用的卷');
 
-  const chapters = []; // {title, html}
-  for (const vol of volumes) {
-    const vid = vol.vid;
-    if (!vid) continue;
-    let vd;
-    try { vd = ((await getJson(`/api/bili/novel/${bookId}/vol/${vid}`)).data) || {}; } catch { continue; }
-    const list = Array.isArray(vd.chapters) ? vd.chapters : [];
-    for (const c of list) {
-      const cid = c.cid;
-      if (!cid) continue;
-      let body = '';
-      try { body = String(((await getJson(`/api/bili/novel/${bookId}/chapter/${cid}`)).data || {}).content || ''); } catch { continue; }
-      if (!body.trim()) continue;
-      chapters.push({ title: String(c.title || '正文'), html: body });
-    }
+  // 并发抓卷详情（限流 6 路）：几十卷串行会拖到几分钟
+  const mapLimit = async (items, limit, worker) => {
+    const out = new Array(items.length);
+    let idx = 0;
+    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (idx < items.length) {
+        const i = idx++;
+        try { out[i] = await worker(items[i], i); } catch { out[i] = null; }
+      }
+    });
+    await Promise.all(runners);
+    return out;
+  };
+  const volData = await mapLimit(volumes.filter((v) => v && v.vid), 6, async (vol) => {
+    try { return ((await getJson(`/api/bili/novel/${bookId}/vol/${vol.vid}`)).data) || {}; } catch { return {}; }
+  });
+  // 汇总所有章节引用，再并发抓正文（限流 10 路）
+  const refs = [];
+  for (const vd of volData) for (const c of (Array.isArray(vd?.chapters) ? vd.chapters : [])) {
+    if (c && c.cid) refs.push(c);
+  }
+  const bodies = await mapLimit(refs, 10, async (c) => {
+    try { return String(((await getJson(`/api/bili/novel/${bookId}/chapter/${c.cid}`)).data || {}).content || ''); } catch { return ''; }
+  });
+  const chapters = [];
+  for (let i = 0; i < refs.length; i++) {
+    const body = bodies[i];
+    if (!body || !body.trim()) continue;
+    chapters.push({ title: String(refs[i].title || '正文'), html: body });
   }
   if (!chapters.length) throw new Error('这本书没有抓取到章节正文');
+
+  // 插图本地化：把正文里的远程 <img src> 下载进 EPUB 包内，重写为相对路径。
+  // 这样 epubChaptersFromDir 走本地文件（不再二次联网），插图能稳定落盘显示。
+  const remoteImgs = new Map(); // url -> 包内文件名
+  for (const ch of chapters) {
+    ch.html = String(ch.html).replace(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (full, src) => {
+      if (!/^https?:\/\//i.test(src)) return full;
+      if (!remoteImgs.has(src)) {
+        const ext = (src.split('?')[0].match(/\.(jpe?g|png|webp|gif|bmp)(?=\?|$)/i) || [])[1] || 'jpg';
+        remoteImgs.set(src, `illus_${remoteImgs.size + 1}.${ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()}`);
+      }
+      return full.replace(src, remoteImgs.get(src));
+    });
+  }
+  const imgBuffers = await mapLimit([...remoteImgs.entries()], 8, async ([url, name]) => {
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 20000);
+      const r = await fetch(url, { headers: { 'User-Agent': UA_DEFAULT, 'Referer': new URL(url).origin + '/' }, signal: ctl.signal });
+      clearTimeout(timer);
+      if (!r.ok) return null;
+      const buf = Buffer.from(await r.arrayBuffer());
+      return buf.length > 32 ? { name, buf } : null;
+    } catch { return null; }
+  });
 
   // 用 archiver 生成标准 EPUB（mimetype 必须第一个且不压缩）
   const archiver = (await import('archiver')).default;
@@ -71,9 +110,33 @@ async function buildTextNovelEpub(source, bookId, helpers) {
   const names = xhtml.map((_, i) => `chapter_${String(i + 1).padStart(4, '0')}.xhtml`);
   const container = `<?xml version="1.0" encoding="UTF-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`;
   arc.append(container, { name: 'META-INF/container.xml' });
-  const manifest = names.map((n, i) => `<item id="c${i}" href="${n}" media-type="application/xhtml+xml"/>`).join('');
+  // 插图写入 EPUB 包内，并在 manifest 登记（封面也一起嵌入，保证原书封面随书入库）
+  const goodImgs = imgBuffers.filter(Boolean);
+  goodImgs.forEach((im, k) => arc.append(im.buf, { name: `OEBPS/${im.name}` }));
+  const imgManifest = goodImgs.map((im, k) => `<item id="im${k}" href="${im.name}" media-type="image/${im.name.split('.').pop() === 'jpg' ? 'jpeg' : im.name.split('.').pop()}"/>`).join('');
+  // 原书封面：优先用详情里的封面 URL 下载嵌入
+  let coverName = '';
+  const infoCover = info.cover || (info.authors && info.image) || '';
+  if (/^https?:\/\//i.test(String(infoCover))) {
+    try {
+      const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 15000);
+      const cr = await fetch(String(infoCover), { headers: { 'User-Agent': UA_DEFAULT, 'Referer': new URL(infoCover).origin + '/' }, signal: ctl.signal });
+      clearTimeout(timer);
+      if (cr.ok) {
+        const cbuf = Buffer.from(await cr.arrayBuffer());
+        if (cbuf.length > 1024) {
+          const ext = (String(infoCover).split('?')[0].match(/\.(jpe?g|png|webp|gif)(?=$)/i) || [])[1] || 'jpg';
+          coverName = `cover.${ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()}`;
+          arc.append(cbuf, { name: `OEBPS/${coverName}` });
+        }
+      }
+    } catch { /* 封面下载失败不影响正文 */ }
+  }
+  const coverMeta = coverName ? `<meta name="cover" content="coverimg"/>` : '';
+  const coverManifest = coverName ? `<item id="coverimg" href="${coverName}" media-type="image/${coverName.split('.').pop() === 'jpg' ? 'jpeg' : coverName.split('.').pop()}"/>` : '';
+  const manifest = names.map((n, i) => `<item id="c${i}" href="${n}" media-type="application/xhtml+xml"/>`).join('') + imgManifest + coverManifest;
   const spine = names.map((_, i) => `<itemref idref="c${i}"/>`).join('');
-  const opf = `<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${xml(title)}</dc:title><dc:creator>${xml(author)}</dc:creator><dc:language>zh-CN</dc:language><dc:identifier id="bookid">novel-${bookId}</dc:identifier></metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>${manifest}</manifest><spine toc="ncx">${spine}</spine></package>`;
+  const opf = `<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${xml(title)}</dc:title><dc:creator>${xml(author)}</dc:creator><dc:language>zh-CN</dc:language><dc:identifier id="bookid">novel-${bookId}</dc:identifier>${coverMeta}</metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>${manifest}</manifest><spine toc="ncx">${spine}</spine></package>`;
   arc.append(opf, { name: 'OEBPS/content.opf' });
   const navPoints = chapters.map((c, i) => `<navPoint id="n${i}" playOrder="${i + 1}"><navLabel><text>${xml(c.title)}</text></navLabel><content src="${names[i]}"/></navPoint>`).join('');
   const ncx = `<?xml version="1.0" encoding="UTF-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="novel-${bookId}"/></head><docTitle><text>${xml(title)}</text></docTitle><navMap>${navPoints}</navMap></ncx>`;
