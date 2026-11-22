@@ -24,21 +24,7 @@ const xml = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</
 /** 逐章正文源（lnovel/哔哩轻小说）：抓全部卷章节正文，实时生成标准 EPUB Buffer。
  *  lnovel API：详情 /api/bili/novel/{nid} → volumes[].vid → /api/bili/novel/{nid}/vol/{vid} → chapters[].cid → /api/bili/novel/{nid}/chapter/{cid} */
 async function buildTextNovelEpub(source, bookId, helpers) {
-  const API = String(source.baseUrl || 'https://lnovel.animes.garden').replace(/\/+$/, '');
-  const getJson = async (p) => {
-    const r = await fetch(API + p, { headers: { 'User-Agent': UA_DEFAULT, Accept: 'application/json' }, signal: AbortSignal.timeout(30000) });
-    if (!r.ok) throw new Error('lnovel 请求失败 HTTP ' + r.status);
-    const j = await r.json();
-    if (j && j.ok === false) throw new Error(j.message || 'lnovel 接口错误');
-    return j;
-  };
-  const info = (await getJson('/api/bili/novel/' + encodeURIComponent(bookId))).data || {};
-  const title = String(info.name || '在线小说');
-  const author = (info.authors || []).map((a) => a.name).filter(Boolean).join('、');
-  const volumes = Array.isArray(info.volumes) ? info.volumes : [];
-  if (!volumes.length) throw new Error('这本书没有可用的卷');
-
-  // 并发抓卷详情（限流 6 路）：几十卷串行会拖到几分钟
+  // 并发限流工具（通用）
   const mapLimit = async (items, limit, worker) => {
     const out = new Array(items.length);
     let idx = 0;
@@ -51,24 +37,60 @@ async function buildTextNovelEpub(source, bookId, helpers) {
     await Promise.all(runners);
     return out;
   };
-  const volData = await mapLimit(volumes.filter((v) => v && v.vid), 6, async (vol) => {
-    try { return ((await getJson(`/api/bili/novel/${bookId}/vol/${vol.vid}`)).data) || {}; } catch { return {}; }
-  });
-  // 汇总所有章节引用，再并发抓正文（限流 10 路）
-  const refs = [];
-  for (const vd of volData) for (const c of (Array.isArray(vd?.chapters) ? vd.chapters : [])) {
-    if (c && c.cid) refs.push(c);
+
+  let title = '', author = '', info = {}, chapters = [];
+
+  // 通用适配器：源脚本自带 textNovelCatalog / textNovelChapter（再漫画轻小说、拷贝轻小说等）
+  if (source.comic && typeof source.comic.textNovelCatalog === 'function') {
+    const cat = await source.comic.textNovelCatalog(bookId);
+    title = String(cat.title || '在线小说');
+    author = String(cat.author || '');
+    info = { cover: cat.cover || '', name: title };
+    const refs = [];
+    for (const v of (cat.volumes || [])) for (const c of (v.chapters || [])) {
+      refs.push({ id: c.id, title: c.title, volumeId: v.id });
+    }
+    if (!refs.length) throw new Error('这本书没有可用的章节');
+    const bodies = await mapLimit(refs, 10, async (c) => {
+      try { return await source.comic.textNovelChapter(bookId, c.id, c.volumeId); } catch { return ''; }
+    });
+    for (let i = 0; i < refs.length; i++) {
+      if (!bodies[i] || !bodies[i].trim()) continue;
+      chapters.push({ title: String(refs[i].title || '正文'), html: bodies[i] });
+    }
+    if (!chapters.length) throw new Error('这本书没有抓取到章节正文');
+  } else {
+    // 原有 lnovel / 哔哩轻小说适配器
+    const API = String(source.baseUrl || 'https://lnovel.animes.garden').replace(/\/+$/, '');
+    const getJson = async (p) => {
+      const r = await fetch(API + p, { headers: { 'User-Agent': UA_DEFAULT, Accept: 'application/json' }, signal: AbortSignal.timeout(30000) });
+      if (!r.ok) throw new Error('lnovel 请求失败 HTTP ' + r.status);
+      const j = await r.json();
+      if (j && j.ok === false) throw new Error(j.message || 'lnovel 接口错误');
+      return j;
+    };
+    info = (await getJson('/api/bili/novel/' + encodeURIComponent(bookId))).data || {};
+    title = String(info.name || '在线小说');
+    author = (info.authors || []).map((a) => a.name).filter(Boolean).join('、');
+    const volumes = Array.isArray(info.volumes) ? info.volumes : [];
+    if (!volumes.length) throw new Error('这本书没有可用的卷');
+    const volData = await mapLimit(volumes.filter((v) => v && v.vid), 6, async (vol) => {
+      try { return ((await getJson(`/api/bili/novel/${bookId}/vol/${vol.vid}`)).data) || {}; } catch { return {}; }
+    });
+    const refs = [];
+    for (const vd of volData) for (const c of (Array.isArray(vd?.chapters) ? vd.chapters : [])) {
+      if (c && c.cid) refs.push(c);
+    }
+    const bodies = await mapLimit(refs, 10, async (c) => {
+      try { return String(((await getJson(`/api/bili/novel/${bookId}/chapter/${c.cid}`)).data || {}).content || ''); } catch { return ''; }
+    });
+    for (let i = 0; i < refs.length; i++) {
+      const body = bodies[i];
+      if (!body || !body.trim()) continue;
+      chapters.push({ title: String(refs[i].title || '正文'), html: body });
+    }
+    if (!chapters.length) throw new Error('这本书没有抓取到章节正文');
   }
-  const bodies = await mapLimit(refs, 10, async (c) => {
-    try { return String(((await getJson(`/api/bili/novel/${bookId}/chapter/${c.cid}`)).data || {}).content || ''); } catch { return ''; }
-  });
-  const chapters = [];
-  for (let i = 0; i < refs.length; i++) {
-    const body = bodies[i];
-    if (!body || !body.trim()) continue;
-    chapters.push({ title: String(refs[i].title || '正文'), html: body });
-  }
-  if (!chapters.length) throw new Error('这本书没有抓取到章节正文');
 
   // 插图本地化：把正文里的远程 <img src> 下载进 EPUB 包内，重写为相对路径。
   // 这样 epubChaptersFromDir 走本地文件（不再二次联网），插图能稳定落盘显示。
