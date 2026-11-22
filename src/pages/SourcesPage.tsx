@@ -35,6 +35,7 @@ export default function SourcesPage() {
   const [tab, setTab] = useState<MediaTab>('comic');
   const [activeId, setActiveId] = useState('');
   const [kw, setKw] = useState('');
+  const [searchMode, setSearchMode] = useState<'fuzzy' | 'exact'>('fuzzy');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SourceSearchItem[]>([]);
   const [discoverTabs, setDiscoverTabs] = useState<{ index: number; title: string }[]>([]);
@@ -105,8 +106,14 @@ export default function SourcesPage() {
     setDiscovering(true);
     try {
       if (sid === ALL_SOURCES) {
-        // 聚合发现：并发拉所有同类书源，按标题去重
-        const rs = await Promise.all(tabSources.map((s) => sourcesApi.discover(s.id, tab, page).catch(() => null)));
+        // 聚合发现：并发拉所有同类书源，按标题去重。
+        // 单个源加 8 秒超时（Promise.race），慢源/失效源不拖垮整屏——以前要等最慢的源。
+        type Disco = Awaited<ReturnType<typeof sourcesApi.discover>>;
+        const withTimeout = (p: Promise<Disco | null>) => Promise.race([
+          p,
+          new Promise<null>((r) => setTimeout(() => r(null), 8000)),
+        ]);
+        const rs = await Promise.all(tabSources.map((s) => withTimeout(sourcesApi.discover(s.id, tab, page).catch(() => null))));
         const seen = new Set<string>();
         const merged: SourceSearchItem[] = [];
         for (let i = 0; i < rs.length; i++) {
@@ -137,8 +144,9 @@ export default function SourcesPage() {
     finally { setDiscovering(false); }
   }
 
-  async function doSearch() {
+  async function doSearch(modeOverride?: 'fuzzy' | 'exact') {
     if (!kw.trim()) return;
+    const mode = modeOverride || searchMode;
     const targets = isAll ? tabSources : (active ? [active] : []);
     if (!targets.length) return;
     setSearching(true);
@@ -157,10 +165,16 @@ export default function SourcesPage() {
           merged.push({ ...it, sourceId: targets[i].id, sourceName: targets[i].name });
         }
       }
-      setResults(merged);
+      // 精准模式：只保留标题与关键词完全一致（忽略大小写/空白）的结果；
+      // 模糊模式：保留源站返回的全部结果（默认，包含匹配）。
+      const q = kw.trim().toLowerCase().replace(/\s+/g, '');
+      const finalResults = mode === 'exact'
+        ? merged.filter((it) => String(it.title || '').toLowerCase().replace(/\s+/g, '') === q)
+        : merged;
+      setResults(finalResults);
       setSearched(true);
-      if (!merged.length) toast('没有搜到结果，试试别的关键词或换个书源');
-      else if (isAll) toast(`合并 ${targets.length} 个来源，找到 ${merged.length} 个结果`);
+      if (!finalResults.length) toast(mode === 'exact' ? '精准搜索无完全匹配，试试模糊搜索' : '没有搜到结果，试试别的关键词或换个书源');
+      else if (isAll) toast(`合并 ${targets.length} 个来源，找到 ${finalResults.length} 个结果`);
     } catch (err) {
       errorToast(err, '搜索失败');
     } finally {
@@ -510,9 +524,20 @@ export default function SourcesPage() {
               onChange={(e) => setKw(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && doSearch()}
             />
-            <button className="btn primary" onClick={doSearch} disabled={searching || (!active && !isAll)}>
+            <button className="btn primary" onClick={() => doSearch()} disabled={searching || (!active && !isAll)}>
               {searching ? <Icon name="spinner" size={16} className="spin" /> : <Icon name="search" size={16} />}
               搜索
+            </button>
+            <button
+              className={`btn sm ${searchMode === 'exact' ? 'primary' : ''}`}
+              onClick={() => {
+                const next = searchMode === 'fuzzy' ? 'exact' : 'fuzzy';
+                setSearchMode(next);
+                if (kw.trim() && searched) doSearch(next);
+              }}
+              title="模糊：包含关键词；精准：标题完全一致"
+            >
+              {searchMode === 'exact' ? '🎯 精准' : '🔍 模糊'}
             </button>
           </div>
 
