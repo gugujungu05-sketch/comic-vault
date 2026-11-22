@@ -675,9 +675,29 @@ export function registerSources(app) {
       const bookId = String(b.bookId || b.comicUrl || '').trim();
       const chapterPath = String(b.chapterUrl || '').trim();
       if (!bookId || !chapterPath) return res.status(400).json({ error: '缺少书籍或章节标识' });
+      const db = loadDb();
       let comic = b.comicId ? getComic(b.comicId) : null;
       if (b.comicId && (!comic || comic.createdBy !== req.user.id))
         return res.status(404).json({ error: '目标漫画不存在或不属于你' });
+      // 中断续导：前端若没传 comicId（刷新/退出后丢失），按来源书籍标识找回已建的漫画，
+      // 避免同一本书被拆成「一话一本」。只匹配当前用户创建、带同名来源的书。
+      if (!comic && b.sourceId) {
+        const key = String(b.bookId || b.comicUrl || '').trim();
+        const srcName = String(b.sourceName || '').trim().toLowerCase();
+        const comicUrl = String(b.comicUrl || '').trim();
+        comic = (db.comics || []).find((c) => {
+          if ((c.createdBy || c.ownerId) !== req.user.id || !c.source) return false;
+          const sid = String(c.source.id || '');
+          // source.id 老数据可能为空，此时不强制比对 id，靠 URL + 来源名判定
+          if (sid && sid !== String(b.sourceId)) return false;
+          const ckey = String(c.source.url || '').trim();
+          // 精确匹配：详情页 URL 或 bookId 一致（不模糊 endsWith，避免误并不同漫画）
+          if (comicUrl && ckey === comicUrl) return true;
+          if (key && ckey === key) return true;
+          if (srcName && String(c.source.name || '').toLowerCase() === srcName && c.title === String(b.title || '').trim()) return true;
+          return false;
+        }) || null;
+      }
       setImportProgress(req.user.id, {
         chapterTitle: b.chapterTitle || '正在导入', imageDone: 0, imageTotal: 0, phase: 'fetch',
       });

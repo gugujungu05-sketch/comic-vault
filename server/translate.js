@@ -32,6 +32,7 @@ async function getCanvas() {
 }
 import { DATA_DIR, STORE_DIR, loadDb, saveDbSoon } from './store.js';
 import { getJsSource, jsImageHeaders } from './js-sources.js';
+import { looksLikeImage, normalizeSourceImage } from './media.js';
 
 const UA_DEFAULT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
@@ -41,8 +42,10 @@ const PROMPT_VERSION = 'v2';
 const DEFAULT_PROMPT = `You are a professional manga translator. Look at the image carefully.
 Detect EVERY text region (speech bubbles, narration, sound effects, signs) and translate all non-{LANG} text into {LANG}.
 
-Output ONLY a JSON object, no markdown, no explanation, in this exact shape:
+Output ONLY a valid JSON object, no markdown fences, no explanation. The JSON MUST have a top-level key "regions" whose value is an array. Example (note the "regions" key is REQUIRED):
 {"regions":[{"box":[x1,y1,x2,y2],"original":"source text","translation":"{LANG} translation","vertical":false,"color":"#rrggbb","bold":false}]}
+
+CRITICAL: start your output with the literal characters {"regions":[ and end with ]}. Never output a bare object.
 
 Rules:
 - Coordinates are integers 0-1000, normalized to image size. box = [left, top, right, bottom]. Tightly fit the visible text glyphs.
@@ -98,7 +101,21 @@ async function resolveImageBuffer(url) {
   const fm = /^\/api\/files\/([^/]+)\/([^/]+)\/([^/?]+)/.exec(url);
   if (fm) {
     const full = path.join(STORE_DIR, fm[1], fm[2], fm[3]);
-    try { return await fsp.readFile(full); } catch { throw new Error('本地图片不存在'); }
+    try {
+      let buf = await fsp.readFile(full);
+      // 存量在线源图片是混淆字节/avif，sharp 读不了：先尝试读取 /api/files 生成的 .norm.jpg 缓存，
+      // 否则实时归一化后再交给模型（否则报 Unsupported image type）。
+      const normPath = `${full}.norm.jpg`;
+      try {
+        const hasNorm = await fsp.access(normPath).then(() => true).catch(() => false);
+        if (hasNorm) buf = await fsp.readFile(normPath);
+        else if (!looksLikeImage(buf) || /\.(avif|heif|heic)$/i.test(full)) {
+          const norm = await normalizeSourceImage(buf, null, { forceJpeg: true });
+          if (norm?.buf) { buf = norm.buf; await fsp.writeFile(normPath, buf).catch(() => {}); }
+        }
+      } catch { /* 归一化失败则用原字节，交由后续报错 */ }
+      return buf;
+    } catch { throw new Error('本地图片不存在'); }
   }
   // 在线来源代理：/api/online/img?sid=&u=
   if (url.startsWith('/api/online/img')) {
@@ -177,11 +194,21 @@ async function callOpenAICompatible(conf, buf) {
   };
   const headers = { 'Content-Type': 'application/json' };
   if (conf.apiKey) headers.Authorization = `Bearer ${conf.apiKey}`;
+  // 各家对 max_tokens 上限不同：智谱 glm-4v-flash 等只接受 1-1024，
+  // 写死 4096 会直接 400「max_tokens参数非法」。按服务商选安全值，并在 400 时自动降档重试。
+  const base = String(conf.baseUrl || '');
+  if (/bigmodel\.cn/i.test(base)) body.max_tokens = 1024;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 120000);
   try {
-    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
-    const text = await r.text();
+    let r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
+    let text = await r.text();
+    // 若因 max_tokens 超限被拒，降到 1024 再试一次（兼容未知中转服务）
+    if (!r.ok && /max_tokens|max_output|超出|非法/i.test(text) && body.max_tokens !== 1024) {
+      body.max_tokens = 1024;
+      r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
+      text = await r.text();
+    }
     if (!r.ok) throw new Error(`模型请求失败 HTTP ${r.status}：${slice(text, 300)}`);
     let j; try { j = JSON.parse(text); } catch { throw new Error(`返回无法解析：${slice(text, 200)}`); }
     const content = j?.choices?.[0]?.message?.content;
@@ -198,7 +225,29 @@ function extractJson(raw) {
   const start = s.indexOf('{');
   const end = s.lastIndexOf('}');
   if (start >= 0 && end > start) s = s.slice(start, end + 1);
-  return JSON.parse(s);
+  try { return JSON.parse(s); }
+  catch (e) {
+    // 容错 1：智谱 glm-4v 等模型偶尔输出 {\n {...},\n {...}\n }（漏了 "regions":[ 键）。
+    // 包一层数组再解析：把顶层裸对象列表变成合法 JSON。
+    try {
+      const inner = s.replace(/^\{\s*/, '').replace(/\s*\}$/, '').trim();
+      const wrapped = `[${inner}]`;
+      const j = JSON.parse(wrapped);
+      if (Array.isArray(j) && j.length && j.every((x) => x && typeof x === 'object')) return { regions: j };
+    } catch { /* 继续下一种兜底 */ }
+    // 容错 2：逐个 { ... } 块单独解析，收集含 box 的对象（应对多余逗号/尾随文本）
+    const blocks = [];
+    const re = /\{[^{}]*\}/g;
+    let m;
+    while ((m = re.exec(s))) {
+      try {
+        const o = JSON.parse(m[0]);
+        if (o && (o.box || o.bbox || o.rect || o.coords)) blocks.push(o);
+      } catch { /* 跳过坏块 */ }
+    }
+    if (blocks.length) return { regions: blocks };
+    throw new Error(`译文 JSON 解析失败：${e.message}`);
+  }
 }
 
 function parseRegions(raw, width, height) {
@@ -206,7 +255,12 @@ function parseRegions(raw, width, height) {
   let arr = j?.regions || j?.items || j?.texts || j?.translations;
   if (!Array.isArray(arr)) {
     if (Array.isArray(j)) arr = j;
-    else throw new Error('译文里没有找到 regions 数组');
+    else if (j && typeof j === 'object') {
+      // 容错 3：模型用数字键 {"0":{...},"1":{...}} 表示列表
+      const vals = Object.values(j).filter((v) => v && typeof v === 'object' && (v.box || v.bbox || v.rect));
+      if (vals.length) arr = vals;
+    }
+    if (!Array.isArray(arr)) throw new Error('译文里没有找到 regions 数组');
   }
   const out = [];
   for (const it of arr) {
