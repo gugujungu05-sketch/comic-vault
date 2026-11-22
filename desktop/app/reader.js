@@ -366,7 +366,14 @@
       try {
         const r = await api('GET', `/api/novel/${comicId}/${id}`);
         novelText = r.text || '';
-        if (novelContinuous) novelSegs = [{ idx: (comic.chapters || []).findIndex((c) => c.id === id), text: novelText }];
+        if (novelContinuous) {
+          const curIdx = (comic.chapters || []).findIndex((c) => c.id === id);
+          novelSegs = [{ idx: curIdx, text: novelText }];
+          // 首章即预取下一章：短章节滚不到 98% 也能连续读，不必手动切到第二章
+          if (curIdx >= 0 && curIdx < (comic.chapters || []).length - 1) {
+            setTimeout(() => loadNovelMore(), 120);
+          }
+        }
         $('#pageInfo').textContent = r.title || ch?.title || '正文';
         draw();
       } catch (err) {

@@ -68,6 +68,7 @@ export function NovelReader({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [tocOpen, setTocOpen] = useState(false);
+  const [chromeVisible, setChromeVisible] = useState(true); // 顶部/底部工具栏显隐（沉浸阅读）
   const [ratio, setRatio] = useState(initialRatio);
   const stageRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<number | null>(null);
@@ -98,12 +99,22 @@ export function NovelReader({
       .then((r) => {
         if (!alive) return;
         setText(r.text || '');
-        if (continuousRef.current) setSegments([{ idx: chapterIndex, text: r.text || '' }]);
+        if (continuousRef.current) {
+          // 连续模式首次进入：先把当前章挂上，再预取下一章，保证「第一章就能连着读」
+          setSegments([{ idx: chapterIndex, text: r.text || '' }]);
+        }
       })
       .catch(() => { if (alive) setText('（正文加载失败，请返回重试）'); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [comic.id, chapter?.id]);
+
+  // 连续模式下首章渲染后主动预取下一章：短章节滚不到 98% 也能续读，不必手动切到第二章
+  useEffect(() => {
+    if (!continuous || !text || segments.length) return;
+    const t = window.setTimeout(() => { loadMore(chapterIndex + 1); }, 120);
+    return () => window.clearTimeout(t);
+  }, [text, continuous]);
 
   // 正文渲染完成后定位到记忆的进度（或回到顶部）。连续模式每次只挂载首章，按顶部定位即可。
   useEffect(() => {
@@ -121,14 +132,14 @@ export function NovelReader({
     if (ch) onProgress?.(ch.id, Math.round(r * 1000));
   }
 
-  /** 连续阅读：滚动接近底部时按需加载下一章正文，追加到拼接列表 */
-  async function loadMore() {
+  /** 连续阅读：加载 nextIdx 那一章正文并追加到拼接列表（去重、加锁） */
+  async function loadMore(nextIdxArg?: number) {
     if (!continuousRef.current || loadingMoreLock.current) return;
     const cur = segmentsRef.current;
-    if (!cur.length) return;
-    const last = cur[cur.length - 1].idx;
-    if (last >= chapters.length - 1) return;
-    const nextIdx = last + 1;
+    const base = cur.length ? cur[cur.length - 1].idx : chapterIndex;
+    const nextIdx = typeof nextIdxArg === 'number' ? nextIdxArg : base + 1;
+    if (nextIdx < 0 || nextIdx >= chapters.length) return;
+    if (cur.some((s) => s.idx === nextIdx)) return;
     loadingMoreLock.current = true;
     setLoadingMore(true);
     try {
@@ -222,13 +233,13 @@ export function NovelReader({
   function BodyBlocks({ text: raw }: { text: string }) {
     return <>{textBlocks(raw).map((b, i) => b.t === 'img'
       ? <img key={i} className="novel-illus" src={b.v} alt="插图" loading="lazy"
-          onClick={(e) => { const el = e.currentTarget; if (el.style.cursor !== 'zoom-out') { el.style.cursor = 'zoom-out'; el.style.maxWidth = '100%'; } }} />
+          onClick={(e) => { e.stopPropagation(); const el = e.currentTarget; if (el.style.cursor !== 'zoom-out') { el.style.cursor = 'zoom-out'; el.style.maxWidth = '100%'; } }} />
       : <p key={i}>{b.v}</p>)}</>;
   }
 
   return (
     <div className="novel-reader" style={{ background: th.bg, color: th.fg }}>
-      <header className="novel-bar" style={{ background: th.bar }}>
+      <header className="novel-bar" style={{ background: th.bar, display: chromeVisible ? undefined : 'none' }}>
         <button className="nv-btn" onClick={onExit} title="返回书架">← 返回</button>
         <div className="nv-title" title={comic.title}>{comic.title}</div>
         <button className={`nv-btn ${continuous ? 'on' : ''}`} onClick={toggleContinuous}
@@ -258,7 +269,8 @@ export function NovelReader({
         </div>
       )}
 
-      <div ref={stageRef} className="novel-stage" onScroll={onScroll}>
+      <div ref={stageRef} className="novel-stage" onScroll={onScroll}
+        onClick={() => setChromeVisible((v) => !v)} title="点击正文可隐藏/显示工具栏">
         <article className="novel-body" style={{ fontSize: prefs.fontSize, lineHeight: prefs.lineHeight }}>
           {continuous ? (
             <>
@@ -290,7 +302,7 @@ export function NovelReader({
               {!loading && paragraphs.length > 0 && (
                 <>
                   <div className="novel-end" style={{ color: th.sub }}>— 本章完 —</div>
-                  <div className="novel-chapter-nav">
+                  <div className="novel-chapter-nav" onClick={(e) => e.stopPropagation()}>
                     <button onClick={() => goChapter(chapterIndex - 1)} disabled={chapterIndex === 0}>← 上一章</button>
                     <button onClick={() => goChapter(chapterIndex + 1)} disabled={chapterIndex === chapters.length - 1}>下一章 →</button>
                   </div>
@@ -301,7 +313,7 @@ export function NovelReader({
         </article>
       </div>
 
-      <footer className="novel-foot" style={{ background: th.bar, color: th.sub }}>
+      <footer className="novel-foot" style={{ background: th.bar, color: th.sub, display: chromeVisible ? undefined : 'none' }}>
         {!continuous && (
           <button className="nv-btn" onClick={() => goChapter(chapterIndex - 1)} disabled={chapterIndex === 0}>上一章</button>
         )}

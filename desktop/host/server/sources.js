@@ -553,7 +553,10 @@ export function registerSources(app) {
   });
 
   // 书源站点账号登录：把登录后的 Cookie 存进该源的 cookie 罐，供后续请求自动携带
-  router.get('/:id/cookies', requireUser, (req, res) => {
+  // 读取站点登录入口（官网地址 / 是否支持密码登录）——只返回公开配置，不含 Cookie 值，
+  // 因此不要求网站登录：未登录用户点「站点账号」也能看到官网登录入口，
+  // 否则 401 会让弹窗变空、表现为「登不上」。真正保存 Cookie / 登录仍要求登录态。
+  router.get('/:id/cookies', (req, res) => {
     const js = jsOf(req.params.id);
     if (!js) return res.status(404).json({ error: '书源不存在' });
     let website = '';
