@@ -31,7 +31,7 @@ async function getCanvas() {
   return _canvas;
 }
 import { DATA_DIR, STORE_DIR, loadDb, saveDbSoon } from './store.js';
-import { getJsSource, jsImageHeaders } from './js-sources.js';
+import { getJsSource, jsImageHeaders, jsImageDecode } from './js-sources.js';
 import { looksLikeImage, normalizeSourceImage } from './media.js';
 
 const UA_DEFAULT =
@@ -118,17 +118,25 @@ async function resolveImageBuffer(url) {
     } catch { throw new Error('本地图片不存在'); }
   }
   // 在线来源代理：/api/online/img?sid=&u=
-  if (url.startsWith('/api/online/img')) {
-    const q = new URL(url, 'http://localhost').searchParams;
+  // 前端 mediaUrl() 会把它补成绝对地址（https://后端/api/online/img?...），两种形式都要认，
+  // 否则会掉到后面的裸 http 分支、丢失 sid/u 与防盗链头，报「图片下载失败」。
+  let parsed = null;
+  try { parsed = new URL(url, 'http://localhost'); } catch { /* 忽略 */ }
+  if (parsed && parsed.pathname === '/api/online/img') {
+    const q = parsed.searchParams;
     const source = getJsSource(String(q.get('sid') || ''));
     const real = String(q.get('u') || '');
     if (!/^https?:\/\//i.test(real)) throw new Error('在线图片地址无效');
     const headers = { 'User-Agent': UA_DEFAULT, ...(source ? (jsImageHeaders(source, real) || {}) : {}) };
+    // 与在线图片代理保持一致：源没声明 Referer 时按源站补一个，否则防盗链站会 403「图片下载失败」
+    if (!headers.Referer && !headers.referer) {
+      headers.Referer = `${source?.baseUrl || ('https://' + new URL(real).host)}/`;
+    }
     let buf = await fetchBuffer(real, headers);
-    // 在线源图片常是 avif / 混淆字节，直接送模型会 Unsupported image type → 先归一化
-    if (!looksLikeImage(buf) || /\.(avif|heif|heic)(\?|$)/i.test(real)) {
+    // 在线源图片常是 avif / 混淆字节，直接送模型会 Unsupported image type → 按源声明的解码方案归一化
+    if (!looksLikeImage(buf) || /\.(avif|heif|heic)(\?|$)/i.test(real) || (source && jsImageDecode(source))) {
       try {
-        const norm = await normalizeSourceImage(buf, null, { forceJpeg: true });
+        const norm = await normalizeSourceImage(buf, source ? jsImageDecode(source) : null, { forceJpeg: true });
         if (norm?.buf) buf = norm.buf;
       } catch { /* 归一化失败交给模型判断 */ }
     }
@@ -139,19 +147,27 @@ async function resolveImageBuffer(url) {
 }
 
 async function fetchBuffer(url, headers) {
-  // 在线图片站点常有防盗链/临时 403：失败后用简化请求头重试一次
+  // 在线图片站点常有防盗链/临时 403。重试必须保留原请求头（尤其 Referer），
+  // 否则第二次请求丢掉防盗链头必然再次失败——这正是「图片下载失败」的常见成因。
+  const base = { 'User-Agent': UA_DEFAULT, ...(headers || {}) };
+  let lastErr;
   for (let attempt = 0; attempt < 2; attempt++) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 30000);
     try {
-      const h = attempt === 0 ? headers : { 'User-Agent': UA_DEFAULT };
-      const r = await fetch(url, { headers: h, signal: ac.signal, redirect: 'follow' });
+      // 第一次原样；第二次把 http 升为 https（部分源站禁用明文 http）
+      const target = attempt === 0 ? url : (/^http:\/\//i.test(url) ? 'https://' + url.slice(7) : url);
+      const r = await fetch(target, { headers: base, signal: ac.signal, redirect: 'follow' });
       if (!r.ok) throw new Error(`图片下载失败 HTTP ${r.status}`);
-      return Buffer.from(await r.arrayBuffer());
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (!buf.length) throw new Error('图片下载失败：内容为空');
+      return buf;
     } catch (err) {
+      lastErr = err;
       if (attempt === 1) throw err;
     } finally { clearTimeout(timer); }
   }
+  throw lastErr || new Error('图片下载失败');
 }
 
 /* ------------------------------ 多模态模型调用 ------------------------------ */

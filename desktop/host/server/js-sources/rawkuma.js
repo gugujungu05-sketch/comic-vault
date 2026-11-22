@@ -89,8 +89,9 @@ class Rawkuma extends ComicSource {
         try {
             const nonce = await this.nonce();
             const postHeaders = Object.assign({}, this.headers, { "Content-Type": "application/x-www-form-urlencoded" });
+            // 站内搜索框(name=query)走 admin-ajax，参数必须是 query（不是 search_term，否则返回无关热门书）
             const r = await Network.post(this.baseUrl + "/wp-admin/admin-ajax.php?nonce=" + nonce + "&action=search",
-                postHeaders, "search_term=" + encodeURIComponent(keyword));
+                postHeaders, "query=" + encodeURIComponent(keyword));
             if (r && r.status === 200 && r.body) html = String(r.body);
         } catch (e) { /* 回退 */ }
         let comics = html ? this.parseCards(html) : [];

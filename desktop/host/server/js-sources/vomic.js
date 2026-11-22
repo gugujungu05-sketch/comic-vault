@@ -95,8 +95,10 @@ class VomicSource extends ComicSource {
             Network.setCookies(this.baseUrl, [{name:"_token", value:"", domain:"www.vomicmh.com"}]);
         },
 
-        // vomic 网站无注册入口，官方注册渠道是其 App（iOS App Store id 6702025219）
-        registerWebsite: "https://apps.apple.com/app/id6702025219"
+        // 打开网页版官网即可在首页点「登录/注册」；登录弹窗走 /pics/login API。
+        // 早期这里填的是 iOS App Store（id 6702025219），点「打开官网登录」会跳到
+        // 应用商店下载页而非网页登录，用户误以为给的是旧 iPhone 应用商店，已改正。
+        registerWebsite: "https://www.vomicmh.com"
     }
 
     // RSC 文本还原（纯字符替换）
