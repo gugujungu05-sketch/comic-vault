@@ -248,7 +248,12 @@ export default function SourcesPage() {
     const picked = chapters.filter((_, i) => detail.checked.has(i));
     if (!picked.length) return toast('请先勾选要导入的章节');
     setImporting({ done: 0, total: picked.length, failed: 0 });
-    importTaskStore.start(`正在导入 ${detail.title} · 0/${picked.length} 话`);
+    importTaskStore.start(`正在导入 ${detail.title} · 0/${picked.length} 话`, {
+      sourceId: detailSourceId, sourceName: detailSourceName, title: detail.title,
+      cover: detail.cover, comicUrl: detail.bookId || detail.url,
+      bookId: detail.bookId || detail.url, kind: detail.kind || 'comic',
+      picked: picked.map((c) => ({ title: c.title, url: c.url })),
+    });
     // 轮询后端图片级进度：显示「第 N 话 · 第 x/y 张」，不再长时间卡在 0/N
     // 进度同时写入全局任务栏，返回/切到任何页面都继续可见。
     let progAlive = true;
@@ -270,6 +275,10 @@ export default function SourcesPage() {
     let failed = 0;
     let done = 0;
     for (const ch of picked) {
+      // 暂停：任务栏点「暂停」后，导入循环在每话开始前等待，点「继续」再往下走。
+      while (importTaskStore.isPaused()) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
       curChapter = done + 1;
       try {
         const r = await sourcesApi.importChapter({
@@ -329,6 +338,30 @@ export default function SourcesPage() {
 
   async function startOnlineRead(bookId: string, chapters: SourceChapterItem[], index: number, shelfItem?: OnlineShelfItem | null) {
     if (!detailSourceId) return;
+    // 在线阅读的每一本都自动进书架，确保翻页进度能落库、回来能「继续阅读」。
+    // 以前只有先手动收藏的书才有 shelfId，直接点章节播放的书进度完全不保存。
+    let sid = shelfItem?.id || '';
+    if (!sid) {
+      const key = `${detailSourceId.replace(/^js:/, '')}:${bookId}`;
+      const existing = shelf.find((x) => x.key === key);
+      if (existing) sid = existing.id;
+      else {
+        try {
+          const r = await onlineApi.addToShelf({
+            sourceId: detailSourceId,
+            bookId,
+            title: detail?.title || shelfItem?.title || '在线阅读',
+            cover: detail?.cover || '',
+            author: detail?.author || '',
+            kind: detail?.kind || 'comic',
+            chaptersTotal: chapters.length,
+          });
+          // 后端返回 {ok,item}，用 key 重新取回带 id 的书架项
+          sid = r?.item?.id || '';
+          refreshShelf();
+        } catch { /* 加入失败不影响阅读，只是进度暂不保存 */ }
+      }
+    }
     setOnlineReader({
       sourceKey: detailSourceId.replace(/^js:/, ''),
       sourceId: detailSourceId,
@@ -341,7 +374,7 @@ export default function SourcesPage() {
         pages: [] as Page[],
       })) as Chapter[],
       index,
-      shelfId: shelfItem?.id || '',
+      shelfId: sid,
     });
   }
 
@@ -396,7 +429,11 @@ export default function SourcesPage() {
                 <div className="card-body">
                   <div className="card-title" title={it.title}>{it.title}</div>
                   <div className="muted" style={{ fontSize: 11 }}>
-                    {it.progress ? `读到 ${it.progress.chapterTitle || ''}` : it.sourceName}
+                    {it.progress ? (
+                      <span className="shelf-continue" title="点击继续阅读">
+                        <Icon name="play" size={11} /> 继续阅读 · {it.progress.chapterTitle || `第 ${it.progress.pageIndex + 1} 页`}
+                      </span>
+                    ) : (`开始阅读 · ${it.sourceName}`)}
                   </div>
                 </div>
                 <button
