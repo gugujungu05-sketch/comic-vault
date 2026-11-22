@@ -7,6 +7,8 @@ try {
 } catch {
   sharp = null;
 }
+let nodeCrypto = null;
+try { nodeCrypto = (await import('node:crypto')).default; } catch { /* 忽略 */ }
 export const hasSharp = !!sharp;
 
 export const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'tif', 'tiff']);
@@ -25,6 +27,25 @@ export const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'a
  */
 export function decodeSourceImage(buf, scheme = null) {
   if (!Buffer.isBuffer(buf) || buf.length < 32) return null;
+
+  // AES-CBC 方案（漫蛙 manwa 等）：整段字节是密文，key/iv 为同一串 16 字节 hex/utf8。
+  // 解密后是标准 WebP/JPEG。仅在源显式声明 aes 时尝试，避免误伤正常图片。
+  if (scheme && scheme.aes && nodeCrypto) {
+    try {
+      const rawKey = String(scheme.aes.key || '');
+      const keyBuf = /^[0-9a-fA-F]{32}$/.test(rawKey) ? Buffer.from(rawKey, 'hex') : Buffer.from(rawKey, 'utf8');
+      const ivBuf = scheme.aes.iv
+        ? (/^[0-9a-fA-F]{32}$/.test(String(scheme.aes.iv)) ? Buffer.from(String(scheme.aes.iv), 'hex') : Buffer.from(String(scheme.aes.iv), 'utf8'))
+        : keyBuf;
+      if (keyBuf.length === 16 || keyBuf.length === 24 || keyBuf.length === 32) {
+        const algo = `aes-${keyBuf.length * 8}-cbc`;
+        const dec = nodeCrypto.createDecipheriv(algo, keyBuf, ivBuf);
+        const out = Buffer.concat([dec.update(buf), dec.final()]);
+        if (looksLikeImage(out)) return out;
+      }
+    } catch { /* 不是 AES 数据则忽略 */ }
+  }
+
   const schemes = [];
   if (scheme && Number.isFinite(Number(scheme.sub)) && Number.isFinite(Number(scheme.xor))) {
     schemes.push({ sub: Number(scheme.sub), xor: Number(scheme.xor) });

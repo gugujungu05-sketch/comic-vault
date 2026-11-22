@@ -415,7 +415,10 @@ export function jsImageHeaders(source, url) {
 export function jsImageDecode(source) {
   try {
     const d = source?.imageDecode;
-    if (d && Number.isFinite(Number(d.sub)) && Number.isFinite(Number(d.xor))) {
+    if (!d) return null;
+    // AES-CBC 方案（漫蛙等）：{ aes: { key, iv } }
+    if (d.aes && d.aes.key) return { aes: { key: String(d.aes.key), iv: d.aes.iv ? String(d.aes.iv) : String(d.aes.key) } };
+    if (Number.isFinite(Number(d.sub)) && Number.isFinite(Number(d.xor))) {
       return { sub: Number(d.sub), xor: Number(d.xor) };
     }
   } catch { /* 源脚本异常时不拦截 */ }

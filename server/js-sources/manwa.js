@@ -16,6 +16,9 @@ class ManWa extends ComicSource {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Referer": "https://manwaua.cc/",
     };
+    // 章节图（*_zb.webp）整段被 AES-128-CBC 加密，key=iv（16 字节，hex 形式）；
+    // 浏览器端用 CryptoJS 解密后得到标准 WebP。后端图片代理据此还原。封面 cover_1.jpg 未加密，不受影响。
+    imageDecode = { aes: { key: "6d793265637265743738326563726574", iv: "6d793265637265743738326563726574" } };
 
     abs(p, origin) {
         p = String(p || "").trim();
