@@ -276,6 +276,15 @@ export function registerOnline(app, helpers) {
         const detail = await jsComicDetail(source, bookId).catch(() => ({}));
         if (parsed.title && !parsed.author) parsed.author = detail.author || '';
         if (!parsed.title) parsed.title = detail.title || `在线小说 ${bookId}`;
+        // 在线小说封面：优先书源详情里的封面 URL（带回源站防盗链头），让入库后有真实封面
+        const detailCover = detail?.cover || (source.mediaType === 'novel' ? '' : '');
+        if (detailCover && /^https?:\/\//i.test(detailCover)) {
+          try {
+            const ih = jsImageHeaders(source, detailCover) || {};
+            parsed.cover = detailCover;
+            parsed.coverHeaders = { 'User-Agent': UA_DEFAULT, ...ih };
+          } catch { /* 无防盗链头时直接抓 */ }
+        }
         const comic = await helpers.createNovelComic(req, parsed);
         return res.json({ kind: 'novel', comic });
       } finally {

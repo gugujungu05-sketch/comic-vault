@@ -26,7 +26,7 @@ import { requireUser } from './social.js';
 import {
   loadJsSources, allJsSources, getJsSource,
   jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode,
-  jsDiscoverTabs, jsDiscoverLoad, jsSetSourceCookies,
+  jsDiscoverTabs, jsDiscoverLoad, jsSetSourceCookies, jsAccountLogin, jsRegisterWebsite,
 } from './js-sources.js';
 
 const now = () => Date.now();
@@ -556,7 +556,23 @@ export function registerSources(app) {
   router.get('/:id/cookies', requireUser, (req, res) => {
     const js = jsOf(req.params.id);
     if (!js) return res.status(404).json({ error: '书源不存在' });
-    res.json({ ok: true, source: js.name, accountHint: js.accountHint || '' });
+    let website = '';
+    let canPasswordLogin = false;
+    try {
+      website = jsRegisterWebsite(req.params.id) || '';
+      const src = getJsSource(req.params.id);
+      canPasswordLogin = !!(src && src.account && typeof src.account.login === 'function');
+    } catch { /* 忽略 */ }
+    res.json({ ok: true, source: js.name, accountHint: js.accountHint || '', website, canPasswordLogin });
+  });
+
+  // 源账号密码登录（可选）：直接调用源脚本的 account.login
+  router.post('/:id/account-login', requireUser, async (req, res) => {
+    try {
+      const r = await jsAccountLogin(req.params.id, req.body?.account, req.body?.password);
+      if (!r.ok) return res.status(400).json(r);
+      res.json(r);
+    } catch (e) { res.status(400).json({ ok: false, error: e?.message || '登录失败' }); }
   });
   router.post('/:id/cookies', requireUser, (req, res) => {
     const js = jsOf(req.params.id);

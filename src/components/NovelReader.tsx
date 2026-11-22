@@ -14,6 +14,22 @@ const PREFS_KEY = 'cv-novel-prefs';
 type Theme = 'dark' | 'sepia' | 'green' | 'light';
 interface Prefs { fontSize: number; lineHeight: number; theme: Theme; continuous: boolean }
 interface Segment { idx: number; text: string }
+/** 把正文拆成「文字段 / 插图」：后端把 EPUB <img> 落成 [[IMG:url]] 占位符 */
+type Block = { t: 'p'; v: string } | { t: 'img'; v: string };
+function textBlocks(text: string): Block[] {
+  const out: Block[] = [];
+  const re = /\[\[IMG:([^\]]+)\]\]/g;
+  let last = 0; let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const before = text.slice(last, m.index).split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    for (const p of before) out.push({ t: 'p', v: p });
+    out.push({ t: 'img', v: m[1] });
+    last = m.index + m[0].length;
+  }
+  const tail = text.slice(last).split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  for (const p of tail) out.push({ t: 'p', v: p });
+  return out;
+}
 
 const DEFAULT_PREFS: Prefs = { fontSize: 19, lineHeight: 1.9, theme: 'dark', continuous: false };
 const THEMES: Record<Theme, { bg: string; fg: string; sub: string; bar: string; label: string }> = {
@@ -203,6 +219,13 @@ export function NovelReader({
   const paragraphs = text.split(/\n+/).map((s) => s.trim()).filter(Boolean);
   const shownSegments = segments.length ? segments : (text ? [{ idx: chapterIndex, text }] : []);
 
+  function BodyBlocks({ text: raw }: { text: string }) {
+    return <>{textBlocks(raw).map((b, i) => b.t === 'img'
+      ? <img key={i} className="novel-illus" src={b.v} alt="插图" loading="lazy"
+          onClick={(e) => { const el = e.currentTarget; if (el.style.cursor !== 'zoom-out') { el.style.cursor = 'zoom-out'; el.style.maxWidth = '100%'; } }} />
+      : <p key={i}>{b.v}</p>)}</>;
+  }
+
   return (
     <div className="novel-reader" style={{ background: th.bg, color: th.fg }}>
       <header className="novel-bar" style={{ background: th.bar }}>
@@ -241,14 +264,13 @@ export function NovelReader({
             <>
               {shownSegments.map((seg, si) => {
                 const c = chapters[seg.idx];
-                const ps = seg.text.split(/\n+/).map((s) => s.trim()).filter(Boolean);
                 return (
                   <section key={seg.idx} className="novel-seg"
                     ref={(el) => { segRefs.current[seg.idx] = el; }}>
                     {si === 0
                       ? <h1 className="novel-h1">{c?.title || '正文'}</h1>
                       : <h2 className="novel-seg-title">{c?.title || '继续'}</h2>}
-                    {ps.map((p, i) => <p key={i}>{p}</p>)}
+                    <BodyBlocks text={seg.text} />
                   </section>
                 );
               })}
@@ -264,7 +286,7 @@ export function NovelReader({
             <>
               <h1 className="novel-h1">{chapter?.title || '正文'}</h1>
               {loading && <div style={{ color: th.sub, padding: '40px 0' }}>正在加载本章…</div>}
-              {!loading && paragraphs.map((p, i) => <p key={i}>{p}</p>)}
+              {!loading && <BodyBlocks text={text} />}
               {!loading && paragraphs.length > 0 && (
                 <>
                   <div className="novel-end" style={{ color: th.sub }}>— 本章完 —</div>

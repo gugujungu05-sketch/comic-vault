@@ -1511,7 +1511,7 @@ function novelDir(comicId) {
 
 /** 正文独立落盘，db.json 只存文件名：整本小说不会拖慢所有接口。
  *  几百话的书逐章同步 writeFileSync 很慢，改为 64 路并发批量写。 */
-async function createNovelComic(req, { title, author, description, chapters, mergeShort, minChars }) {
+async function createNovelComic(req, { title, author, description, chapters, mergeShort, minChars, cover, coverHeaders, imageFiles, coverFile }) {
   const db = loadDb();
   const t = now();
   const comic = {
@@ -1530,7 +1530,23 @@ async function createNovelComic(req, { title, author, description, chapters, mer
   };
   const dir = novelDir(comic.id);
   fs.mkdirSync(dir, { recursive: true });
+  // 小说插图落盘：走标准文件路由 /api/files/:comicId/_images/:file，
+  // 所以目录必须是 comicDir/_images（与 chapterId='_images' 对应），而非 _text 下。
+  const imgDir = path.join(comicDir(comic.id), '_images');
+  let imgUrlByName = null;
+  if (Array.isArray(imageFiles) && imageFiles.length) {
+    fs.mkdirSync(imgDir, { recursive: true });
+    imgUrlByName = {};
+    for (const { name, buf } of imageFiles) {
+      const safe = isSafeSegment(name) ? name : `img_${nanoid(6)}.png`;
+      try { fs.writeFileSync(path.join(imgDir, safe), buf); } catch { continue; }
+      imgUrlByName[name] = `/api/files/${comic.id}/_images/${safe}`;
+    }
+  }
   const picked = mergeShortChapters(chapters, { mergeShort, minChars }).slice(0, 5000);
+  const rewriteImgs = (txt) => imgUrlByName
+    ? String(txt).replace(/\[\[IMG:([^\]]+)\]\]/g, (m, name) => imgUrlByName[name] ? `\n[[IMG:${imgUrlByName[name]}]]\n` : '')
+    : String(txt).replace(/\[\[IMG:[^\]]+\]\]/g, '');
   comic.chapters = picked.map((c, i) => {
     const id = newId('ch');
     return {
@@ -1542,8 +1558,46 @@ async function createNovelComic(req, { title, author, description, chapters, mer
   const WRITE_BATCH = 64;
   for (let i = 0; i < comic.chapters.length; i += WRITE_BATCH) {
     await Promise.all(comic.chapters.slice(i, i + WRITE_BATCH).map((ch, j) =>
-      fsp.writeFile(path.join(dir, ch.textFile), String(picked[i + j].text || ''), 'utf8').catch(() => {}),
+      fsp.writeFile(path.join(dir, ch.textFile), rewriteImgs(picked[i + j].text || ''), 'utf8').catch(() => {}),
     ));
+  }
+  // EPUB 内嵌封面优先（本地文字书导入）
+  if (coverFile?.buf?.length) {
+    try {
+      const coverDir = path.join(comicDir(comic.id), '_cover');
+      await fsp.mkdir(coverDir, { recursive: true });
+      await fsp.writeFile(path.join(coverDir, coverFile.name), coverFile.buf);
+      comic.cover = { type: 'file', file: coverFile.name };
+    } catch { /* 忽略 */ }
+  }
+  // 在线小说封面：把源站封面抓到本地 _cover 目录，前端用独立书籍封面兜底也用得上。
+  // 失败不影响入库（前端对小说有文字书籍样式兜底）。
+  if (!comic.cover && cover && /^https?:\/\//i.test(String(cover))) {
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 15000);
+      const r = await fetch(String(cover), {
+        headers: { 'User-Agent': UA_DEFAULT, ...(coverHeaders || {}) },
+        signal: ac.signal,
+      });
+      clearTimeout(timer);
+      if (r.ok) {
+        const cbuf = Buffer.from(await r.arrayBuffer());
+        if (cbuf.length > 1024) {
+          let mime = String(r.headers.get('content-type') || '').toLowerCase();
+          let ext = (mime.match(/image\/(\w+)/) || [])[1] || '';
+          if (!/^(jpe?g|png|webp|gif|avif|bmp)$/i.test(ext)) {
+            ext = (String(cover).match(/\.(jpe?g|png|webp|gif|avif|bmp)(?=\?|$)/i) || [])[1] || 'jpg';
+          }
+          if (ext === 'jpeg') ext = 'jpg';
+          const coverDir = path.join(comicDir(comic.id), '_cover');
+          await fsp.mkdir(coverDir, { recursive: true });
+          const name = `cover_${nanoid(6)}.${ext}`;
+          await fsp.writeFile(path.join(coverDir, name), cbuf);
+          comic.cover = { type: 'file', file: name };
+        }
+      }
+    } catch { /* 封面抓取失败不影响小说入库 */ }
   }
   db.comics.unshift(comic);
   saveDbSoon();
@@ -1585,6 +1639,31 @@ function epubResolve(baseDir, href) {
  */
 async function epubChaptersFromDir(outDir) {
   /** EPUB 内 XHTML/OPF 编码智能识别：BOM → UTF-8 → GB18030（番茄/部分阅读器导出的 EPUB 是 GBK） */
+  const images = new Map(); // 文件名(唯一) → { buf, ext }，正文里用 [[IMG:name]] 占位，导入时落盘
+  let imgSeq = 0;
+  const collectImages = (html, baseRel) => {
+    let out = html;
+    const dirOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/') + 1) : '');
+    const resolve = (src) => epubResolve(dirOf(baseRel), src);
+    // <img src="..."> 与 <image ... xlink:href="...">
+    out = out.replace(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (full, src) => {
+      const rel = resolve(src);
+      const ext = (rel.match(/\.(jpe?g|png|webp|gif|bmp|svg)(?=\?|$)/i) || [])[1] || 'png';
+      if (/\.svg$/i.test(ext)) return ''; // svg 插图跳过（阅读器不渲染，避免占位空白）
+      const name = `img_${String(++imgSeq).padStart(4, '0')}.${ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()}`;
+      images.set(name, rel);
+      return `\n[[IMG:${name}]]\n`;
+    });
+    out = out.replace(/<image\b[^>]*?\b(?:xlink:)?href\s*=\s*["']([^"']+)["'][^>]*\/?>/gi, (full, src) => {
+      const rel = resolve(src);
+      const ext = (rel.match(/\.(jpe?g|png|webp|gif|bmp|svg)(?=\?|$)/i) || [])[1] || 'png';
+      if (/\.svg$/i.test(ext)) return '';
+      const name = `img_${String(++imgSeq).padStart(4, '0')}.${ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()}`;
+      images.set(name, rel);
+      return `\n[[IMG:${name}]]\n`;
+    });
+    return out;
+  };
   const read = async (rel) => {
     try {
       const buf = await fsp.readFile(path.join(outDir, rel));
@@ -1643,6 +1722,8 @@ async function epubChaptersFromDir(outDir) {
     const hm = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || html.match(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i);
     const headTitle = hm ? hm[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
     let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || [, ''])[1];
+    // 先抽取插图为占位符（在剥离 HTML 标签之前），图片文件随书一起落盘
+    body = collectImages(body, rel);
     body = body
       .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
       .replace(/<br\s*\/?>/gi, '\n')
@@ -1662,11 +1743,39 @@ async function epubChaptersFromDir(outDir) {
   const totalText = chapters.reduce((n, c) => n + c.text.length, 0);
   // 图片漫画：正文很少、图片多；或完全没有可提取文字
   if (!chapters.length || (imageCount >= 3 && totalText < 500)) return { kind: 'image' };
+  // 把收集到的插图文件读成 Buffer（相对 outDir），交给 createNovelComic 落盘
+  const imageFiles = [];
+  for (const [name, rel] of images) {
+    try {
+      const buf = await fsp.readFile(path.join(outDir, rel));
+      if (buf.length > 32) imageFiles.push({ name, buf });
+    } catch { /* 单张缺失不影响正文 */ }
+  }
   return {
     kind: 'novel',
     title: dc('dc:title'), author: dc('dc:creator'),
     description: dc('dc:description'), chapters,
+    // 从 OPF 的 cover（<meta name="cover">）读出封面 buffer 供入库做封面
+    coverFile: await pickEpubCover(opf, manifest, opfDir, outDir),
+    imageFiles,
   };
+}
+
+/** 从 EPUB 的 OPF 里找 cover 图片并读出 { name, buf }，供入库做封面 */
+async function pickEpubCover(opf, manifest, opfDir, outDir) {
+  try {
+    let coverId = (opf.match(/<meta\b[^>]*\bname\s*=\s*["']cover["'][^>]*\bcontent\s*=\s*["']([^"']+)["']/i) || [])[1];
+    if (!coverId) coverId = (opf.match(/<meta\b[^>]*\bcontent\s*=\s*["']([^"']+)["'][^>]*\bname\s*=\s*["']cover["']/i) || [])[1];
+    if (!coverId) coverId = (opf.match(/<item\b[^>]*\bid\s*=\s*["']([^"']+)["'][^>]*\bproperties\s*=\s*["'][^"']*\bcover-image\b/i) || [])[1];
+    if (!coverId) coverId = (opf.match(/<item\b[^>]*\bproperties\s*=\s*["'][^"']*\bcover-image\b[^"']*["'][^>]*\bid\s*=\s*["']([^"']+)["']/i) || [])[1];
+    const coverRel = coverId && manifest.get(coverId);
+    if (!coverRel) return null;
+    const rel = epubResolve(opfDir, coverRel);
+    const buf = await fsp.readFile(path.join(outDir, rel));
+    if (!buf || buf.length < 100) return null;
+    const ext = (rel.match(/\.(jpe?g|png|webp|gif|bmp)(?=\?|$)/i) || [])[1] || 'jpg';
+    return { name: `cover_${nanoid(6)}.${ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()}`, buf };
+  } catch { return null; }
 }
 
 /** 上传 TXT / EPUB → 服务端一次解析分章入库（网站与桌面端共用，速度接近本地阅读器） */

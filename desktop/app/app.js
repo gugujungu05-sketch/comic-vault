@@ -443,12 +443,14 @@
       <span class="spacer"></span>
       <button class="btn sm danger" data-action="sel-delete" ${state.selComics.size ? '' : 'disabled'}>删除选中</button></div>` : ''}
       <div class="grid">${state.comics.map((c) => `
-      <div class="card ${sel && state.selComics.has(c.id) ? 'sel' : ''}" data-action="${sel ? 'sel-comic' : 'open-comic'}" data-id="${esc(c.id)}">
-        <div class="cover">${coverUrl(c) ? `<img src="${esc(coverUrl(c))}" loading="lazy" />` : '📖'}
+      <div class="card ${c.kind === 'novel' ? 'is-novel' : ''} ${sel && state.selComics.has(c.id) ? 'sel' : ''}" data-action="${sel ? 'sel-comic' : 'open-comic'}" data-id="${esc(c.id)}">
+        <div class="cover">${c.kind === 'novel'
+          ? `<div class="novel-cover-art">${coverUrl(c) ? `<img class="novel-cover-bg" src="${esc(coverUrl(c))}" loading="lazy" />` : ''}<span class="novel-cover-spine"></span><span class="novel-cover-text"><span class="novel-cover-kicker">小 说</span><span class="novel-cover-title">${esc(c.title)}</span><span class="novel-cover-rule"></span><span class="novel-cover-author">${esc(c.author || '佚名')}</span></span></div>`
+          : (coverUrl(c) ? `<img src="${esc(coverUrl(c))}" loading="lazy" />` : '📖')}
           ${sel ? `<span class="pick ${state.selComics.has(c.id) ? 'on' : ''}">${state.selComics.has(c.id) ? '✓' : ''}</span>` : ''}
           ${!sel && c.progress?.chapterId ? '<span class="cover-progress"></span><span class="cover-reading">在读</span>' : ''}</div>
         <div class="card-body"><div class="card-title">${esc(c.title)}</div>
-          <div class="card-meta">${c.chapterCount || 0} 话 · ${c.pageCount || 0} 页${c.scope === 'community' ? ' · <span class="badge">公共</span>' : ''}</div></div>
+          <div class="card-meta">${c.kind === 'novel' ? `${c.chapterCount || 0} 章 · 小说` : `${c.chapterCount || 0} 话 · ${c.pageCount || 0} 页`}${c.scope === 'community' ? ' · <span class="badge">公共</span>' : ''}</div></div>
       </div>`).join('')}</div>`;
   }
 
@@ -579,7 +581,9 @@
             <span>${esc(ch.title)}</span></label>`).join('')}</div>
         <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
         <button class="btn" data-action="src-subscribe" data-url="${esc(item.link)}" data-title="${esc(r.title)}" data-cover="${esc(r.cover || '')}">🔔 加入追更</button>
-        <button class="btn primary" data-action="src-import">导入选中章节</button></div>
+        ${(r.chapters || []).length
+          ? `<button class="btn primary" data-action="src-import">导入选中章节</button>`
+          : `<button class="btn primary" data-action="src-import-book" data-book="${esc(item.link)}">📚 整本导入小说（自动分章，可编辑）</button>`}</div>
       <span id="busyLabel" class="muted" style="font-size:12px;display:block;margin-top:6px;color:var(--accent)"></span>`, true);
       $('#modal').onchange = (e) => {
         const cb = e.target.closest('input[type=checkbox][data-j]');
@@ -653,22 +657,67 @@
     saveImportTask(); renderImportTask();
     toast(`导入完成：成功 ${picked.length - failed} 话${failed ? `，失败 ${failed} 话` : ''}`);
   }
+  /** 在线小说整本导入：走后端 /api/online/:sourceKey/import-book 抓取全文并自动分章入库 */
+  async function srcImportBook(bookId) {
+    if (!bookId || !state.user) return toast('请先登录再导入', true);
+    const sKey = String(state.sourceId || '').replace(/^js:/, '');
+    busy(true, '整本导入中…');
+    closeModal();
+    state.importTask = { active: true, done: 0, total: 1, failed: 0, label: '正在整本导入小说…', comicId: '', finished: false };
+    saveImportTask(); renderImportTask();
+    try {
+      const r = await api('POST', `/api/online/${encodeURIComponent(sKey)}/import-book`, { body: { bookId } });
+      const cnt = r?.comic?.chapterCount || 1;
+      state.importTask = { active: false, done: cnt, total: cnt, failed: 0, label: '', comicId: r?.comic?.id || '', finished: true };
+      saveImportTask(); renderImportTask();
+      toast(`已加入书库：共 ${cnt} 章`);
+    } catch (err) {
+      state.importTask = { active: false, done: 0, total: 0, failed: 1, label: '', comicId: '', finished: true };
+      saveImportTask(); renderImportTask();
+      toast(err.message || '整本导入失败', true);
+    } finally { busy(false); }
+  }
   /** 站点账号：给需要登录的书源（拷贝/热辣/vomic 等）粘贴登录后的 Cookie */
   async function srcAccount() {
     const sid = state.sourceId;
     const src = state.sourcesList.find((s) => s.id === sid);
     let info = {};
     try { info = await api('GET', `/api/sources/${encodeURIComponent(sid)}/cookies`); } catch { /* 忽略 */ }
-    openModal(`<h3>站点账号 · ${esc(src?.name || '书源')}</h3>
+    const website = info?.website || '';
+    const canPwd = !!info?.canPasswordLogin;
+    openModal(`<h3>站点账号（可选） · ${esc(src?.name || '书源')}</h3>
       <p class="muted" style="font-size:12px;margin:6px 0 10px;line-height:1.7">
-        部分站点（拷贝漫画、热辣漫画、vomic 等）看详情/图片需要登录。<br>
-        在浏览器登录该站点后，打开开发者工具 → Network → 任选一个请求 → 复制请求头里的 <b>Cookie</b>，粘贴到下面保存即可。<br>
-        保存后本软件访问该源会自动带上登录态。Cookie 只存在你的服务端，不会上传第三方。
+        登录<b>不是必须</b>的，不登录也能浏览、搜索、看免费内容。登录只用于<b>同步书架 / 收藏</b>或<b>解锁会员/受限内容</b>（和 kira / ciallo reader 一样）。
       </p>
-      <label class="field"><span>Cookie（留空并保存 = 清除登录）</span>
-        <textarea class="textarea" id="srcCookie" rows="4" style="font-family:monospace;font-size:11px" placeholder="key1=value1; key2=value2">${esc(info?.cookie || '')}</textarea></label>
-      <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
-        <button class="btn primary" data-action="src-account-save">保存登录态</button></div>`, true);
+      ${website ? `<div class="card" style="padding:12px;margin-bottom:10px">
+        <b style="font-size:13px">① 打开官网登录（推荐）</b>
+        <p class="muted" style="font-size:11px;margin:6px 0 8px">在新窗口打开官网登录账号，登录后回到这里粘贴 Cookie（方式③）。</p>
+        <button class="btn primary" data-action="src-account-open" data-url="${esc(website)}">🌐 打开官网登录</button></div>` : ''}
+      ${canPwd ? `<div class="card" style="padding:12px;margin-bottom:10px">
+        <b style="font-size:13px">② 账号密码登录</b>
+        <div class="row" style="gap:8px;margin-top:8px">
+          <input class="input" id="srcAcctUser" placeholder="账号 / 手机号" style="flex:1;min-width:120px" />
+          <input class="input" id="srcAcctPwd" type="password" placeholder="密码" style="flex:1;min-width:120px" />
+          <button class="btn" data-action="src-account-pwd">登录</button></div></div>` : ''}
+      <div class="card" style="padding:12px">
+        <b style="font-size:13px">③ 粘贴 Cookie（通用兜底）</b>
+        <p class="muted" style="font-size:11px;margin:6px 0 8px">官网登录后按 F12 → Network → 任选请求 → 复制请求头 Cookie，粘贴到下面。留空保存 = 清除。</p>
+        <label class="field"><span>Cookie</span>
+          <textarea class="textarea" id="srcCookie" rows="3" style="font-family:monospace;font-size:11px" placeholder="key1=value1; key2=value2">${esc(info?.cookie || '')}</textarea></label>
+        <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
+          <button class="btn primary" data-action="src-account-save">保存 Cookie</button></div>
+      </div>`, true);
+  }
+  async function srcAccountPwd() {
+    const u = $('#srcAcctUser')?.value || '', p = $('#srcAcctPwd')?.value || '';
+    if (!u.trim() || !p) return toast('请填写账号和密码', true);
+    busy(true, '登录中…');
+    try {
+      const r = await api('POST', `/api/sources/${encodeURIComponent(state.sourceId)}/account-login`, { body: { account: u.trim(), password: p } });
+      toast(r?.message || '登录成功');
+      closeModal();
+    } catch (err) { toast(err.message || '登录失败', true); }
+    finally { busy(false); }
   }
   async function srcAccountSave() {
     const cookies = $('#srcCookie')?.value || '';
@@ -1542,17 +1591,19 @@
     const doc = await pdfjs.getDocument({ data: u8, isEvalSupported: false }).promise;
     const out = [], stem = base(pdfPath).replace(/\.pdf$/i, '');
     const pad = Math.max(4, String(doc.numPages).length);
+    // 复用单个 canvas + JPEG 输出：长 PDF 逐页新建 canvas（PNG）会累积 GPU 内存并越渲越慢
+    const cv = document.createElement('canvas');
+    const ctx = cv.getContext('2d');
     try {
       for (let i = 1; i <= doc.numPages; i++) {
+        if (i > 1 && i % 4 === 0) await new Promise((r) => setTimeout(r, 0)); // 让出主线程，避免卡死
         const page = await doc.getPage(i);
-        const vp = page.getViewport({ scale: 1.5 });
-        const cv = document.createElement('canvas');
+        const vp = page.getViewport({ scale: 1.3 });
         cv.width = Math.max(1, Math.ceil(vp.width)); cv.height = Math.max(1, Math.ceil(vp.height));
-        const ctx = cv.getContext('2d');
         ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cv.width, cv.height);
         await page.render({ canvasContext: ctx, viewport: vp, canvas: cv }).promise;
         const hint = `${stem}-${String(i).padStart(pad, '0')}`;
-        const tmp = await Host.saveTempImage(cv.toDataURL('image/png'), hint);
+        const tmp = await Host.saveTempImage(cv.toDataURL('image/jpeg', 0.9), hint);
         if (tmp) out.push(tmp);
         page.cleanup();
         if (onProgress) onProgress(i, doc.numPages);
@@ -2326,6 +2377,9 @@
       else if (a === 'src-save') await srcSave();
       else if (a === 'src-account') await srcAccount();
       else if (a === 'src-account-save') await srcAccountSave();
+      else if (a === 'src-import-book') await srcImportBook(b.dataset.book);
+      else if (a === 'src-account-pwd') await srcAccountPwd();
+      else if (a === 'src-account-open') { const url = b.dataset.url; if (url) { if (Host.openExternal) await Host.openExternal(url); else window.open(url, '_blank', 'noopener'); } }
       else if (a === 'src-subscribe') await subscribe(el.dataset.url, el.dataset.title, el.dataset.cover);
       else if (a === 'rename-chapter') await renameChapter(id);
       else if (a === 'manage-pages') await openPageManager(id);
