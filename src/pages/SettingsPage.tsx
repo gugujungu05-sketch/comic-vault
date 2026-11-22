@@ -45,6 +45,14 @@ export function SettingsPage() {
   const [trCfg, setTrCfg] = useState<TranslateConfig | null>(null);
   const [trBusy, setTrBusy] = useState(false);
   const [trTest, setTrTest] = useState<{ ok: boolean; msg: string } | null>(null);
+  // 翻译服务快速预设：选服务后自动填 provider/baseUrl/model，用户只需粘 Key
+  const TR_PRESETS: Record<string, { provider: TranslateConfig['provider']; baseUrl: string; model: string; label: string; hint: string }> = {
+    gemini: { provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', label: 'Google Gemini（免费额度最香，识图最准 · 需能访问谷歌）', hint: '谷歌账号登录 aistudio.google.com → Get API Key → 复制粘贴到下面。免费版每天 1500 次。国内网络需给软件挂代理。' },
+    glm4v: { provider: 'custom', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4v-flash', label: '智谱 GLM-4V-Flash（国内直连 · 免费）', hint: '注册 open.bigmodel.cn → 控制台复制 API Key。免费视觉模型，国内直连无需代理。' },
+    siliconflow: { provider: 'custom', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-VL-32B-Instruct', label: '硅基流动 Qwen-VL（国内直连 · 有免费额度）', hint: '注册 siliconflow.cn → 复制 API Key。国内直连，新用户有免费额度。' },
+    openai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', label: 'OpenAI GPT-4o（付费 · 需能访问）', hint: 'platform.openai.com 创建 API Key。识图翻译准确，按量付费。' },
+  };
+  const [trPreset, setTrPreset] = useState('gemini');
 
   useEffect(() => {
     api.stats().then(setStats).catch(() => {});
@@ -286,6 +294,25 @@ export function SettingsPage() {
             <div className="muted sm-text">正在读取翻译设置…</div>
           ) : (
             <>
+              {/* 快速预设：一键填好地址与模型，用户只需粘 Key */}
+              <div className="field" style={{ width: '100%' }}>
+                <span>① 选翻译服务（一键填好地址与模型）</span>
+                <select
+                  className="input"
+                  value={trPreset}
+                  onChange={(e) => {
+                    const key = e.target.value;
+                    setTrPreset(key);
+                    const p = TR_PRESETS[key];
+                    if (p) setTrCfg({ ...trCfg, provider: p.provider, baseUrl: p.baseUrl, model: p.model });
+                  }}
+                >
+                  {Object.entries(TR_PRESETS).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
+                </select>
+                <div className="muted sm-text" style={{ marginTop: 4, lineHeight: 1.5 }}>
+                  {TR_PRESETS[trPreset]?.hint}
+                </div>
+              </div>
               <div className="row wrap" style={{ gap: 8 }}>
                 <label className="field">
                   <span>服务商</span>
