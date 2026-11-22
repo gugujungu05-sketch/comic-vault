@@ -968,6 +968,15 @@ export const sources = {
 
   remove: (id: string) => request<{ ok: boolean }>(`/api/sources/${id}`, { method: 'DELETE' }),
 
+  /** 书源站点账号：保存/清除登录 Cookie（拷贝/热辣/vomic 等需登录的源） */
+  getCookies: (id: string) => request<{ ok: boolean; source: string; accountHint?: string }>(
+    `/api/sources/${id}/cookies`,
+  ),
+  saveCookies: (id: string, cookies: string) =>
+    request<{ ok: boolean; count?: number; cleared?: boolean }>(`/api/sources/${id}/cookies`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookies }),
+    }),
+
   search: (id: string, kw: string, page = 1) =>
     request<{ items: SourceSearchItem[]; url: string }>(
       `/api/sources/${id}/search?kw=${encodeURIComponent(kw)}&page=${page}`,

@@ -26,7 +26,7 @@ import { requireUser } from './social.js';
 import {
   loadJsSources, allJsSources, getJsSource,
   jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode,
-  jsDiscoverTabs, jsDiscoverLoad,
+  jsDiscoverTabs, jsDiscoverLoad, jsSetSourceCookies,
 } from './js-sources.js';
 
 const now = () => Date.now();
@@ -550,6 +550,21 @@ export function registerSources(app) {
     const list = loadSources().filter((s) => s.id !== req.params.id);
     saveSources(list);
     res.json({ ok: true });
+  });
+
+  // 书源站点账号登录：把登录后的 Cookie 存进该源的 cookie 罐，供后续请求自动携带
+  router.get('/:id/cookies', requireUser, (req, res) => {
+    const js = jsOf(req.params.id);
+    if (!js) return res.status(404).json({ error: '书源不存在' });
+    res.json({ ok: true, source: js.name, accountHint: js.accountHint || '' });
+  });
+  router.post('/:id/cookies', requireUser, (req, res) => {
+    const js = jsOf(req.params.id);
+    if (!js) return res.status(404).json({ error: '书源不存在' });
+    try {
+      const r = jsSetSourceCookies(req.params.id, req.body?.cookies || '', req.body?.domain || '');
+      res.json(r);
+    } catch (e) { res.status(400).json({ error: e?.message || '保存 Cookie 失败' }); }
   });
 
   // 发现 / 浏览：进入书源不搜索也能看到漫画 / 小说列表

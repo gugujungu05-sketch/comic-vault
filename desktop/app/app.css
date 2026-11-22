@@ -247,6 +247,34 @@ label.field > span { display: block; margin-bottom: 5px; font-weight: 600; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.err { border-color: var(--danger); }
+
+/* 全局导入任务栏：悬浮在底部导航上方，导入中/完成都可见，跨页面常驻 */
+.import-taskbar {
+  position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%);
+  width: min(460px, calc(100% - 24px)); z-index: 78;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel-2); border: 1px solid var(--accent);
+  border-radius: 12px; padding: 9px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.35);
+}
+.import-taskbar .itb-icon {
+  width: 30px; height: 30px; flex: none; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  display: grid; place-items: center; font-size: 15px; font-weight: 700;
+}
+.import-taskbar .itb-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.import-taskbar .itb-body b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.import-taskbar .itb-body span { font-size: 11px; color: var(--muted); }
+.import-taskbar .itb-track { height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.import-taskbar .itb-track i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.import-taskbar .itb-btn {
+  flex: none; border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  border-radius: 7px; padding: 5px 11px; font-size: 11px; cursor: pointer;
+}
+.import-taskbar .itb-close {
+  flex: none; border: 0; background: none; color: var(--muted); font-size: 18px;
+  line-height: 1; cursor: pointer; padding: 0 2px;
+}
+@media (min-width: 900px) { .import-taskbar { bottom: 20px; } }
 .drop-overlay { position: fixed; inset: 0; background: rgba(6,14,12,.86); display: none; place-items: center; z-index: 70; pointer-events: none; }
 .drop-overlay.show { display: grid; }
 .drop-card { border: 2px dashed var(--accent); border-radius: 16px; padding: 42px 70px; text-align: center; }

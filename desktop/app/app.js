@@ -35,7 +35,38 @@
     subs: [],
     selecting: false, selComics: new Set(),
     trCfg: null,   // AI 翻译配置（生肉漫画→中文）
+    // 全局导入任务：{active, done, total, failed, label, comicId, finished}
+    importTask: { active: false, done: 0, total: 0, failed: 0, label: '', comicId: '', finished: false },
   };
+
+  /* ------------------------------ 全局导入任务栏 ------------------------------ */
+  const IT_KEY = 'cv_import_task';
+  function saveImportTask() {
+    try { localStorage.setItem(IT_KEY, JSON.stringify(state.importTask)); } catch { /* 忽略 */ }
+  }
+  function loadImportTask() {
+    try {
+      const raw = localStorage.getItem(IT_KEY);
+      if (raw) state.importTask = Object.assign(state.importTask, JSON.parse(raw));
+    } catch { /* 忽略 */ }
+  }
+  function renderImportTask() {
+    const box = $('#importTaskbar');
+    if (!box) return;
+    const t = state.importTask;
+    if (!t || (!t.active && !t.finished)) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    box.style.display = '';
+    const pct = t.total ? Math.min(100, Math.round((t.done / t.total) * 100)) : 0;
+    const status = t.finished
+      ? `<b>${t.failed ? `完成 · 失败 ${t.failed} 话` : '导入完成'}</b>`
+      : `<b>${esc(t.label || '正在导入…')}</b><span>${t.done}/${t.total || '?'} 话${t.failed ? ` · 失败 ${t.failed}` : ''}</span>`;
+    box.innerHTML = `<div class="itb-icon">${t.finished ? '✓' : '⇩'}</div>
+      <div class="itb-body">${status}
+        ${t.finished ? '' : `<div class="itb-track"><i style="width:${pct}%"></i></div>`}</div>
+      ${t.finished && t.comicId ? `<button class="itb-btn" data-action="itb-open">查看</button>` : ''}
+      <button class="itb-close" data-action="itb-close" aria-label="关闭">×</button>`;
+  }
+  loadImportTask();
 
   /* ------------------------------ 基础 ------------------------------ */
   function toast(msg, err = false) {
@@ -295,6 +326,7 @@
       settings: renderSettings, comic: renderComic, sources: renderSources, updates: renderUpdates,
     }[state.view];
     fn();
+    renderImportTask();
   }
 
   /* ------------------------------ 登录 ------------------------------ */
@@ -440,6 +472,7 @@
         <select class="select" id="srcSel" style="max-width:200px">${opts}</select>
         <button class="btn sm ${state.srcMode === 'discover' ? 'primary' : ''}" data-action="src-mode" data-mode="discover">发现</button>
         <button class="btn sm ${state.srcMode === 'search' ? 'primary' : ''}" data-action="src-mode" data-mode="search">搜索</button>
+        <button class="btn sm" data-action="src-account" title="给需要登录的站点设置 Cookie">站点账号</button>
         <input class="input" id="srcKw" placeholder="输入漫画名搜索…" value="${esc(state.srcKw)}" style="flex:1;min-width:140px;${state.srcMode === 'discover' ? 'display:none' : ''}" />
         <button class="btn primary" data-action="src-search" style="${state.srcMode === 'discover' ? 'display:none' : ''}">搜索</button>
       </div>
@@ -585,7 +618,13 @@
       }
     })();
     let doneDone = 0;
-    let comicId = '', failed = 0;
+    // 续导：同一本书（来源+书名）上次导入建的书 id 存在本地，中断后重新导入直接续，不再另建一本
+    const resumeKey = 'cv_resume_' + state.sourceId + '_' + encodeURIComponent(sc.title).slice(0, 60);
+    let comicId = '';
+    try { comicId = localStorage.getItem(resumeKey) || ''; } catch { /* 忽略 */ }
+    let failed = 0;
+    state.importTask = { active: true, done: 0, total: picked.length, failed: 0, label: `正在导入 ${sc.title}`, comicId: '', finished: false };
+    saveImportTask(); renderImportTask();
     for (let k = 0; k < picked.length; k++) {
       const el = $('#busyLabel');
       if (el) el.textContent = `导入中 ${k + 1}/${picked.length}…`;
@@ -597,14 +636,49 @@
             chapterTitle: picked[k].title, chapterUrl: picked[k].url,
           },
         });
-        if (!comicId) comicId = r.comicId;
+        if (!comicId && r.comicId) {
+          comicId = r.comicId;
+          try { localStorage.setItem(resumeKey, comicId); } catch { /* 忽略 */ }
+        }
         doneDone++;
+        state.importTask.done = doneDone;
+        state.importTask.failed = failed;
+        state.importTask.label = `正在导入 ${sc.title} · ${k + 1}/${picked.length} 话`;
+        saveImportTask(); renderImportTask();
       } catch { failed++; }
     }
     progAlive = false;
     closeModal();
-    if (comicId) { state.comic = comicId; state.view = 'comic'; render(); }
+    state.importTask = { active: false, done: picked.length - failed, total: picked.length, failed, label: '', comicId, finished: true };
+    saveImportTask(); renderImportTask();
     toast(`导入完成：成功 ${picked.length - failed} 话${failed ? `，失败 ${failed} 话` : ''}`);
+  }
+  /** 站点账号：给需要登录的书源（拷贝/热辣/vomic 等）粘贴登录后的 Cookie */
+  async function srcAccount() {
+    const sid = state.sourceId;
+    const src = state.sourcesList.find((s) => s.id === sid);
+    let info = {};
+    try { info = await api('GET', `/api/sources/${encodeURIComponent(sid)}/cookies`); } catch { /* 忽略 */ }
+    openModal(`<h3>站点账号 · ${esc(src?.name || '书源')}</h3>
+      <p class="muted" style="font-size:12px;margin:6px 0 10px;line-height:1.7">
+        部分站点（拷贝漫画、热辣漫画、vomic 等）看详情/图片需要登录。<br>
+        在浏览器登录该站点后，打开开发者工具 → Network → 任选一个请求 → 复制请求头里的 <b>Cookie</b>，粘贴到下面保存即可。<br>
+        保存后本软件访问该源会自动带上登录态。Cookie 只存在你的服务端，不会上传第三方。
+      </p>
+      <label class="field"><span>Cookie（留空并保存 = 清除登录）</span>
+        <textarea class="textarea" id="srcCookie" rows="4" style="font-family:monospace;font-size:11px" placeholder="key1=value1; key2=value2">${esc(info?.cookie || '')}</textarea></label>
+      <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
+        <button class="btn primary" data-action="src-account-save">保存登录态</button></div>`, true);
+  }
+  async function srcAccountSave() {
+    const cookies = $('#srcCookie')?.value || '';
+    busy(true, '保存中…');
+    try {
+      const r = await api('POST', `/api/sources/${encodeURIComponent(state.sourceId)}/cookies`, { body: { cookies } });
+      closeModal();
+      toast(r?.cleared ? '已清除该站点登录态' : `已保存登录态（${r?.count || 0} 项）`);
+    } catch (err) { toast(err.message || '保存失败', true); }
+    finally { busy(false); }
   }
   function srcManage() {
     openModal(`<h3>书源管理</h3>
@@ -2139,6 +2213,15 @@
     const a = el.dataset.action, id = el.dataset.id;
     try {
       if (a === 'nav' || el.classList.contains('nav-item')) { state.view = el.dataset.view; render(); }
+      else if (a === 'itb-open') {
+        if (state.importTask.comicId) { state.comic = state.importTask.comicId; state.view = 'comic'; render(); }
+        state.importTask = { active: false, done: 0, total: 0, failed: 0, label: '', comicId: '', finished: false };
+        saveImportTask(); renderImportTask();
+      }
+      else if (a === 'itb-close') {
+        state.importTask = { active: false, done: 0, total: 0, failed: 0, label: '', comicId: '', finished: false };
+        saveImportTask(); renderImportTask();
+      }
       else if (a === 'auth-tab') renderAuthForm(el.dataset.mode);
       else if (a === 'auth-submit') await authSubmit(el.dataset.mode);
       else if (a === 'auth-send-code') await sendCode();
@@ -2241,6 +2324,8 @@
       else if (a === 'src-import') await srcImport();
       else if (a === 'src-manage') srcManage();
       else if (a === 'src-save') await srcSave();
+      else if (a === 'src-account') await srcAccount();
+      else if (a === 'src-account-save') await srcAccountSave();
       else if (a === 'src-subscribe') await subscribe(el.dataset.url, el.dataset.title, el.dataset.cover);
       else if (a === 'rename-chapter') await renameChapter(id);
       else if (a === 'manage-pages') await openPageManager(id);
