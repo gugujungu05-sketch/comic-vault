@@ -997,6 +997,10 @@ export const sources = {
     request<SourceImportResult>('/api/sources/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     }),
+  importProgress: () => request<{
+    idle?: boolean; chapterTitle?: string; imageDone?: number; imageTotal?: number;
+    done?: number; total?: number; phase?: string;
+  }>('/api/sources/import/progress'),
 };
 
 /** AI 翻译（生肉漫画 → 中文）：多模态模型看图翻译 + 服务端底图修补/原位渲染 */

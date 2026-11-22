@@ -30,6 +30,13 @@ import {
 
 const now = () => Date.now();
 
+/** 导入实时进度：key = userId，值 = { chapterIndex, chapterTotal, imageDone, imageTotal, title, ts }。
+ *  前端轮询 /api/sources/import/progress 显示，避免「卡住不动」的体感。 */
+const importProgress = new Map();
+export function getImportProgress(userId) { return importProgress.get(String(userId)) || null; }
+function setImportProgress(userId, v) { importProgress.set(String(userId), { ...v, ts: now() }); }
+function clearImportProgress(userId) { importProgress.delete(String(userId)); }
+
 /** 启动时加载内置 JS 书源（Ciallo-Reader 移植脚本） */
 loadJsSources();
 
@@ -296,7 +303,7 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
 }
 
 /** JS 脚本源导入一话：images 由源脚本 loadEp 给出，防盗链头由 onImageLoad 给出 */
-export async function importJsChapter(p) {
+export async function importJsChapter(p, onProgress) {
   const db = loadDb();
   let comic = p.comic || null;
   const { images, headers } = await jsChapterImages(p.source, p.bookId, p.chapterPath);
@@ -325,11 +332,13 @@ export async function importJsChapter(p) {
       try {
         const ih = jsImageHeaders(p.source, imgUrl) || headers || {};
         tmp = await downloadSourceImage(imgUrl, ih, fallbackRef);
+        if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length });
         const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id);
         return page;
       } catch (err) {
         if (tmp) await fsp.rm(tmp, { force: true });
         console.error('[js-sources] 图片下载失败:', err.message);
+        if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length });
         return null;
       }
     }));
@@ -651,6 +660,11 @@ export function registerSources(app) {
     }
   });
 
+  // 导入实时进度（前端轮询）
+  router.get('/import/progress', requireUser, (req, res) => {
+    res.json(getImportProgress(req.user.id) || { idle: true });
+  });
+
   // 导入一话到书库：body { comicId?, sourceId, sourceName, title, cover, author?, chapterTitle, chapterUrl }
   // comicId 不传则新建漫画（之后重复调用传回 comicId 即可连续导入多话）。
   // JS 脚本源：bookId = 源站书籍 id，chapterUrl = 章节路径（如 /chapter/123）。
@@ -664,13 +678,19 @@ export function registerSources(app) {
       let comic = b.comicId ? getComic(b.comicId) : null;
       if (b.comicId && (!comic || comic.createdBy !== req.user.id))
         return res.status(404).json({ error: '目标漫画不存在或不属于你' });
+      setImportProgress(req.user.id, {
+        chapterTitle: b.chapterTitle || '正在导入', imageDone: 0, imageTotal: 0, phase: 'fetch',
+      });
       try {
         const r = await importJsChapter({
           source: js, userId: req.user.id, comic,
           title: b.title, cover: b.cover, comicUrl: b.comicUrl,
           author: b.author, description: b.description,
           bookId, chapterPath, chapterTitle: b.chapterTitle,
-        });
+        }, (pg) => setImportProgress(req.user.id, {
+          chapterTitle: b.chapterTitle || '正在导入',
+          imageDone: pg.imageDone, imageTotal: pg.imageTotal, phase: 'download',
+        }));
         return res.json({
           comicId: r.comic.id,
           chapterId: r.chapter.id,

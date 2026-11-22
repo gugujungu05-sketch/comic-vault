@@ -469,7 +469,11 @@
         <div class="card" data-action="src-open" data-i="${i}">
           <div class="cover">${r.cover ? `<img src="${esc(r.cover)}" referrerpolicy="no-referrer" />` : '🌐'}</div>
           <div class="card-body"><div class="card-title">${esc(r.title)}</div></div></div>`).join('')}</div>`
-      : `<div class="empty">${state.srcMode === 'discover' ? '这个书源没有发现页内容，试试「搜索」' : '输入关键词搜索，结果会显示在这里'}</div>`;
+      : `<div class="empty">${state.srcMode === 'discover'
+          ? (state.srcDiscoverError
+              ? `发现页加载失败：${esc(state.srcDiscoverError)}　<button class="btn sm" data-action="src-retry">重试</button>　也可切到「搜索」`
+              : '这个书源没有发现页内容，试试「搜索」')
+          : '输入关键词搜索，结果会显示在这里'}</div>`;
     /* 发现页分页 */
     const pager = $('#srcPager');
     if (pager) {
@@ -503,8 +507,13 @@
       state.srcTab = r.tab ?? state.srcTab;
       state.srcMaxPage = r.maxPage || 1;
       state.srcResults = r.items || [];
+      state.srcDiscoverError = '';
       renderSrcResults();
-    } catch (err) { state.srcResults = []; renderSrcResults(); }
+    } catch (err) {
+      state.srcResults = [];
+      state.srcDiscoverError = err?.message || '发现页加载失败';
+      renderSrcResults();
+    }
     finally { busy(false); }
   }
   async function srcSearch() {
@@ -538,7 +547,7 @@
         <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
         <button class="btn" data-action="src-subscribe" data-url="${esc(item.link)}" data-title="${esc(r.title)}" data-cover="${esc(r.cover || '')}">🔔 加入追更</button>
         <button class="btn primary" data-action="src-import">导入选中章节</button></div>
-      <span id="busyLabel" class="muted" style="font-size:11px"></span>`, true);
+      <span id="busyLabel" class="muted" style="font-size:12px;display:block;margin-top:6px;color:var(--accent)"></span>`, true);
       $('#modal').onchange = (e) => {
         const cb = e.target.closest('input[type=checkbox][data-j]');
         if (!cb) return;
@@ -561,6 +570,21 @@
     if (!picked.length) return toast('请先勾选章节', true);
     const btn = $('#modal [data-action="src-import"]');
     if (btn) btn.disabled = true;
+    // 轮询后端图片级进度：显示「第 N 话 · 第 x/y 张」，不再卡住不动
+    let progAlive = true;
+    (async () => {
+      while (progAlive) {
+        try {
+          const pg = await api('GET', '/api/sources/import/progress');
+          if (pg && !pg.idle && pg.imageTotal) {
+            const el = $('#busyLabel');
+            if (el) el.textContent = `第 ${failed + doneDone + 1}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`;
+          }
+        } catch { /* 忽略 */ }
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    })();
+    let doneDone = 0;
     let comicId = '', failed = 0;
     for (let k = 0; k < picked.length; k++) {
       const el = $('#busyLabel');
@@ -574,8 +598,10 @@
           },
         });
         if (!comicId) comicId = r.comicId;
+        doneDone++;
       } catch { failed++; }
     }
+    progAlive = false;
     closeModal();
     if (comicId) { state.comic = comicId; state.view = 'comic'; render(); }
     toast(`导入完成：成功 ${picked.length - failed} 话${failed ? `，失败 ${failed} 话` : ''}`);
@@ -1642,7 +1668,7 @@
       ${targetBlock}
       <div class="modal-actions"><button class="btn" data-action="close-modal">取消</button>
         <button class="btn primary" data-action="do-import">开始导入</button></div>
-      <span id="busyLabel" class="muted" style="font-size:11px"></span>`, true);
+      <span id="busyLabel" class="muted" style="font-size:12px;display:block;margin-top:6px;color:var(--accent)"></span>`, true);
     renderImportGrid();
     const addMore = $('#impAddMore');
     if (addMore) addMore.onclick = async () => {
@@ -2181,6 +2207,7 @@
       }
       else if (a === 'goto-sources') { state.view = 'sources'; render(); }
       else if (a === 'src-mode') setSrcMode(el.dataset.mode);
+      else if (a === 'src-retry') await srcDiscover();
       else if (a === 'src-tab') { state.srcTab = Number(el.dataset.tab); state.srcPage = 1; await srcDiscover(); }
       else if (a === 'src-page') { state.srcPage = Math.max(1, state.srcPage + Number(el.dataset.d)); await srcDiscover(); }
       else if (a === 'src-search') await srcSearch();

@@ -42,6 +42,7 @@ export default function SourcesPage() {
   const [searched, setSearched] = useState(false);
   const [detail, setDetail] = useState<(SourceComicDetail & { checked: Set<number>; sourceId?: string; sourceName?: string }) | null>(null);
   const [importing, setImporting] = useState<{ done: number; total: number; failed: number } | null>(null);
+  const [importProgressLabel, setImportProgressLabel] = useState('');
   const [importedComicId, setImportedComicId] = useState('');
   const [shelf, setShelf] = useState<OnlineShelfItem[]>([]);
   const [bookmarked, setBookmarked] = useState(false);
@@ -236,10 +237,25 @@ export default function SourcesPage() {
     const picked = chapters.filter((_, i) => detail.checked.has(i));
     if (!picked.length) return toast('请先勾选要导入的章节');
     setImporting({ done: 0, total: picked.length, failed: 0 });
+    // 轮询后端图片级进度：显示「第 N 话 · 第 x/y 张」，不再长时间卡在 0/N
+    let progAlive = true;
+    let curChapter = 1;
+    (async () => {
+      while (progAlive) {
+        try {
+          const pg = await sourcesApi.importProgress();
+          if (!pg.idle && pg.imageTotal) {
+            setImportProgressLabel(`第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`);
+          }
+        } catch { /* 忽略轮询错误 */ }
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    })();
     let comicId = '';
     let failed = 0;
     let done = 0;
     for (const ch of picked) {
+      curChapter = done + 1;
       try {
         const r = await sourcesApi.importChapter({
           comicId: comicId || undefined,
@@ -263,6 +279,8 @@ export default function SourcesPage() {
       }
       setImporting({ done, total: picked.length, failed });
     }
+    progAlive = false;
+    setImportProgressLabel('');
     setImporting(null);
     if (done) toast(`导入完成：成功 ${done} 话${failed ? `，失败 ${failed} 话` : ''}`);
   }
@@ -513,8 +531,11 @@ export default function SourcesPage() {
                     )}
                   </div>
                   {importing && (
-                    <div className="progress-mini" style={{ marginTop: 10, maxWidth: 420 }}>
-                      <i style={{ width: `${Math.round((importing.done / importing.total) * 100)}%` }} />
+                    <div style={{ marginTop: 10, maxWidth: 420 }}>
+                      <div className="progress-mini">
+                        <i style={{ width: `${Math.round((importing.done / importing.total) * 100)}%` }} />
+                      </div>
+                      {importProgressLabel && <div className="muted sm-text" style={{ marginTop: 4 }}>{importProgressLabel}</div>}
                     </div>
                   )}
                 </div>
