@@ -381,23 +381,34 @@ export function ReaderView({
     pendingScrollComp.current = null;
   }, [chainStart]);
 
-  /* 在线阅读：切到空章节时按需拉取页面（ensurePages 由父组件提供并回填 chapters） */
+  /* 在线阅读：切到空章节时按需拉取页面（ensurePages 由父组件提供并回填 chapters）。
+     链式滚动会把相邻章节一起渲染，这些章节 pages 也是空的，必须一并加载，
+     否则滚到下一话时只显示"几张就没了"。用 Set 记录已发起请求的章节，避免重复拉取。 */
   const [lazyLoading, setLazyLoading] = useState(false);
-  const lazyKey = useRef('');
+  const lazyRequested = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!ensurePages) return;
-    const ch = chapters[chapterIndex];
-    if (!ch || ch.pages.length) {
+    // 需要预取的章节：当前章一定包含；链式滚动时连同窗口内所有章节一起。
+    const wanted: Chapter[] = [];
+    const isScrollMode = mode === 'continuous' || mode === 'webtoon';
+    if (chained && isScrollMode) {
+      for (let ci = chainStart; ci <= chainEnd && ci < chapters.length; ci++) {
+        const c = chapters[ci];
+        if (c && !c.pages.length && !lazyRequested.current.has(c.id)) wanted.push(c);
+      }
+    } else {
+      const ch = chapters[chapterIndex];
+      if (ch && !ch.pages.length && !lazyRequested.current.has(ch.id)) wanted.push(ch);
+    }
+    if (!wanted.length) {
       setLazyLoading(false);
       return;
     }
-    if (lazyKey.current === ch.id) return;
-    lazyKey.current = ch.id;
+    wanted.forEach((c) => lazyRequested.current.add(c.id));
     setLazyLoading(true);
-    Promise.resolve(ensurePages(ch))
-      .catch(() => {})
+    Promise.all(wanted.map((c) => Promise.resolve(ensurePages(c)).catch(() => {})))
       .finally(() => setLazyLoading(false));
-  }, [chapters, chapterIndex, ensurePages]);
+  }, [chapters, chapterIndex, ensurePages, chained, chainStart, chainEnd, mode]);
 
   const filterCss = useMemo(() => {
     const parts = [`brightness(${brightness.toFixed(2)})`, `contrast(${contrast.toFixed(2)})`];
