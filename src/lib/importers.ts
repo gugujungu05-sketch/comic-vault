@@ -342,21 +342,24 @@ export async function pdfToImages(
   baseName = 'document',
   opts: { targetWidth?: number; quality?: number } = {},
 ): Promise<RawItem[]> {
-  const targetWidth = opts.targetWidth || 1600;
-  const quality = opts.quality ?? 0.92;
+  const targetWidth = opts.targetWidth || 1400;
+  const quality = opts.quality ?? 0.9;
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const items: RawItem[] = [];
+  // 复用单个 canvas：长 PDF 每页新建 canvas 会累积大量 GPU 内存导致越渲越慢
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
 
   for (let i = 1; i <= pdf.numPages; i++) {
+    // 每 4 页让出主线程一次，避免长文档把 UI 卡死（用户感知的「解析太慢」多为卡死）
+    if (i > 1 && i % 4 === 0) await new Promise((r) => setTimeout(r, 0));
     const page = await pdf.getPage(i);
     const base = page.getViewport({ scale: 1 });
     const scale = Math.min(2, Math.max(0.5, targetWidth / base.width));
     const viewport = page.getViewport({ scale });
-    const canvas = document.createElement('canvas');
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
-    const ctx = canvas.getContext('2d');
     if (!ctx) continue;
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);

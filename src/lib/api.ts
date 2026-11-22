@@ -969,12 +969,17 @@ export const sources = {
   remove: (id: string) => request<{ ok: boolean }>(`/api/sources/${id}`, { method: 'DELETE' }),
 
   /** 书源站点账号：保存/清除登录 Cookie（拷贝/热辣/vomic 等需登录的源） */
-  getCookies: (id: string) => request<{ ok: boolean; source: string; accountHint?: string }>(
+  getCookies: (id: string) => request<{ ok: boolean; source: string; accountHint?: string; website?: string; canPasswordLogin?: boolean }>(
     `/api/sources/${id}/cookies`,
   ),
   saveCookies: (id: string, cookies: string) =>
     request<{ ok: boolean; count?: number; cleared?: boolean }>(`/api/sources/${id}/cookies`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookies }),
+    }),
+  /** 源账号密码登录（可选，用于同步书架/解锁受限内容） */
+  accountLogin: (id: string, account: string, password: string) =>
+    request<{ ok: boolean; message?: string; error?: string }>(`/api/sources/${id}/account-login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, password }),
     }),
 
   search: (id: string, kw: string, page = 1) =>

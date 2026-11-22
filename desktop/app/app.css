@@ -455,3 +455,14 @@ body.mobile .sub-ops { flex-direction: row; flex-wrap: wrap; }
 }
 body.mobile .share-panel { grid-template-columns: 1fr; }
 body.mobile .field-row { grid-template-columns: 1fr; }
+
+/* 小说独立书籍封面：书脊 + 书名 + 作者，区别于漫画逐页封面 */
+.card.is-novel .cover { background: linear-gradient(150deg, #33465c, #1a2836 68%); }
+.novel-cover-art { position:relative; width:100%; height:100%; overflow:hidden; display:flex; align-items:stretch; background:linear-gradient(150deg,#33465c,#1a2836 68%); }
+.novel-cover-bg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:.28; filter:saturate(.8) blur(1px); }
+.novel-cover-spine { position:relative; width:12px; flex:none; background:linear-gradient(90deg,rgba(0,0,0,.45),rgba(255,255,255,.06)); box-shadow:inset -1px 0 rgba(255,255,255,.12); }
+.novel-cover-text { position:relative; flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:10px; padding:14px 10px; text-align:center; color:#f2f5fa; text-shadow:0 1px 6px rgba(0,0,0,.55); }
+.novel-cover-kicker { font-size:10px; letter-spacing:.35em; opacity:.8; border:1px solid rgba(255,255,255,.45); border-radius:4px; padding:2px 8px 2px 12px; }
+.novel-cover-title { font-size:15px; font-weight:800; line-height:1.4; max-height:5.6em; overflow:hidden; word-break:break-all; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; }
+.novel-cover-rule { width:38px; height:2px; background:rgba(255,255,255,.6); border-radius:2px; }
+.novel-cover-author { font-size:11px; opacity:.82; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

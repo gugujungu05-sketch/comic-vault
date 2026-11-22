@@ -51,6 +51,9 @@ export default function SourcesPage() {
   const [showManage, setShowManage] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
   const [accountCookie, setAccountCookie] = useState('');
+  const [accountInfo, setAccountInfo] = useState<{ website: string; canPasswordLogin: boolean }>({ website: '', canPasswordLogin: false });
+  const [accountUser, setAccountUser] = useState('');
+  const [accountPwd, setAccountPwd] = useState('');
   const [onlineReader, setOnlineReader] = useState<OnlineReaderState | null>(null);
   const toast = useToast();
   const errorToast = useErrorToast();
@@ -137,6 +140,8 @@ export default function SourcesPage() {
     const targets = isAll ? tabSources : (active ? [active] : []);
     if (!targets.length) return;
     setSearching(true);
+    // 从书籍详情里再次搜索时，先退出详情，否则结果被详情面板遮住，看起来像「搜索没反应」
+    setDetail(null);
     setResults([]);
     try {
       const rs = await Promise.all(targets.map((s) => sourcesApi.search(s.id, kw.trim()).catch(() => ({ items: [] as SourceSearchItem[] }))));
@@ -162,10 +167,11 @@ export default function SourcesPage() {
   }
 
   async function openComic(item: SourceSearchItem) {
-    if (!active) return;
+    // 聚合结果自带 sourceId，不依赖当前选中的 active（「全部」模式下 active 为空）
+    const sid = item.sourceId || activeId;
+    if (!sid) return;
     setSearching(true);
     try {
-      const sid = item.sourceId || activeId;
       const r = await sourcesApi.comic(sid, item.link);
       setDetail({
         ...r,
@@ -348,10 +354,15 @@ export default function SourcesPage() {
         </div>
         <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
           <button className="btn" onClick={async () => {
-            setAccountCookie('');
-            if (activeId) { try { await sourcesApi.getCookies(activeId); } catch { /* 忽略 */ } }
+            setAccountCookie(''); setAccountUser(''); setAccountPwd('');
+            if (activeId) {
+              try {
+                const info = await sourcesApi.getCookies(activeId);
+                setAccountInfo({ website: info.website || '', canPasswordLogin: !!info.canPasswordLogin });
+              } catch { setAccountInfo({ website: '', canPasswordLogin: false }); }
+            }
             setShowAccount(true);
-          }} title="给需要登录的站点设置 Cookie">
+          }} title="可选：登录站点以同步书架 / 解锁受限内容">
             <Icon name="book" size={16} /> 站点账号
           </button>
           <button className="btn" onClick={() => setShowManage(true)}>
@@ -631,29 +642,69 @@ export default function SourcesPage() {
       )}
 
       {showAccount && (
-        <Modal title="站点账号" onClose={() => setShowAccount(false)} width={560}>
+        <Modal title="站点账号（可选）" onClose={() => setShowAccount(false)} width={560}>
           <div className="muted" style={{ fontSize: 12, lineHeight: 1.8, marginBottom: 12 }}>
             当前来源：<b>{active?.name || '未选择'}</b><br />
-            部分站点（拷贝漫画、热辣漫画、vomic 等）看详情/图片需要登录。在浏览器登录该站点后，
-            打开开发者工具 → Network → 任选一个请求 → 复制请求头里的 <b>Cookie</b>，粘贴到下面保存即可。
-            之后本站访问该源会自动带上登录态。Cookie 只存在服务端，不会上传第三方。
+            登录<b>不是必须</b>的——不登录也能浏览、搜索、免费内容。登录只用于<b>同步个人书架 / 收藏</b>或<b>解锁会员/受限内容</b>（和 kira / ciallo reader 一样）。
           </div>
-          <textarea
-            className="textarea" rows={4} value={accountCookie}
-            onChange={(e) => setAccountCookie(e.target.value)}
-            placeholder="key1=value1; key2=value2（留空并保存 = 清除登录）"
-            style={{ fontFamily: 'monospace', fontSize: 11, width: '100%' }}
-          />
-          <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-            <button className="btn" onClick={() => setShowAccount(false)}>取消</button>
-            <button className="btn primary" onClick={async () => {
-              if (!activeId) { errorToast(new Error('请先选择一个来源'), '保存失败'); return; }
-              try {
-                const r = await sourcesApi.saveCookies(activeId, accountCookie.trim());
-                toast(r.cleared ? '已清除该站点登录态' : `已保存登录态（${r.count || 0} 项）`);
-                setShowAccount(false);
-              } catch (err) { errorToast(err, '保存失败'); }
-            }}>保存登录态</button>
+
+          {/* 方式一：打开官网直接登录（推荐，和 kira / ciallo reader 一致） */}
+          {accountInfo.website && (
+            <div className="panel" style={{ padding: 12, marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>① 打开官网登录（推荐）</div>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                点下面按钮在新窗口打开该站点，登录你的账号。登录后回到这里，用「方式二」一键粘贴 Cookie 即可（多数浏览器已自动复制）。
+              </div>
+              <a className="btn primary" href={accountInfo.website} target="_blank" rel="noopener noreferrer">
+                <Icon name="globe" size={15} /> 打开官网登录
+              </a>
+            </div>
+          )}
+
+          {/* 方式二：账号密码直接登录（源支持时） */}
+          {accountInfo.canPasswordLogin && (
+            <div className="panel" style={{ padding: 12, marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>② 账号密码登录</div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <input className="input" style={{ flex: 1, minWidth: 140 }} placeholder="账号 / 手机号"
+                  value={accountUser} onChange={(e) => setAccountUser(e.target.value)} />
+                <input className="input" type="password" style={{ flex: 1, minWidth: 140 }} placeholder="密码"
+                  value={accountPwd} onChange={(e) => setAccountPwd(e.target.value)} />
+                <button className="btn" onClick={async () => {
+                  if (!activeId || !accountUser.trim() || !accountPwd) { errorToast(new Error('请填写账号和密码'), '登录失败'); return; }
+                  try {
+                    const r = await sourcesApi.accountLogin(activeId, accountUser.trim(), accountPwd);
+                    if (!r.ok) throw new Error(r.error || '登录失败');
+                    toast(r.message || '登录成功');
+                    setAccountPwd('');
+                  } catch (err) { errorToast(err, '登录失败'); }
+                }}>登录</button>
+              </div>
+            </div>
+          )}
+
+          {/* 方式三：粘贴 Cookie（兜底，所有源通用） */}
+          <div className="panel" style={{ padding: 12 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>③ 粘贴 Cookie（通用兜底）</div>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              在官网登录后的页面按 F12 → Network → 任选请求 → 复制请求头 Cookie，粘贴到下面。留空保存 = 清除登录态。
+            </div>
+            <textarea
+              className="textarea" rows={3} value={accountCookie}
+              onChange={(e) => setAccountCookie(e.target.value)}
+              placeholder="key1=value1; key2=value2"
+              style={{ fontFamily: 'monospace', fontSize: 11, width: '100%' }}
+            />
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+              <button className="btn sm primary" onClick={async () => {
+                if (!activeId) { errorToast(new Error('请先选择一个来源'), '保存失败'); return; }
+                try {
+                  const r = await sourcesApi.saveCookies(activeId, accountCookie.trim());
+                  toast(r.cleared ? '已清除该站点登录态' : `已保存登录态（${r.count || 0} 项）`);
+                  setShowAccount(false);
+                } catch (err) { errorToast(err, '保存失败'); }
+              }}>保存 Cookie</button>
+            </div>
           </div>
         </Modal>
       )}

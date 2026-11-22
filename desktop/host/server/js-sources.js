@@ -495,3 +495,28 @@ export function jsSetSourceCookies(sourceKey, cookieString, domain) {
   saveSoon(COOKIE_FILE, cookieMap);
   return { ok: true, count: cookies.length, domain: dm };
 }
+
+/** 源账号密码登录：调用源脚本 account.login（如拷贝/热辣/vomic），凭据由源自行 saveData 持久化。
+ *  返回 { ok, message }。用户可选用，非强制——登录只为同步书架/解锁受限内容。 */
+export async function jsAccountLogin(sourceKey, account, password) {
+  const key = String(sourceKey || '').replace(/^js:/, '');
+  const s = getJsSource('js:' + key);
+  if (!s) return { ok: false, error: '来源不存在' };
+  if (!s.account || typeof s.account.login !== 'function') {
+    return { ok: false, error: '这个来源不支持账号密码登录，请用「打开官网登录」后粘贴 Cookie' };
+  }
+  try {
+    await s.account.login(String(account || '').trim(), String(password || ''));
+    return { ok: true, message: '登录成功，登录态已保存' };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e || '登录失败') };
+  }
+}
+
+/** 源的官网登录地址（供前端「打开官网登录」用） */
+export function jsRegisterWebsite(sourceKey) {
+  const key = String(sourceKey || '').replace(/^js:/, '');
+  const s = getJsSource('js:' + key);
+  if (!s) return '';
+  try { return s.account?.registerWebsite || s.url || s.baseUrl || ''; } catch { return ''; }
+}

@@ -450,7 +450,7 @@ export function ImportDialog({
         }}
         onDragLeave={() => setDropped(false)}
         onDrop={onDrop}
-        onClick={() => photoRef.current?.click()}
+        onClick={() => imgRef.current?.click()}
       >
         <div className="big">拖拽图片 / 压缩包 / PDF / EPUB / TXT 小说 到此处</div>
         <div>支持图片、各类压缩包、PDF、EPUB、TXT/MD 小说；小说与文字 EPUB 会自动识别章节生成目录，一次导入即可阅读</div>

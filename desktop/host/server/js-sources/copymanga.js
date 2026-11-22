@@ -5,6 +5,21 @@
  * 不写入任何账号数据；设备指纹首次生成后持久化，跨会话保持稳定。
  * 免费漫画免登录可读；受限/会员内容在源管理登录拷贝账号后（Token）解锁。
  */
+// 拷贝官方风控较严：串行化请求 + 最小间隔，避免连续详情/章节请求触发 210 限流。
+// 用 sandbox 全局变量，所有请求（含发现页聚合）共享同一条队列。
+var __copyQueue = globalThis.__copyQueue || (globalThis.__copyQueue = { last: 0, chain: Promise.resolve() });
+function __copyThrottle() {
+  const q = globalThis.__copyQueue;
+  const run = async () => {
+    const gap = Date.now() - q.last;
+    if (gap < 800) await new Promise((r) => setTimeout(r, 800 - gap));
+    q.last = Date.now();
+  };
+  const next = q.chain.then(run, run);
+  q.chain = next.catch(() => {});
+  return next;
+}
+
 class CopyManga extends ComicSource {
     name = "拷贝漫画";
     key = "copymanga";
@@ -81,19 +96,21 @@ class CopyManga extends ComicSource {
 
     async api(path, headers, _retry) {
         const url = this.baseUrl + path;
+        await __copyThrottle();
         const r = await Network.get(url, Object.assign({}, this.headers, headers || {}));
         if (!r || r.status !== 200 || !r.body) throw new Error("拷贝漫画请求失败：HTTP " + (r && r.status));
         let j; try { j = JSON.parse(r.body); } catch { throw new Error("拷贝漫画返回解析失败"); }
-        // 210 = 官方限流/需更新：解析等待秒数，自动重试一次。
+        // 210 = 官方限流/需更新：解析等待秒数，最多重试 3 次（递增退避）。
         if (j.code === 210) {
-            if (!_retry) {
-                let wait = 8000;
+            const retry = _retry || 0;
+            if (retry < 3) {
+                let wait = 8000 + retry * 6000;
                 const m = /(\d+)\s*seconds?/i.exec(String(j.message || ""));
-                if (m) wait = Math.min(45000, Math.max(3000, Number(m[1]) * 1000));
+                if (m) wait = Math.max(wait, Math.min(45000, Number(m[1]) * 1000));
                 await new Promise((res) => setTimeout(res, wait));
-                return this.api(path, headers, true);
+                return this.api(path, headers, retry + 1);
             }
-            throw new Error("拷贝漫画：访问过于频繁，请稍后重试");
+            throw new Error("拷贝漫画：访问过于频繁，请稍后再试（书名列表可正常浏览）");
         }
         if (j.code !== 200) throw new Error(j.message || "拷贝漫画请求失败");
         return j.results;

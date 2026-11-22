@@ -19,11 +19,12 @@ export function ComicCard({
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
 }) {
+  const isNovel = comic.kind === 'novel';
   const progressPct =
     comic.progress && comic.pageCount ? Math.round(((comic.progress.pageIndex + 1) / comic.pageCount) * 100) : 0;
 
   return (
-    <div className={`comic-card ${selecting ? 'selecting' : ''} ${selected ? 'selected' : ''}`} style={{ animationDelay: `${Math.min(index, 20) * 30}ms` }}>
+    <div className={`comic-card ${isNovel ? 'is-novel' : ''} ${selecting ? 'selecting' : ''} ${selected ? 'selected' : ''}`} style={{ animationDelay: `${Math.min(index, 20) * 30}ms` }}>
       {selecting && (
         <button
           className={`card-check ${selected ? 'on' : ''}`}
@@ -35,7 +36,19 @@ export function ComicCard({
       )}
       <Link to={`/comic/${comic.id}`} style={{ display: 'block' }}>
         <div className="cover">
-          {comic.coverUrl ? (
+          {isNovel ? (
+            // 小说用独立「书籍」样式：书脊 + 书名 + 作者排版，不套漫画的逐页封面
+            <div className="novel-cover-art" title={comic.title}>
+              {comic.coverUrl && <img className="novel-cover-bg" src={comic.coverUrl} alt="" loading="lazy" />}
+              <div className="novel-cover-spine" />
+              <div className="novel-cover-text">
+                <span className="novel-cover-kicker">小 说</span>
+                <span className="novel-cover-title">{comic.title}</span>
+                <span className="novel-cover-rule" />
+                <span className="novel-cover-author">{comic.author || '佚名'}</span>
+              </div>
+            </div>
+          ) : comic.coverUrl ? (
             <img src={comic.coverUrl} alt={comic.title} loading="lazy" />
           ) : (
             <div className="cover-empty">
@@ -43,7 +56,8 @@ export function ComicCard({
             </div>
           )}
           <div className="cover-badge">
-            <span className="badge">{comic.chapterCount} 话</span>
+            <span className="badge">{comic.chapterCount} 章</span>
+            {isNovel && <span className="badge novel">小说</span>}
             {comic.share?.enabled && <span className="badge accent">分享中</span>}
             {comic.status === 'completed' && <span className="badge ok">完结</span>}
           </div>
@@ -61,9 +75,9 @@ export function ComicCard({
         <div className="card-body">
           <div className="card-title">{comic.title}</div>
           <div className="card-meta">
-            <span>{comic.pageCount} 页</span>
+            <span>{isNovel ? `${comic.chapterCount} 章` : `${comic.pageCount} 页`}</span>
             {comic.author && <span>{comic.author}</span>}
-            {comic.direction === 'rtl' && <span>日漫顺序</span>}
+            {!isNovel && comic.direction === 'rtl' && <span>日漫顺序</span>}
           </div>
           {progressPct > 0 && (
             <div className="progress-mini" title={`已读 ${progressPct}%`}>

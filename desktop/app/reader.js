@@ -162,6 +162,21 @@
     return r.data;
   }
   const asset = (p) => { try { return Host.asset(p); } catch { return p; } };
+  /** 小说正文：把后端 EPUB 插图占位符 [[IMG:url]] 渲染成 <img>，其余段落转义后输出 */
+  function novelBlocksHtml(raw) {
+    const text = String(raw || '');
+    const re = /\[\[IMG:([^\]]+)\]\]/g;
+    let out = '', last = 0, m;
+    const paras = (s) => s.split(/\n+/).map((x) => x.trim()).filter(Boolean)
+      .map((p) => `<p>${esc(p)}</p>`).join('');
+    while ((m = re.exec(text))) {
+      out += paras(text.slice(last, m.index));
+      out += `<img class="novel-illus" src="${esc(asset(m[1]))}" alt="插图" loading="lazy" />`;
+      last = m.index + m[0].length;
+    }
+    out += paras(text.slice(last));
+    return out;
+  }
 
   /** AI 翻译当前话：把每页图转成 data URL 传给服务端（本地书在远程站点也能翻译），
       译文图按页缓存到 translated；translateOn 开启后用译文图替换显示。 */
@@ -445,19 +460,17 @@
         stage.innerHTML = `<article class="novel-article" style="font-size:${fontSize}px">` +
           novelSegs.map((seg, si) => {
             const t = cs[seg.idx]?.title || '正文';
-            const ps = String(seg.text || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
             return `<section class="novel-seg">${si === 0 ? `<h1>${esc(t)}</h1>` : `<h2 class="novel-seg-title">${esc(t)}</h2>`}` +
-              ps.map((p) => `<p>${esc(p)}</p>`).join('') + `</section>`;
+              novelBlocksHtml(seg.text) + `</section>`;
           }).join('') +
           (novelLoadingMore ? '<div class="r-webtoon-edge done">正在加载下一章…</div>' : '') +
           (novelSegs[novelSegs.length - 1]?.idx >= cs.length - 1 ? '<div class="r-webtoon-edge done">— 全文完 —</div>' : '') +
           `</article>`;
       } else {
-        const paras = String(novelText || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
         const title = cs.find((c) => c.id === chapterId)?.title || '正文';
         stage.innerHTML = `<article class="novel-article" style="font-size:${fontSize}px">
           <h1>${esc(title)}</h1>
-          ${paras.map((p) => `<p>${esc(p)}</p>`).join('')}
+          ${novelBlocksHtml(novelText)}
           <div class="r-webtoon-edge done">— 本章完 · 用「下一话」继续 —</div>
         </article>`;
       }
