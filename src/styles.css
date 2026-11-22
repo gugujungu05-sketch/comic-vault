@@ -503,6 +503,12 @@ textarea {
   overflow: hidden;
 }
 .card-meta { color: var(--muted); font-size: 12px; margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* 在线书架「继续阅读」标识：一眼看出有进度、可续读 */
+.shelf-continue {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--accent, #a78bfa); font-weight: 600;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .card-fav {
   position: absolute;

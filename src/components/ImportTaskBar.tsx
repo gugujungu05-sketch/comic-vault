@@ -34,6 +34,15 @@ export function ImportTaskBar() {
           )}
         </span>
       </button>
+      {!task.finished && (
+        <button
+          className="itb-action"
+          onClick={() => importTaskStore.setPaused(!task.paused)}
+          title={task.paused ? '继续导入' : '暂停导入'}
+        >
+          {task.paused ? '▶ 继续' : '⏸ 暂停'}
+        </button>
+      )}
       {task.finished && task.comicId && (
         <button className="itb-action" onClick={() => { navigate(`/comic/${task.comicId}`); importTaskStore.clear(); }}>
           查看
