@@ -37,18 +37,20 @@ const UA_DEFAULT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 
 const CACHE_DIR = path.join(DATA_DIR, 'translations');
-const PROMPT_VERSION = 'v1';
+const PROMPT_VERSION = 'v2';
 const DEFAULT_PROMPT = `You are a professional manga translator. Look at the image carefully.
 Detect EVERY text region (speech bubbles, narration, sound effects, signs) and translate all non-{LANG} text into {LANG}.
 
 Output ONLY a JSON object, no markdown, no explanation, in this exact shape:
-{"regions":[{"box":[x1,y1,x2,y2],"original":"source text","translation":"{LANG} translation","vertical":false}]}
+{"regions":[{"box":[x1,y1,x2,y2],"original":"source text","translation":"{LANG} translation","vertical":false,"color":"#rrggbb","bold":false}]}
 
 Rules:
-- Coordinates are integers 0-1000, normalized to image size. box = [left, top, right, bottom].
+- Coordinates are integers 0-1000, normalized to image size. box = [left, top, right, bottom]. Tightly fit the visible text glyphs.
 - Include EVERY text region. Do NOT skip sound effects or small text.
 - "original" is the exact source text; "translation" is a natural, fluent {LANG} translation.
 - "vertical" = true only if the source text is written vertically (top-to-bottom columns).
+- "color" = the DOMINANT color of the original text glyphs as a hex value, e.g. "#ffffff" (white on dark bubble) or "#111111" (black on white bubble). Judge from the actual pixels. This is used to render the translation in a matching color.
+- "bold" = true if the original text is noticeably bold/heavy (e.g. sound effects).
 - Keep character names consistent across regions. Keep it concise to fit the bubble.`;
 
 const PROVIDER_DEFAULTS = {
@@ -73,6 +75,8 @@ function cfg() {
     fontSizeOffset: Number(t.fontSizeOffset) || 0,
     inkColor: String(t.inkColor || '#111111'),
     useOutline: t.useOutline !== false,
+    // 跟随原文：译文用模型识别到的原文颜色/粗细渲染，更贴近原著；关闭则用下方固定字号/颜色
+    autoStyle: t.autoStyle !== false,
   };
 }
 
@@ -236,7 +240,16 @@ function parseRegions(raw, width, height) {
     const translation = String(it.translation ?? it.text ?? it.result ?? '').trim();
     if (!translation) continue;
     const vertical = !!(it.vertical || it.isVertical || it.direction === 'vertical');
-    out.push({ x1: px1, y1: py1, x2: px2, y2: py2, translation, vertical });
+    // 原文颜色：只接受合法 hex，供译文跟随原文配色
+    let color = '';
+    const rawColor = it.color ?? it.textColor ?? it.originalColor;
+    if (typeof rawColor === 'string' && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(rawColor.trim())) {
+      let h = rawColor.trim().slice(1);
+      if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+      color = `#${h.toLowerCase()}`;
+    }
+    const bold = !!(it.bold || it.isBold);
+    out.push({ x1: px1, y1: py1, x2: px2, y2: py2, translation, vertical, color, bold });
   }
   return out;
 }
@@ -285,38 +298,51 @@ function inpaintRegions(ctx, width, height, regions, pad = 2) {
   ctx.putImageData(img, 0, 0);
 }
 
-/** 在修补后的画面上把译文渲染回原位置。 */
+/** 相对亮度：>0.5 视为浅色字（配深色描边），否则深色字（配浅色描边）。 */
+function isLightColor(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55;
+}
+
+/** 在修补后的画面上把译文渲染回原位置。字号贴合原文框，颜色默认跟随原文。 */
 function renderRegions(ctx, regions, conf) {
   ctx.save();
   ctx.textBaseline = 'top';
   for (const r of regions) {
+    // 跟随原文：用模型识别到的原文颜色；关闭或识别不到时用全局设置色
+    const ink = conf.autoStyle && r.color ? r.color : conf.inkColor;
+    const family = r.bold && conf.autoStyle ? `bold ${conf.fontFamily}` : conf.fontFamily;
+    const outline = isLightColor(ink) ? '#000000' : '#ffffff';
     const W = r.x2 - r.x1, H = r.y2 - r.y1;
     const text = r.translation;
     if (r.vertical) {
       // 竖排：从右到左分列，每列从上到下
       const cols = Math.max(1, Math.ceil(text.length / Math.max(1, Math.floor(H / 14))));
       const fontSize = clamp(Math.floor(Math.min(W / cols, H / Math.max(2, Math.ceil(text.length / cols)))) + conf.fontSizeOffset, 8, Math.max(8, Math.floor(W / cols)));
-      ctx.font = `${fontSize}px ${conf.fontFamily}`;
+      ctx.font = `${fontSize}px ${family}`;
       const perCol = Math.max(1, Math.floor((H - 2) / (fontSize + 1)));
       const chars = [...text];
       let idx = 0;
       for (let c = 0; c < cols && idx < chars.length; c++) {
         const cx = r.x2 - (c + 1) * (fontSize + 1);
         for (let row = 0; row < perCol && idx < chars.length; row++, idx++) {
-          drawChar(ctx, chars[idx], cx, r.y1 + row * (fontSize + 1), conf);
+          drawChar(ctx, chars[idx], cx, r.y1 + row * (fontSize + 1), ink, outline, conf);
         }
       }
     } else {
       // 横排：自动换行，字号自适应框宽高
       const chars = [...text];
       let fontSize = clamp(Math.floor(Math.min(H * 0.82, W / Math.max(2, chars.length) * 1.5)) + conf.fontSizeOffset, 8, Math.max(8, Math.floor(H * 0.95)));
-      ctx.font = `${fontSize}px ${conf.fontFamily}`;
+      ctx.font = `${fontSize}px ${family}`;
       while (fontSize > 8) {
         const perLine = Math.max(1, Math.floor((W - 4) / fontSize));
         const lines = Math.ceil(chars.length / perLine);
         if (lines * (fontSize + 2) <= H + 2) break;
         fontSize -= 1;
-        ctx.font = `${fontSize}px ${conf.fontFamily}`;
+        ctx.font = `${fontSize}px ${family}`;
       }
       const perLine = Math.max(1, Math.floor((W - 4) / fontSize));
       let idx = 0, line = 0;
@@ -327,7 +353,7 @@ function renderRegions(ctx, regions, conf) {
         const seg = chars.slice(idx, idx + perLine).join('');
         const tw = ctx.measureText(seg).width;
         const x = r.x1 + (W - tw) / 2;
-        drawChar(ctx, seg, x, y, conf, true);
+        drawChar(ctx, seg, x, y, ink, outline, conf);
         idx += perLine; y += lineH; line++;
       }
     }
@@ -335,14 +361,14 @@ function renderRegions(ctx, regions, conf) {
   ctx.restore();
 }
 
-function drawChar(ctx, text, x, y, conf, isString = false) {
+function drawChar(ctx, text, x, y, ink, outline, conf) {
   if (conf.useOutline) {
     ctx.lineWidth = 3;
-    ctx.strokeStyle = conf.inkColor === '#ffffff' ? '#000000' : '#ffffff';
+    ctx.strokeStyle = outline;
     ctx.lineJoin = 'round';
     ctx.strokeText(text, x, y);
   }
-  ctx.fillStyle = conf.inkColor;
+  ctx.fillStyle = ink;
   ctx.fillText(text, x, y);
 }
 
@@ -351,7 +377,7 @@ function drawChar(ctx, text, x, y, conf, isString = false) {
 function cacheKey(buf, conf) {
   const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 20);
   const meta = crypto.createHash('sha256')
-    .update(JSON.stringify([conf.provider, conf.model, conf.targetLang, PROMPT_VERSION, conf.fontSizeOffset, conf.inkColor, conf.useOutline]))
+    .update(JSON.stringify([conf.provider, conf.model, conf.targetLang, PROMPT_VERSION, conf.fontSizeOffset, conf.inkColor, conf.useOutline, conf.autoStyle]))
     .digest('hex').slice(0, 10);
   return `${hash}-${meta}`;
 }
@@ -392,6 +418,7 @@ export function registerTranslation(app) {
       fontSizeOffset: c.fontSizeOffset,
       inkColor: c.inkColor,
       useOutline: c.useOutline,
+      autoStyle: c.autoStyle,
       defaults: PROVIDER_DEFAULTS,
     });
   });
@@ -402,7 +429,7 @@ export function registerTranslation(app) {
     const b = req.body || {};
     const prev = (db.settings && db.settings.translate) || {};
     const next = { ...prev };
-    const fields = ['provider', 'apiKey', 'baseUrl', 'model', 'targetLang', 'prompt', 'fontFamily', 'fontSizeOffset', 'inkColor', 'useOutline'];
+    const fields = ['provider', 'apiKey', 'baseUrl', 'model', 'targetLang', 'prompt', 'fontFamily', 'fontSizeOffset', 'inkColor', 'useOutline', 'autoStyle'];
     for (const f of fields) if (f in b) next[f] = b[f];
     // 前端回传打码串时保留原 key
     if (b.apiKey && /••••/.test(String(b.apiKey))) next.apiKey = prev.apiKey;

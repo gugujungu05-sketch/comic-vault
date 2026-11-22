@@ -2003,28 +2003,47 @@
         <div class="kv"><span>数据</span><b>${isLocal ? '保存在本机' : '与网站 / 手机实时互通'}</b></div></div>`;
   }
   /** AI 翻译配置面板：多模态大模型看图翻译生肉漫画，服务端原位渲染（与网站设置页一致） */
+  const TR_PRESETS = {
+    gemini: { provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', label: 'Google Gemini（识图最准 · 需访问谷歌）' },
+    glm4v: { provider: 'custom', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4v-flash', label: '智谱 GLM-4V-Flash（国内直连 · 免费）' },
+    siliconflow: { provider: 'custom', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-VL-32B-Instruct', label: '硅基流动 Qwen-VL（国内直连）' },
+    openai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', label: 'OpenAI GPT-4o（付费）' },
+  };
+  function detectTrPreset(t) {
+    const hit = Object.entries(TR_PRESETS).find(([, p]) => p.provider === t.provider && p.baseUrl === t.baseUrl && (!p.model || !t.model || p.model === t.model));
+    return hit ? hit[0] : (t.provider === 'gemini' ? 'gemini' : 'custom');
+  }
   function translatePanelHtml() {
     const t = state.trCfg;
     if (!t) return '';
     const d = (t.defaults || {})[t.provider] || { baseUrl: '', model: '' };
-    const sel = (v, label) => `<option value="${esc(v)}" ${t.provider === v ? 'selected' : ''}>${esc(label)}</option>`;
+    const curPreset = detectTrPreset(t);
+    const psel = (v, p) => `<option value="${v}" ${curPreset === v ? 'selected' : ''}>${esc(p.label)}</option>`;
     return `<div class="panel"><h3>🌐 AI 翻译生肉漫画</h3>
       <p class="muted" style="font-size:12px;margin:0 0 10px">
-        阅读器里对非中文页面点「AI 翻译」：多模态大模型看懂画面上下文后翻译，服务端自动修补底图、把译文排回原位。
-        推荐 Gemini（识图最强）或 OpenAI GPT-4o；需自备对应服务的 API Key（保存在服务端，不会外传）。</p>
-      <label class="field"><span>服务商</span>
-        <select class="input" id="trProvider">
-          ${sel('gemini', 'Gemini（推荐，识图翻译最准）')}${sel('openai', 'OpenAI GPT-4o')}${sel('custom', '自定义兼容接口')}
+        阅读器里对非中文页面点「AI 翻译」：多模态大模型看懂画面上下文后翻译，服务端自动修补底图、把译文按原文位置与配色排回去。
+        译文默认跟随原文颜色/粗细；需自备对应服务的 API Key（保存在服务端，不会外传）。</p>
+      <label class="field"><span>① 选翻译服务（一键填好服务商/地址/模型）</span>
+        <select class="input" id="trPreset">
+          ${Object.entries(TR_PRESETS).map(([k, p]) => psel(k, p)).join('')}
         </select></label>
       <label class="field" style="margin-top:8px"><span>API Key${t.hasKey ? '（已保存，留空则保持不变）' : ''}</span>
         <input class="input" id="trKey" type="password" autocomplete="off" value="${esc(t.apiKey || '')}"
           placeholder="${t.hasKey ? '••••••••（已保存）' : '粘贴 API Key'}" /></label>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+        <label class="field" style="flex:0 0 auto"><span>当前服务商</span>
+          <div class="input" style="display:flex;align-items:center;min-width:120px;cursor:default">${t.provider === 'gemini' ? 'Google Gemini' : t.provider === 'openai' ? 'OpenAI' : '自定义接口'}</div></label>
+      </div>
       <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
         <label class="field" style="flex:1 1 240px"><span>接口地址（可留空用默认）</span>
           <input class="input" id="trBase" value="${esc(t.baseUrl || '')}" placeholder="${esc(d.baseUrl)}" /></label>
         <label class="field" style="flex:1 1 180px"><span>模型</span>
           <input class="input" id="trModel" value="${esc(t.model || '')}" placeholder="${esc(d.model)}" /></label>
       </div>
+      <label class="field" style="margin-top:8px"><span>② 译文样式</span>
+        <label class="row" style="gap:8px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="trAutoStyle" ${t.autoStyle !== false ? 'checked' : ''} />
+          <span>跟随原文（自动用气泡里原文的颜色与粗细，推荐开启）</span></label></label>
       <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
         <label class="field" style="flex:1 1 120px"><span>目标语言</span>
           <input class="input" id="trLang" value="${esc(t.targetLang || '简体中文')}" placeholder="简体中文" /></label>
@@ -2098,13 +2117,20 @@
         .catch((err) => toast(err.message, true));
       return;
     }
-    /* 翻译服务商切换：自动填入该服务的默认地址/模型 */
-    if (e.target && e.target.id === 'trProvider') {
-      const p = e.target.value;
-      const d = ((state.trCfg && state.trCfg.defaults) || {})[p] || { baseUrl: '', model: '' };
-      const b = $('#trBase'), m = $('#trModel');
-      if (b) b.value = d.baseUrl || '';
-      if (m) m.value = d.model || '';
+    /* 翻译预设切换：立即把服务商/地址/模型写入后端，避免与字段错位 */
+    if (e.target && e.target.id === 'trPreset') {
+      const key = e.target.value;
+      const preset = TR_PRESETS[key];
+      if (preset && state.trCfg) {
+        const patch = { provider: preset.provider, baseUrl: preset.baseUrl, model: preset.model };
+        state.trCfg = { ...state.trCfg, ...patch };
+        const b = $('#trBase'), m = $('#trModel');
+        if (b) b.value = preset.baseUrl;
+        if (m) m.value = preset.model;
+        api('POST', '/api/translate/config', { body: patch })
+          .then(() => toast('已切换翻译服务：' + preset.label.split('（')[0]))
+          .catch((err) => toast(err.message || String(err), true));
+      }
     }
   });
   document.addEventListener('click', async (e) => {
@@ -2308,12 +2334,14 @@
       }
       else if (a === 'tr-save') {
         const body = {
+          provider: state.trCfg?.provider || 'gemini',
           apiKey: $('#trKey')?.value.trim() || '',
           baseUrl: $('#trBase')?.value.trim() || '',
           model: $('#trModel')?.value.trim() || '',
           targetLang: $('#trLang')?.value.trim() || '简体中文',
           fontSizeOffset: Number($('#trSize')?.value) || 0,
           inkColor: $('#trInk')?.value || '#ffffff',
+          autoStyle: $('#trAutoStyle') ? $('#trAutoStyle').checked : true,
         };
         try {
           await api('POST', '/api/translate/config', { body });

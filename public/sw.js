@@ -7,7 +7,7 @@
  *
  * 重要：/api/ 数据请求永不缓存，保证软件与网站看到的始终是同一份实时数据。
  */
-const CACHE = 'cv-shell-v20';
+const CACHE = 'cv-shell-v21';
 let CODE = null;
 
 self.addEventListener('message', (event) => {

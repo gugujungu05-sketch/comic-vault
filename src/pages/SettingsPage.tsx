@@ -54,11 +54,20 @@ export function SettingsPage() {
   };
   const [trPreset, setTrPreset] = useState('gemini');
 
+  // 由后端配置反推当前预设，避免「选了智谱却显示 Gemini」的错位
+  function detectPreset(cfg: TranslateConfig): string {
+    const hit = Object.entries(TR_PRESETS).find(([, p]) => (
+      p.provider === cfg.provider && p.baseUrl === cfg.baseUrl &&
+      (!p.model || !cfg.model || p.model === cfg.model)
+    ));
+    return hit ? hit[0] : (cfg.provider === 'gemini' ? 'gemini' : 'custom');
+  }
+
   useEffect(() => {
     api.stats().then(setStats).catch(() => {});
     api.list().then((r) => setDirection(r.settings.defaultDirection || 'ltr')).catch(() => {});
     api.runtime().then(setRuntime).catch(() => {});
-    translation.config().then(setTrCfg).catch(() => {});
+    translation.config().then((c) => { setTrCfg(c); setTrPreset(detectPreset(c)); }).catch(() => {});
     discover.announcements().then((r) => {
       setAnnouncements(r.announcements);
       setCanAnnounce(r.canAnnounce);
@@ -304,7 +313,14 @@ export function SettingsPage() {
                     const key = e.target.value;
                     setTrPreset(key);
                     const p = TR_PRESETS[key];
-                    if (p) setTrCfg({ ...trCfg, provider: p.provider, baseUrl: p.baseUrl, model: p.model });
+                    if (!p) return;
+                    const next = { ...trCfg, provider: p.provider, baseUrl: p.baseUrl, model: p.model };
+                    setTrCfg(next);
+                    // 立即落库，避免刷新后服务商/地址/模型又变回去
+                    setTrTest(null);
+                    translation.saveConfig({ provider: p.provider, baseUrl: p.baseUrl, model: p.model })
+                      .then(() => toast(`已切换到「${p.label.split('（')[0]}」`))
+                      .catch((err) => errorToast(err));
                   }}
                 >
                   {Object.entries(TR_PRESETS).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
@@ -313,24 +329,16 @@ export function SettingsPage() {
                   {TR_PRESETS[trPreset]?.hint}
                 </div>
               </div>
-              <div className="row wrap" style={{ gap: 8 }}>
-                <label className="field">
-                  <span>服务商</span>
-                  <select
-                    className="input"
-                    value={trCfg.provider}
-                    onChange={(e) => {
-                      const p = e.target.value as TranslateConfig['provider'];
-                      const d = trCfg.defaults[p];
-                      setTrCfg({ ...trCfg, provider: p, baseUrl: d.baseUrl, model: d.model });
-                      translation.saveConfig({ provider: p, baseUrl: d.baseUrl, model: d.model }).catch(() => {});
-                    }}
-                  >
-                    <option value="gemini">Gemini（推荐，识图翻译最准）</option>
-                    <option value="openai">OpenAI GPT-4o</option>
-                    <option value="custom">自定义兼容接口</option>
-                  </select>
-                </label>
+              <div className="row wrap" style={{ gap: 8, alignItems: 'flex-end' }}>
+                <div className="field" style={{ flex: '0 0 auto' }}>
+                  <span>当前服务商</span>
+                  <div className="input" style={{ display: 'flex', alignItems: 'center', minWidth: 120, cursor: 'default' }}>
+                    {trCfg.provider === 'gemini' ? 'Google Gemini' : trCfg.provider === 'openai' ? 'OpenAI' : '自定义接口'}
+                  </div>
+                </div>
+                <div className="muted sm-text" style={{ paddingBottom: 8 }}>
+                  由上方预设决定；如需更换，请重新选择「① 选翻译服务」
+                </div>
               </div>
               <label className="field" style={{ width: '100%' }}>
                 <span>API Key{trCfg.hasKey ? '（已保存，留空则保持不变）' : ''}</span>
@@ -363,6 +371,21 @@ export function SettingsPage() {
                   />
                 </label>
               </div>
+              <label className="field" style={{ width: '100%' }}>
+                <span>② 译文样式</span>
+                <label className="row" style={{ gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={!!trCfg.autoStyle}
+                    onChange={(e) => {
+                      const next = { ...trCfg, autoStyle: e.target.checked };
+                      setTrCfg(next);
+                      translation.saveConfig({ autoStyle: e.target.checked }).catch((err) => errorToast(err));
+                    }}
+                  />
+                  <span>跟随原文（自动用气泡里原文的颜色与粗细，译文更贴近原著，推荐开启）</span>
+                </label>
+              </label>
               <div className="row wrap" style={{ gap: 8 }}>
                 <label className="field" style={{ flex: '1 1 140px' }}>
                   <span>目标语言</span>
@@ -374,7 +397,7 @@ export function SettingsPage() {
                   />
                 </label>
                 <label className="field" style={{ flex: '1 1 140px' }}>
-                  <span>字号调整</span>
+                  <span>字号调整（{trCfg.autoStyle ? '在贴合原文框基础上微调' : '负值更小 / 正值更大'}）</span>
                   <input
                     className="input"
                     type="number"
@@ -385,7 +408,7 @@ export function SettingsPage() {
                   />
                 </label>
                 <label className="field" style={{ flex: '1 1 140px' }}>
-                  <span>文字颜色</span>
+                  <span>文字颜色（{trCfg.autoStyle ? '跟随原文时仅作兜底' : '所有译文统一用此色'}）</span>
                   <input
                     className="input"
                     type="color"
@@ -397,8 +420,9 @@ export function SettingsPage() {
               </div>
               <div className="row wrap" style={{ gap: 8 }}>
                 <button className="btn primary" disabled={trBusy} onClick={() => saveTranslate({
-                  apiKey: trCfg.apiKey, baseUrl: trCfg.baseUrl, model: trCfg.model,
+                  provider: trCfg.provider, apiKey: trCfg.apiKey, baseUrl: trCfg.baseUrl, model: trCfg.model,
                   targetLang: trCfg.targetLang, fontSizeOffset: trCfg.fontSizeOffset, inkColor: trCfg.inkColor,
+                  autoStyle: trCfg.autoStyle,
                 })}>
                   {trBusy ? '处理中…' : '保存翻译设置'}
                 </button>
