@@ -4,6 +4,7 @@ import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { ReaderView } from '../components/ReaderView';
 import { useErrorToast, useToast } from '../components/Toasts';
+import { useSession } from '../lib/session';
 import { online as onlineApi, sources as sourcesApi, mediaUrl } from '../lib/api';
 import { importTaskStore } from '../lib/importTask';
 import type {
@@ -28,6 +29,7 @@ function coverUrl(sid: string | undefined, url: string | undefined): string {
 }
 
 export default function SourcesPage() {
+  const { user: sessionUser } = useSession();
   const [list, setList] = useState<SourceInfo[]>([]);
   const [loadError, setLoadError] = useState<string>('');
   const [tab, setTab] = useState<MediaTab>('comic');
@@ -650,6 +652,11 @@ export default function SourcesPage() {
             当前来源：<b>{active?.name || '未选择'}</b><br />
             登录<b>不是必须</b>的——不登录也能浏览、搜索、免费内容。登录只用于<b>同步个人书架 / 收藏</b>或<b>解锁会员/受限内容</b>（和 kira / ciallo reader 一样）。
           </div>
+          {!sessionUser && (
+            <div className="muted" style={{ fontSize: 12, marginBottom: 10, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8 }}>
+              💡 浏览和打开官网无需登录；但若要用「账号密码登录」或「保存 Cookie」把登录态同步到书架，需先登录本站账号（右上角「登录 / 注册」）。
+            </div>
+          )}
 
           {/* 方式一：打开官网直接登录（推荐，和 kira / ciallo reader 一致） */}
           {accountInfo.website && (
