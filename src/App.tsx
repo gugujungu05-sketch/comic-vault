@@ -18,6 +18,7 @@ import { social, detectApiBase, getApiBase, setApiCredential } from './lib/api';
 import { rememberShareCode, withShareCode } from './lib/util';
 import { normalizeTheme } from './lib/themes';
 import { Avatar } from './components/Avatar';
+import { ImportTaskBar } from './components/ImportTaskBar';
 
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => normalizeTheme(localStorage.getItem('cv-theme')));
@@ -312,6 +313,7 @@ function Shell() {
         </div>
       )}
       {!immersive && <Header theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />}
+      <ImportTaskBar />
       <Routes>
         <Route path="/" element={shareFromQuery ? <SharePage /> : <LibraryPage />} />
         <Route path="/community" element={<CommunityPage />} />

@@ -5,6 +5,7 @@ import { Modal } from '../components/Modal';
 import { ReaderView } from '../components/ReaderView';
 import { useErrorToast, useToast } from '../components/Toasts';
 import { online as onlineApi, sources as sourcesApi, mediaUrl } from '../lib/api';
+import { importTaskStore } from '../lib/importTask';
 import type {
   OnlineShelfItem,
   SourceChapterItem,
@@ -237,7 +238,9 @@ export default function SourcesPage() {
     const picked = chapters.filter((_, i) => detail.checked.has(i));
     if (!picked.length) return toast('请先勾选要导入的章节');
     setImporting({ done: 0, total: picked.length, failed: 0 });
+    importTaskStore.start(`正在导入 ${detail.title} · 0/${picked.length} 话`);
     // 轮询后端图片级进度：显示「第 N 话 · 第 x/y 张」，不再长时间卡在 0/N
+    // 进度同时写入全局任务栏，返回/切到任何页面都继续可见。
     let progAlive = true;
     let curChapter = 1;
     (async () => {
@@ -245,7 +248,9 @@ export default function SourcesPage() {
         try {
           const pg = await sourcesApi.importProgress();
           if (!pg.idle && pg.imageTotal) {
-            setImportProgressLabel(`第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`);
+            const label = `第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`;
+            setImportProgressLabel(label);
+            importTaskStore.progress({ label, done: curChapter - 1, total: picked.length });
           }
         } catch { /* 忽略轮询错误 */ }
         await new Promise((r) => setTimeout(r, 400));
@@ -278,21 +283,30 @@ export default function SourcesPage() {
         if (failed === 1) errorToast(err, '导入失败');
       }
       setImporting({ done, total: picked.length, failed });
+      importTaskStore.progress({ done, total: picked.length, failed, label: `正在导入 ${detail.title} · ${done}/${picked.length} 话` });
     }
     progAlive = false;
     setImportProgressLabel('');
     setImporting(null);
-    if (done) toast(`导入完成：成功 ${done} 话${failed ? `，失败 ${failed} 话` : ''}`);
+    if (done) {
+      importTaskStore.finish(done, picked.length, failed, comicId);
+      toast(`导入完成：成功 ${done} 话${failed ? `，失败 ${failed} 话` : ''}`);
+    } else {
+      importTaskStore.clear();
+    }
   }
 
   async function importNovelBook() {
     if (!detailSourceId || !detail?.bookId) return;
     setNovelImporting(true);
+    importTaskStore.start(`正在整本导入《${detail.title}》…`);
     try {
       const r = await onlineApi.importBook(detailSourceId, detail.bookId);
       toast(`已加入书库：《${detail.title}》共 ${r.comic.chapterCount} 章，可在书库里编辑`);
+      importTaskStore.finish(r.comic.chapterCount || 1, r.comic.chapterCount || 1, 0, r.comic.id);
       onImportedNavigate(r.comic.id);
     } catch (err) {
+      importTaskStore.clear();
       errorToast(err, '整本导入失败');
     } finally {
       setNovelImporting(false);

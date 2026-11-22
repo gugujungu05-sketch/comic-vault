@@ -21,10 +21,11 @@ import * as cheerio from 'cheerio';
 import { nanoid } from 'nanoid';
 import { loadDb, saveDbSoon, newId, getComic, comicDir, DATA_DIR, TMP_DIR } from './store.js';
 import { storePage } from './page-store.js';
+import { normalizeSourceImage } from './media.js';
 import { requireUser } from './social.js';
 import {
   loadJsSources, allJsSources, getJsSource,
-  jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders,
+  jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode,
   jsDiscoverTabs, jsDiscoverLoad,
 } from './js-sources.js';
 
@@ -234,10 +235,10 @@ async function createSourceComic(db, p) {
 }
 
 /** 首次导入时下载站点封面存为漫画封面 */
-async function attachSourceCover(p, comic, coverUrl, imgHeaders) {
+async function attachSourceCover(p, comic, coverUrl, imgHeaders, decodeScheme = null) {
   if (comic.cover || !coverUrl || !String(coverUrl).startsWith('http')) return null;
   try {
-    const tmpCover = await downloadSourceImage(coverUrl, imgHeaders);
+    const tmpCover = await downloadSourceImage(coverUrl, imgHeaders, '', decodeScheme);
     const name = `cover_${nanoid(6)}${path.extname(tmpCover) || '.jpg'}`;
     const dir = path.join(comicDir(comic.id), '_cover');
     await fsp.mkdir(dir, { recursive: true });
@@ -253,9 +254,17 @@ async function attachSourceCover(p, comic, coverUrl, imgHeaders) {
 }
 
 /** 下载一张源站图片到临时文件（带防盗链头；失败自动补 Referer 重试一次） */
-async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
+async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '', decodeScheme = null) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 30000);
+  // 下载→还原混淆→（必要时）转 JPEG→落盘。返回临时文件路径与真实扩展名。
+  const save = async (rawBuf) => {
+    const norm = await normalizeSourceImage(rawBuf, decodeScheme);
+    const tmp = path.join(TMP_DIR, `src-${nanoid(8)}.${norm.ext}`);
+    await fsp.mkdir(TMP_DIR, { recursive: true });
+    await fsp.writeFile(tmp, norm.buf);
+    return tmp;
+  };
   try {
     const r = await fetch(imgUrl, {
       headers: { 'User-Agent': UA_DEFAULT, ...headers },
@@ -267,11 +276,7 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
     if (!ct.startsWith('image/') && !ct.includes('octet-stream')) throw new Error(`非图片响应: ${ct}`);
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length < 32) throw new Error('图片内容为空');
-    const ext = ct.includes('png') ? 'png' : ct.includes('webp') ? 'webp' : ct.includes('gif') ? 'gif' : ct.includes('avif') ? 'avif' : 'jpg';
-    const tmp = path.join(TMP_DIR, `src-${nanoid(8)}.${ext}`);
-    await fsp.mkdir(TMP_DIR, { recursive: true });
-    await fsp.writeFile(tmp, buf);
-    return tmp;
+    return await save(buf);
   } catch (err) {
     // 防盗链兜底：源脚本没给 Referer 时用源站域名重试一次
     if (fallbackReferer && !headers.Referer && !headers.referer) {
@@ -285,13 +290,7 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
           const ct2 = r2.headers.get('content-type') || '';
           if (ct2.startsWith('image/') || ct2.includes('octet-stream')) {
             const buf2 = Buffer.from(await r2.arrayBuffer());
-            if (buf2.length >= 32) {
-              const ext2 = ct2.includes('png') ? 'png' : ct2.includes('webp') ? 'webp' : ct2.includes('gif') ? 'gif' : ct2.includes('avif') ? 'avif' : 'jpg';
-              const tmp2 = path.join(TMP_DIR, `src-${nanoid(8)}.${ext2}`);
-              await fsp.mkdir(TMP_DIR, { recursive: true });
-              await fsp.writeFile(tmp2, buf2);
-              return tmp2;
-            }
+            if (buf2.length >= 32) return await save(buf2);
           }
         }
       } catch { /* 兜底也失败则按原错误抛出 */ }
@@ -306,7 +305,8 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
 export async function importJsChapter(p, onProgress) {
   const db = loadDb();
   let comic = p.comic || null;
-  const { images, headers } = await jsChapterImages(p.source, p.bookId, p.chapterPath);
+  const { images, headers, decode } = await jsChapterImages(p.source, p.bookId, p.chapterPath);
+  const decodeScheme = decode || jsImageDecode(p.source);
 
   // createSourceComic 是 async（内部可能下载封面资源），必须 await；
   // 缺少 await 时 comic 是 Promise，后续 storePage 收到 undefined 目录名，
@@ -331,9 +331,9 @@ export async function importJsChapter(p, onProgress) {
       let tmp = null;
       try {
         const ih = jsImageHeaders(p.source, imgUrl) || headers || {};
-        tmp = await downloadSourceImage(imgUrl, ih, fallbackRef);
+        tmp = await downloadSourceImage(imgUrl, ih, fallbackRef, decodeScheme);
         if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length });
-        const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id);
+        const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id, decodeScheme);
         return page;
       } catch (err) {
         if (tmp) await fsp.rm(tmp, { force: true });
@@ -354,7 +354,7 @@ export async function importJsChapter(p, onProgress) {
   comic.updatedAt = now();
   comic.lastActivityAt = now();
 
-  const coverUrl = await attachSourceCover(p, comic, p.cover, jsImageHeaders(p.source, p.cover || images[0]));
+  const coverUrl = await attachSourceCover(p, comic, p.cover, jsImageHeaders(p.source, p.cover || images[0]), decodeScheme);
   saveDbSoon();
   return { comic, chapter, total: images.length, stored, coverUrl };
 }

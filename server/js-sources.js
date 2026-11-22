@@ -370,7 +370,7 @@ export async function jsChapterImages(source, bookId, chapterPath) {
   const images = Array.isArray(r) ? r : r?.images || [];
   if (!images.length) throw new Error('这一话没有解析到图片');
   const cfg = source.comic.onImageLoad ? headersOf(source.comic.onImageLoad(images[0])) : {};
-  return { images: images.map(String), headers: cfg };
+  return { images: images.map(String), headers: cfg, decode: jsImageDecode(source) };
 }
 
 /** 图片下载所需的请求头（防盗链 Referer 等） */
@@ -379,6 +379,17 @@ export function jsImageHeaders(source, url) {
     if (source.comic?.onImageLoad) return headersOf(source.comic.onImageLoad(url));
   } catch { /* 源脚本异常时不拦截 */ }
   return {};
+}
+
+/** 书源声明的图片字节解码方案（如爱漫画 sub=47 xor=171），供后端还原混淆图片 */
+export function jsImageDecode(source) {
+  try {
+    const d = source?.imageDecode;
+    if (d && Number.isFinite(Number(d.sub)) && Number.isFinite(Number(d.xor))) {
+      return { sub: Number(d.sub), xor: Number(d.xor) };
+    }
+  } catch { /* 源脚本异常时不拦截 */ }
+  return null;
 }
 
 /** 小说整本 EPUB 下载信息 */

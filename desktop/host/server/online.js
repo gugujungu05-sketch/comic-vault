@@ -11,7 +11,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { loadDb, saveDbSoon, TMP_DIR } from './store.js';
 import { requireUser } from './social.js';
-import { getJsSource, jsComicDetail, jsChapterImages, jsImageHeaders, jsNovelDownload } from './js-sources.js';
+import { getJsSource, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode, jsNovelDownload } from './js-sources.js';
+import { normalizeSourceImage } from './media.js';
 
 const UA_DEFAULT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
@@ -151,9 +152,16 @@ export function registerOnline(app, helpers) {
         if (m) ct = `image/${m[1].toLowerCase().replace('jpeg', 'jpeg').replace('jpg', 'jpeg')}`;
         else ct = 'image/jpeg';
       }
+      let buf = Buffer.from(await r.arrayBuffer());
+      // 爱漫画等源站对图片字节做混淆（XOR+SHIFT），直接转发是破图；按书源声明还原，
+      // 并把 avif/heif 统一转 JPEG，避免老浏览器与 octet-stream 兼容问题。
+      try {
+        const norm = await normalizeSourceImage(buf, jsImageDecode(source), { forceJpeg: true });
+        buf = norm.buf;
+        ct = norm.mime;
+      } catch { /* 归一化失败时回退原始字节 */ }
       res.setHeader('Content-Type', ct);
       res.setHeader('Cache-Control', 'public, max-age=86400');
-      const buf = Buffer.from(await r.arrayBuffer());
       res.send(buf);
     } catch {
       res.status(502).end('proxy error');
