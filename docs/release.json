@@ -1,16 +1,16 @@
 {
   "schema": 1,
   "version": "3.4.0.29.0",
-  "webVersion": "2.7.0.33.2",
+  "webVersion": "2.7.0.33.3",
   "versions": {
-    "web": "2.7.0.33.2",
+    "web": "2.7.0.33.3",
     "desktop": "3.4.0.29.0",
     "android": "3.4.0.29.0"
   },
   "buildVersion": "3.4.0",
   "build": 38,
   "releasedAt": 1795326630169,
-  "generatedAt": 1795355919180,
+  "generatedAt": 1795357183329,
   "driveUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
     "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
