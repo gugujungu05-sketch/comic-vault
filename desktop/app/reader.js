@@ -712,7 +712,12 @@
     else if (e.key.toLowerCase() === 'd') { spread = !spread; savePrefs(); draw(); }
     else if (e.key.toLowerCase() === 'w') { webtoon = !webtoon; $('#stage').scrollTop = 0; savePrefs(); draw(); }
     else if (e.key.toLowerCase() === 'r') { rtl = !rtl; syncDirUI(); savePrefs(); }
-    else if (e.key === 'Escape' && Host.closeReader && document.fullscreenElement) Host.toggleFullscreen?.();
+    else if (e.key === 'F11' || e.key.toLowerCase() === 'f') { e.preventDefault(); Host.toggleFullscreen?.(); }
+    else if (e.key === 'Tab') { e.preventDefault(); toggleUi(); }
+    else if (e.key === 'Escape') {
+      if (document.body.classList.contains('idle')) showUi();
+      else if (document.fullscreenElement) Host.toggleFullscreen?.();
+    }
   });
 
   /* ---------- 工具栏显隐：只由明确点击驱动，滑动 / 触碰 / 滚轮 / 翻页都不弹 ---------- */

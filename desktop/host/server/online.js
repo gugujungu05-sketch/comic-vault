@@ -11,12 +11,78 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { loadDb, saveDbSoon, TMP_DIR } from './store.js';
 import { requireUser } from './social.js';
-import { getJsSource, jsComicDetail, jsChapterImages, jsImageHeaders, jsNovelDownload } from './js-sources.js';
+import { getJsSource, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode, jsNovelDownload } from './js-sources.js';
+import { normalizeSourceImage } from './media.js';
 
 const UA_DEFAULT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 
 function now() { return Date.now(); }
+
+const xml = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** 逐章正文源（lnovel/哔哩轻小说）：抓全部卷章节正文，实时生成标准 EPUB Buffer。
+ *  lnovel API：详情 /api/bili/novel/{nid} → volumes[].vid → /api/bili/novel/{nid}/vol/{vid} → chapters[].cid → /api/bili/novel/{nid}/chapter/{cid} */
+async function buildTextNovelEpub(source, bookId, helpers) {
+  const API = String(source.baseUrl || 'https://lnovel.animes.garden').replace(/\/+$/, '');
+  const getJson = async (p) => {
+    const r = await fetch(API + p, { headers: { 'User-Agent': UA_DEFAULT, Accept: 'application/json' }, signal: AbortSignal.timeout(30000) });
+    if (!r.ok) throw new Error('lnovel 请求失败 HTTP ' + r.status);
+    const j = await r.json();
+    if (j && j.ok === false) throw new Error(j.message || 'lnovel 接口错误');
+    return j;
+  };
+  const info = (await getJson('/api/bili/novel/' + encodeURIComponent(bookId))).data || {};
+  const title = String(info.name || '在线小说');
+  const author = (info.authors || []).map((a) => a.name).filter(Boolean).join('、');
+  const volumes = Array.isArray(info.volumes) ? info.volumes : [];
+  if (!volumes.length) throw new Error('这本书没有可用的卷');
+
+  const chapters = []; // {title, html}
+  for (const vol of volumes) {
+    const vid = vol.vid;
+    if (!vid) continue;
+    let vd;
+    try { vd = ((await getJson(`/api/bili/novel/${bookId}/vol/${vid}`)).data) || {}; } catch { continue; }
+    const list = Array.isArray(vd.chapters) ? vd.chapters : [];
+    for (const c of list) {
+      const cid = c.cid;
+      if (!cid) continue;
+      let body = '';
+      try { body = String(((await getJson(`/api/bili/novel/${bookId}/chapter/${cid}`)).data || {}).content || ''); } catch { continue; }
+      if (!body.trim()) continue;
+      chapters.push({ title: String(c.title || '正文'), html: body });
+    }
+  }
+  if (!chapters.length) throw new Error('这本书没有抓取到章节正文');
+
+  // 用 archiver 生成标准 EPUB（mimetype 必须第一个且不压缩）
+  const archiver = (await import('archiver')).default;
+  const chunks = [];
+  const arc = archiver('zip', { zlib: { level: 6 } });
+  arc.on('data', (c) => chunks.push(c));
+  const done = new Promise((resolve, reject) => { arc.on('end', resolve); arc.on('error', reject); });
+  arc.append('application/epub+zip', { name: 'mimetype', store: true });
+
+  const xhtml = chapters.map((c, i) => {
+    const paras = String(c.html).replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '');
+    return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${xml(c.title)}</title><meta charset="utf-8"/></head><body><h2>${xml(c.title)}</h2>${paras}</body></html>`;
+  });
+  const names = xhtml.map((_, i) => `chapter_${String(i + 1).padStart(4, '0')}.xhtml`);
+  const container = `<?xml version="1.0" encoding="UTF-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`;
+  arc.append(container, { name: 'META-INF/container.xml' });
+  const manifest = names.map((n, i) => `<item id="c${i}" href="${n}" media-type="application/xhtml+xml"/>`).join('');
+  const spine = names.map((_, i) => `<itemref idref="c${i}"/>`).join('');
+  const opf = `<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${xml(title)}</dc:title><dc:creator>${xml(author)}</dc:creator><dc:language>zh-CN</dc:language><dc:identifier id="bookid">novel-${bookId}</dc:identifier></metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>${manifest}</manifest><spine toc="ncx">${spine}</spine></package>`;
+  arc.append(opf, { name: 'OEBPS/content.opf' });
+  const navPoints = chapters.map((c, i) => `<navPoint id="n${i}" playOrder="${i + 1}"><navLabel><text>${xml(c.title)}</text></navLabel><content src="${names[i]}"/></navPoint>`).join('');
+  const ncx = `<?xml version="1.0" encoding="UTF-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="novel-${bookId}"/></head><docTitle><text>${xml(title)}</text></docTitle><navMap>${navPoints}</navMap></ncx>`;
+  arc.append(ncx, { name: 'OEBPS/toc.ncx' });
+  names.forEach((n, i) => arc.append(xhtml[i], { name: 'OEBPS/' + n }));
+  await arc.finalize();
+  await done;
+  return Buffer.concat(chunks);
+}
 
 /**
  * @param {object} helpers { epubChaptersFromDir, createNovelComic, extractWith7z, ensureDir }
@@ -151,9 +217,16 @@ export function registerOnline(app, helpers) {
         if (m) ct = `image/${m[1].toLowerCase().replace('jpeg', 'jpeg').replace('jpg', 'jpeg')}`;
         else ct = 'image/jpeg';
       }
+      let buf = Buffer.from(await r.arrayBuffer());
+      // 爱漫画等源站对图片字节做混淆（XOR+SHIFT），直接转发是破图；按书源声明还原，
+      // 并把 avif/heif 统一转 JPEG，避免老浏览器与 octet-stream 兼容问题。
+      try {
+        const norm = await normalizeSourceImage(buf, jsImageDecode(source), { forceJpeg: true });
+        buf = norm.buf;
+        ct = norm.mime;
+      } catch { /* 归一化失败时回退原始字节 */ }
       res.setHeader('Content-Type', ct);
       res.setHeader('Cache-Control', 'public, max-age=86400');
-      const buf = Buffer.from(await r.arrayBuffer());
       res.send(buf);
     } catch {
       res.status(502).end('proxy error');
@@ -172,17 +245,23 @@ export function registerOnline(app, helpers) {
     try {
       const dl = await jsNovelDownload(source, bookId);
       if (!dl) return res.status(400).json({ error: '这个来源暂不支持整本导入，请逐话导入' });
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 300000);
-      const r = await fetch(dl.url, {
-        headers: { 'User-Agent': UA_DEFAULT, ...(dl.headers || {}) },
-        signal: ac.signal,
-        redirect: 'follow',
-      });
-      clearTimeout(timer);
-      if (!r.ok) throw new Error(`下载失败：HTTP ${r.status}`);
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (!buf.length) throw new Error('下载内容为空');
+      let buf;
+      if (dl.textNovel) {
+        // 逐章正文源（如哔哩轻小说 lnovel）：抓取所有卷/章节正文，实时生成标准 EPUB
+        buf = await buildTextNovelEpub(source, bookId, helpers);
+      } else {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 300000);
+        const r = await fetch(dl.url, {
+          headers: { 'User-Agent': UA_DEFAULT, ...(dl.headers || {}) },
+          signal: ac.signal,
+          redirect: 'follow',
+        });
+        clearTimeout(timer);
+        if (!r.ok) throw new Error(`下载失败：HTTP ${r.status}`);
+        buf = Buffer.from(await r.arrayBuffer());
+      }
+      if (!buf || !buf.length) throw new Error('下载内容为空');
       const tmp = path.join(TMP_DIR, `online-${source.key}-${bookId}-${Date.now()}.epub`);
       await fsp.mkdir(TMP_DIR, { recursive: true });
       await fsp.writeFile(tmp, buf);

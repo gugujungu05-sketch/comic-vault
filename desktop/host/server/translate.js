@@ -32,23 +32,28 @@ async function getCanvas() {
 }
 import { DATA_DIR, STORE_DIR, loadDb, saveDbSoon } from './store.js';
 import { getJsSource, jsImageHeaders } from './js-sources.js';
+import { looksLikeImage, normalizeSourceImage } from './media.js';
 
 const UA_DEFAULT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 
 const CACHE_DIR = path.join(DATA_DIR, 'translations');
-const PROMPT_VERSION = 'v1';
+const PROMPT_VERSION = 'v2';
 const DEFAULT_PROMPT = `You are a professional manga translator. Look at the image carefully.
 Detect EVERY text region (speech bubbles, narration, sound effects, signs) and translate all non-{LANG} text into {LANG}.
 
-Output ONLY a JSON object, no markdown, no explanation, in this exact shape:
-{"regions":[{"box":[x1,y1,x2,y2],"original":"source text","translation":"{LANG} translation","vertical":false}]}
+Output ONLY a valid JSON object, no markdown fences, no explanation. The JSON MUST have a top-level key "regions" whose value is an array. Example (note the "regions" key is REQUIRED):
+{"regions":[{"box":[x1,y1,x2,y2],"original":"source text","translation":"{LANG} translation","vertical":false,"color":"#rrggbb","bold":false}]}
+
+CRITICAL: start your output with the literal characters {"regions":[ and end with ]}. Never output a bare object.
 
 Rules:
-- Coordinates are integers 0-1000, normalized to image size. box = [left, top, right, bottom].
+- Coordinates are integers 0-1000, normalized to image size. box = [left, top, right, bottom]. Tightly fit the visible text glyphs.
 - Include EVERY text region. Do NOT skip sound effects or small text.
 - "original" is the exact source text; "translation" is a natural, fluent {LANG} translation.
 - "vertical" = true only if the source text is written vertically (top-to-bottom columns).
+- "color" = the DOMINANT color of the original text glyphs as a hex value, e.g. "#ffffff" (white on dark bubble) or "#111111" (black on white bubble). Judge from the actual pixels. This is used to render the translation in a matching color.
+- "bold" = true if the original text is noticeably bold/heavy (e.g. sound effects).
 - Keep character names consistent across regions. Keep it concise to fit the bubble.`;
 
 const PROVIDER_DEFAULTS = {
@@ -73,6 +78,8 @@ function cfg() {
     fontSizeOffset: Number(t.fontSizeOffset) || 0,
     inkColor: String(t.inkColor || '#111111'),
     useOutline: t.useOutline !== false,
+    // 跟随原文：译文用模型识别到的原文颜色/粗细渲染，更贴近原著；关闭则用下方固定字号/颜色
+    autoStyle: t.autoStyle !== false,
   };
 }
 
@@ -94,7 +101,21 @@ async function resolveImageBuffer(url) {
   const fm = /^\/api\/files\/([^/]+)\/([^/]+)\/([^/?]+)/.exec(url);
   if (fm) {
     const full = path.join(STORE_DIR, fm[1], fm[2], fm[3]);
-    try { return await fsp.readFile(full); } catch { throw new Error('本地图片不存在'); }
+    try {
+      let buf = await fsp.readFile(full);
+      // 存量在线源图片是混淆字节/avif，sharp 读不了：先尝试读取 /api/files 生成的 .norm.jpg 缓存，
+      // 否则实时归一化后再交给模型（否则报 Unsupported image type）。
+      const normPath = `${full}.norm.jpg`;
+      try {
+        const hasNorm = await fsp.access(normPath).then(() => true).catch(() => false);
+        if (hasNorm) buf = await fsp.readFile(normPath);
+        else if (!looksLikeImage(buf) || /\.(avif|heif|heic)$/i.test(full)) {
+          const norm = await normalizeSourceImage(buf, null, { forceJpeg: true });
+          if (norm?.buf) { buf = norm.buf; await fsp.writeFile(normPath, buf).catch(() => {}); }
+        }
+      } catch { /* 归一化失败则用原字节，交由后续报错 */ }
+      return buf;
+    } catch { throw new Error('本地图片不存在'); }
   }
   // 在线来源代理：/api/online/img?sid=&u=
   if (url.startsWith('/api/online/img')) {
@@ -103,20 +124,34 @@ async function resolveImageBuffer(url) {
     const real = String(q.get('u') || '');
     if (!/^https?:\/\//i.test(real)) throw new Error('在线图片地址无效');
     const headers = { 'User-Agent': UA_DEFAULT, ...(source ? (jsImageHeaders(source, real) || {}) : {}) };
-    return await fetchBuffer(real, headers);
+    let buf = await fetchBuffer(real, headers);
+    // 在线源图片常是 avif / 混淆字节，直接送模型会 Unsupported image type → 先归一化
+    if (!looksLikeImage(buf) || /\.(avif|heif|heic)(\?|$)/i.test(real)) {
+      try {
+        const norm = await normalizeSourceImage(buf, null, { forceJpeg: true });
+        if (norm?.buf) buf = norm.buf;
+      } catch { /* 归一化失败交给模型判断 */ }
+    }
+    return buf;
   }
   if (/^https?:\/\//i.test(url)) return await fetchBuffer(url, { 'User-Agent': UA_DEFAULT });
   throw new Error('不支持的图片地址格式');
 }
 
 async function fetchBuffer(url, headers) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 30000);
-  try {
-    const r = await fetch(url, { headers, signal: ac.signal, redirect: 'follow' });
-    if (!r.ok) throw new Error(`图片下载失败 HTTP ${r.status}`);
-    return Buffer.from(await r.arrayBuffer());
-  } finally { clearTimeout(timer); }
+  // 在线图片站点常有防盗链/临时 403：失败后用简化请求头重试一次
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 30000);
+    try {
+      const h = attempt === 0 ? headers : { 'User-Agent': UA_DEFAULT };
+      const r = await fetch(url, { headers: h, signal: ac.signal, redirect: 'follow' });
+      if (!r.ok) throw new Error(`图片下载失败 HTTP ${r.status}`);
+      return Buffer.from(await r.arrayBuffer());
+    } catch (err) {
+      if (attempt === 1) throw err;
+    } finally { clearTimeout(timer); }
+  }
 }
 
 /* ------------------------------ 多模态模型调用 ------------------------------ */
@@ -173,11 +208,21 @@ async function callOpenAICompatible(conf, buf) {
   };
   const headers = { 'Content-Type': 'application/json' };
   if (conf.apiKey) headers.Authorization = `Bearer ${conf.apiKey}`;
+  // 各家对 max_tokens 上限不同：智谱 glm-4v-flash 等只接受 1-1024，
+  // 写死 4096 会直接 400「max_tokens参数非法」。按服务商选安全值，并在 400 时自动降档重试。
+  const base = String(conf.baseUrl || '');
+  if (/bigmodel\.cn/i.test(base)) body.max_tokens = 1024;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 120000);
   try {
-    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
-    const text = await r.text();
+    let r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
+    let text = await r.text();
+    // 若因 max_tokens 超限被拒，降到 1024 再试一次（兼容未知中转服务）
+    if (!r.ok && /max_tokens|max_output|超出|非法/i.test(text) && body.max_tokens !== 1024) {
+      body.max_tokens = 1024;
+      r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
+      text = await r.text();
+    }
     if (!r.ok) throw new Error(`模型请求失败 HTTP ${r.status}：${slice(text, 300)}`);
     let j; try { j = JSON.parse(text); } catch { throw new Error(`返回无法解析：${slice(text, 200)}`); }
     const content = j?.choices?.[0]?.message?.content;
@@ -194,7 +239,29 @@ function extractJson(raw) {
   const start = s.indexOf('{');
   const end = s.lastIndexOf('}');
   if (start >= 0 && end > start) s = s.slice(start, end + 1);
-  return JSON.parse(s);
+  try { return JSON.parse(s); }
+  catch (e) {
+    // 容错 1：智谱 glm-4v 等模型偶尔输出 {\n {...},\n {...}\n }（漏了 "regions":[ 键）。
+    // 包一层数组再解析：把顶层裸对象列表变成合法 JSON。
+    try {
+      const inner = s.replace(/^\{\s*/, '').replace(/\s*\}$/, '').trim();
+      const wrapped = `[${inner}]`;
+      const j = JSON.parse(wrapped);
+      if (Array.isArray(j) && j.length && j.every((x) => x && typeof x === 'object')) return { regions: j };
+    } catch { /* 继续下一种兜底 */ }
+    // 容错 2：逐个 { ... } 块单独解析，收集含 box 的对象（应对多余逗号/尾随文本）
+    const blocks = [];
+    const re = /\{[^{}]*\}/g;
+    let m;
+    while ((m = re.exec(s))) {
+      try {
+        const o = JSON.parse(m[0]);
+        if (o && (o.box || o.bbox || o.rect || o.coords)) blocks.push(o);
+      } catch { /* 跳过坏块 */ }
+    }
+    if (blocks.length) return { regions: blocks };
+    throw new Error(`译文 JSON 解析失败：${e.message}`);
+  }
 }
 
 function parseRegions(raw, width, height) {
@@ -202,7 +269,12 @@ function parseRegions(raw, width, height) {
   let arr = j?.regions || j?.items || j?.texts || j?.translations;
   if (!Array.isArray(arr)) {
     if (Array.isArray(j)) arr = j;
-    else throw new Error('译文里没有找到 regions 数组');
+    else if (j && typeof j === 'object') {
+      // 容错 3：模型用数字键 {"0":{...},"1":{...}} 表示列表
+      const vals = Object.values(j).filter((v) => v && typeof v === 'object' && (v.box || v.bbox || v.rect));
+      if (vals.length) arr = vals;
+    }
+    if (!Array.isArray(arr)) throw new Error('译文里没有找到 regions 数组');
   }
   const out = [];
   for (const it of arr) {
@@ -236,7 +308,16 @@ function parseRegions(raw, width, height) {
     const translation = String(it.translation ?? it.text ?? it.result ?? '').trim();
     if (!translation) continue;
     const vertical = !!(it.vertical || it.isVertical || it.direction === 'vertical');
-    out.push({ x1: px1, y1: py1, x2: px2, y2: py2, translation, vertical });
+    // 原文颜色：只接受合法 hex，供译文跟随原文配色
+    let color = '';
+    const rawColor = it.color ?? it.textColor ?? it.originalColor;
+    if (typeof rawColor === 'string' && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(rawColor.trim())) {
+      let h = rawColor.trim().slice(1);
+      if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+      color = `#${h.toLowerCase()}`;
+    }
+    const bold = !!(it.bold || it.isBold);
+    out.push({ x1: px1, y1: py1, x2: px2, y2: py2, translation, vertical, color, bold });
   }
   return out;
 }
@@ -285,38 +366,51 @@ function inpaintRegions(ctx, width, height, regions, pad = 2) {
   ctx.putImageData(img, 0, 0);
 }
 
-/** 在修补后的画面上把译文渲染回原位置。 */
+/** 相对亮度：>0.5 视为浅色字（配深色描边），否则深色字（配浅色描边）。 */
+function isLightColor(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55;
+}
+
+/** 在修补后的画面上把译文渲染回原位置。字号贴合原文框，颜色默认跟随原文。 */
 function renderRegions(ctx, regions, conf) {
   ctx.save();
   ctx.textBaseline = 'top';
   for (const r of regions) {
+    // 跟随原文：用模型识别到的原文颜色；关闭或识别不到时用全局设置色
+    const ink = conf.autoStyle && r.color ? r.color : conf.inkColor;
+    const family = r.bold && conf.autoStyle ? `bold ${conf.fontFamily}` : conf.fontFamily;
+    const outline = isLightColor(ink) ? '#000000' : '#ffffff';
     const W = r.x2 - r.x1, H = r.y2 - r.y1;
     const text = r.translation;
     if (r.vertical) {
       // 竖排：从右到左分列，每列从上到下
       const cols = Math.max(1, Math.ceil(text.length / Math.max(1, Math.floor(H / 14))));
       const fontSize = clamp(Math.floor(Math.min(W / cols, H / Math.max(2, Math.ceil(text.length / cols)))) + conf.fontSizeOffset, 8, Math.max(8, Math.floor(W / cols)));
-      ctx.font = `${fontSize}px ${conf.fontFamily}`;
+      ctx.font = `${fontSize}px ${family}`;
       const perCol = Math.max(1, Math.floor((H - 2) / (fontSize + 1)));
       const chars = [...text];
       let idx = 0;
       for (let c = 0; c < cols && idx < chars.length; c++) {
         const cx = r.x2 - (c + 1) * (fontSize + 1);
         for (let row = 0; row < perCol && idx < chars.length; row++, idx++) {
-          drawChar(ctx, chars[idx], cx, r.y1 + row * (fontSize + 1), conf);
+          drawChar(ctx, chars[idx], cx, r.y1 + row * (fontSize + 1), ink, outline, conf);
         }
       }
     } else {
       // 横排：自动换行，字号自适应框宽高
       const chars = [...text];
       let fontSize = clamp(Math.floor(Math.min(H * 0.82, W / Math.max(2, chars.length) * 1.5)) + conf.fontSizeOffset, 8, Math.max(8, Math.floor(H * 0.95)));
-      ctx.font = `${fontSize}px ${conf.fontFamily}`;
+      ctx.font = `${fontSize}px ${family}`;
       while (fontSize > 8) {
         const perLine = Math.max(1, Math.floor((W - 4) / fontSize));
         const lines = Math.ceil(chars.length / perLine);
         if (lines * (fontSize + 2) <= H + 2) break;
         fontSize -= 1;
-        ctx.font = `${fontSize}px ${conf.fontFamily}`;
+        ctx.font = `${fontSize}px ${family}`;
       }
       const perLine = Math.max(1, Math.floor((W - 4) / fontSize));
       let idx = 0, line = 0;
@@ -327,7 +421,7 @@ function renderRegions(ctx, regions, conf) {
         const seg = chars.slice(idx, idx + perLine).join('');
         const tw = ctx.measureText(seg).width;
         const x = r.x1 + (W - tw) / 2;
-        drawChar(ctx, seg, x, y, conf, true);
+        drawChar(ctx, seg, x, y, ink, outline, conf);
         idx += perLine; y += lineH; line++;
       }
     }
@@ -335,14 +429,14 @@ function renderRegions(ctx, regions, conf) {
   ctx.restore();
 }
 
-function drawChar(ctx, text, x, y, conf, isString = false) {
+function drawChar(ctx, text, x, y, ink, outline, conf) {
   if (conf.useOutline) {
     ctx.lineWidth = 3;
-    ctx.strokeStyle = conf.inkColor === '#ffffff' ? '#000000' : '#ffffff';
+    ctx.strokeStyle = outline;
     ctx.lineJoin = 'round';
     ctx.strokeText(text, x, y);
   }
-  ctx.fillStyle = conf.inkColor;
+  ctx.fillStyle = ink;
   ctx.fillText(text, x, y);
 }
 
@@ -351,7 +445,7 @@ function drawChar(ctx, text, x, y, conf, isString = false) {
 function cacheKey(buf, conf) {
   const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 20);
   const meta = crypto.createHash('sha256')
-    .update(JSON.stringify([conf.provider, conf.model, conf.targetLang, PROMPT_VERSION, conf.fontSizeOffset, conf.inkColor, conf.useOutline]))
+    .update(JSON.stringify([conf.provider, conf.model, conf.targetLang, PROMPT_VERSION, conf.fontSizeOffset, conf.inkColor, conf.useOutline, conf.autoStyle]))
     .digest('hex').slice(0, 10);
   return `${hash}-${meta}`;
 }
@@ -392,6 +486,7 @@ export function registerTranslation(app) {
       fontSizeOffset: c.fontSizeOffset,
       inkColor: c.inkColor,
       useOutline: c.useOutline,
+      autoStyle: c.autoStyle,
       defaults: PROVIDER_DEFAULTS,
     });
   });
@@ -402,7 +497,7 @@ export function registerTranslation(app) {
     const b = req.body || {};
     const prev = (db.settings && db.settings.translate) || {};
     const next = { ...prev };
-    const fields = ['provider', 'apiKey', 'baseUrl', 'model', 'targetLang', 'prompt', 'fontFamily', 'fontSizeOffset', 'inkColor', 'useOutline'];
+    const fields = ['provider', 'apiKey', 'baseUrl', 'model', 'targetLang', 'prompt', 'fontFamily', 'fontSizeOffset', 'inkColor', 'useOutline', 'autoStyle'];
     for (const f of fields) if (f in b) next[f] = b[f];
     // 前端回传打码串时保留原 key
     if (b.apiKey && /••••/.test(String(b.apiKey))) next.apiKey = prev.apiKey;

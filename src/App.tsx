@@ -18,6 +18,7 @@ import { social, detectApiBase, getApiBase, setApiCredential } from './lib/api';
 import { rememberShareCode, withShareCode } from './lib/util';
 import { normalizeTheme } from './lib/themes';
 import { Avatar } from './components/Avatar';
+import { ImportTaskBar } from './components/ImportTaskBar';
 
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => normalizeTheme(localStorage.getItem('cv-theme')));
@@ -116,9 +117,9 @@ function MobileTabs() {
     { to: '/community', label: '书库', icon: 'globe' },
     { to: '/sources', label: '来源', icon: 'link' },
     { to: '/plaza', label: '广场', icon: 'message' },
-    { to: '/downloads', label: '软件', icon: 'download' },
     { to: '/settings', label: '设置', icon: 'settings' },
   ] as const;
+  // 「软件下载」在设置页里保留入口（设置→软件下载），底栏只留 5 个高频 tab，小屏不再拥挤。
   return (
     <nav className="mobile-tabs" aria-label="主导航">
       {tabs.map((t) => (
@@ -312,6 +313,7 @@ function Shell() {
         </div>
       )}
       {!immersive && <Header theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />}
+      <ImportTaskBar />
       <Routes>
         <Route path="/" element={shareFromQuery ? <SharePage /> : <LibraryPage />} />
         <Route path="/community" element={<CommunityPage />} />

@@ -196,6 +196,14 @@ const Convert = {
   md5: (v) => crypto.createHash('md5').update(cvBytes(v)).digest('hex'),
   sha1: (v) => crypto.createHash('sha1').update(cvBytes(v)).digest('hex'),
   sha256: (v) => crypto.createHash('sha256').update(cvBytes(v)).digest('hex'),
+  /* HMAC 摘要（拷贝/热辣等国内源的请求签名依赖；algo 默认 sha256）。
+     key/message 都走 cvBytes，兼容 Uint8Array / Buffer / 字符串。 */
+  hmacString: (key, msg, algo) => {
+    try {
+      const alg = String(algo || 'sha256').toLowerCase();
+      return crypto.createHmac(alg, cvBytes(key)).update(cvBytes(msg)).digest('hex');
+    } catch { return ''; }
+  },
   decryptAesCbc: (value, key, iv) => {
     try {
       const decipher = crypto.createDecipheriv('aes-128-cbc', cvBytes(key), cvBytes(iv));
@@ -232,6 +240,12 @@ function buildSandbox(sourceKey) {
     Network: {
       get: (url, headers) => httpRequest('GET', url, headers, undefined, sourceKey),
       post: (url, headers, body) => httpRequest('POST', url, headers, body, sourceKey),
+      /* Venera 系源（漫蛙等）用的通用请求：method/url/headers/payload。 */
+      sendRequest: (method, url, headers, payload) => {
+        const m = String(method || 'GET').toUpperCase();
+        const body = (payload === undefined || payload === null) ? undefined : payload;
+        return httpRequest(m, String(url || ''), headers || {}, body, sourceKey);
+      },
       getCookies: jarApi.get,
       setCookies: jarApi.setCookies,
     },
@@ -250,6 +264,11 @@ function buildSandbox(sourceKey) {
     ComicDetails: function ComicDetails(o) { return o || {}; },
     ImageLoadingConfig: function ImageLoadingConfig(o) { return o || {}; },
     setTimeout, clearTimeout, setInterval: undefined, clearInterval: undefined,
+    /* Venera 系源用来生成设备指纹/盐值：randomInt(min,max) 闭区间整数。 */
+    randomInt: (min, max) => {
+      const lo = Math.ceil(Number(min) || 0), hi = Math.floor(Number(max) || 0);
+      return lo + Math.floor(Math.random() * (hi - lo + 1));
+    },
     console: { log: () => {}, warn: () => {}, error: () => {} },
     JSON, Math, Date, URL, URLSearchParams, Number, String, Array, Object, Map, Set, RegExp,
     Error, TypeError, parseInt, parseFloat, isNaN, encodeURIComponent, decodeURIComponent,
@@ -288,6 +307,17 @@ export function loadJsSources() {
           saveSoon(DATA_FILE, dataMap);
         }
         loadData(k) {
+          const m = dataMap[ctor.key] || {};
+          return m[k] === undefined ? null : m[k];
+        }
+        deleteData(k) {
+          const m = dataMap[ctor.key] || (dataMap[ctor.key] = {});
+          delete m[k];
+          saveSoon(DATA_FILE, dataMap);
+        }
+        /* Venera 源的设置读取：本项目无逐源设置 UI，回退到 loadData，
+           让源用默认值运行；若用户手工存过同名 data 也会生效。 */
+        loadSetting(k) {
           const m = dataMap[ctor.key] || {};
           return m[k] === undefined ? null : m[k];
         }
@@ -370,7 +400,7 @@ export async function jsChapterImages(source, bookId, chapterPath) {
   const images = Array.isArray(r) ? r : r?.images || [];
   if (!images.length) throw new Error('这一话没有解析到图片');
   const cfg = source.comic.onImageLoad ? headersOf(source.comic.onImageLoad(images[0])) : {};
-  return { images: images.map(String), headers: cfg };
+  return { images: images.map(String), headers: cfg, decode: jsImageDecode(source) };
 }
 
 /** 图片下载所需的请求头（防盗链 Referer 等） */
@@ -381,11 +411,22 @@ export function jsImageHeaders(source, url) {
   return {};
 }
 
+/** 书源声明的图片字节解码方案（如爱漫画 sub=47 xor=171），供后端还原混淆图片 */
+export function jsImageDecode(source) {
+  try {
+    const d = source?.imageDecode;
+    if (d && Number.isFinite(Number(d.sub)) && Number.isFinite(Number(d.xor))) {
+      return { sub: Number(d.sub), xor: Number(d.xor) };
+    }
+  } catch { /* 源脚本异常时不拦截 */ }
+  return null;
+}
+
 /** 小说整本 EPUB 下载信息 */
 export async function jsNovelDownload(source, bookId) {
   if (!source.comic.downloadBook) return null;
   const d = await source.comic.downloadBook(bookId);
-  return d && d.url ? d : null;
+  return d && (d.url || d.textNovel) ? d : null;
 }
 
 /** 发现页：返回书源的 explore 分类列表；load(tabIndex, page) 取某一分类的漫画列表 */
@@ -398,7 +439,20 @@ export async function jsDiscoverLoad(source, tabIndex, page = 1) {
   const tab = ex[tabIndex];
   if (!tab || typeof tab.load !== 'function') throw new Error('这个来源没有可浏览的分类');
   const out = await tab.load(Math.max(1, Number(page) || 1));
-  const comics = Array.isArray(out) ? out : (out?.comics || []);
+  let comics;
+  if (Array.isArray(out)) comics = out;
+  else if (out?.comics) comics = out.comics;
+  else {
+    // singlePageWithMultiPart：{ "分组名": [cards], ... } —— 把所有分组的卡片合并
+    // 兼容 vomic 等源的「账号 / 注册引导」多分区结构，避免发现页 tab 空白。
+    comics = [];
+    if (out && typeof out === 'object') {
+      for (const key of Object.keys(out)) {
+        const v = out[key];
+        if (Array.isArray(v)) comics.push(...v);
+      }
+    }
+  }
   return {
     items: comics.map((c) => ({
       title: c.title || '',
@@ -409,4 +463,32 @@ export async function jsDiscoverLoad(source, tabIndex, page = 1) {
     })),
     maxPage: Math.max(1, Number(out?.maxPage) || page),
   };
+}
+
+/** 为某个 JS 源设置站点登录 Cookie（书源账号登录入口用）。
+ *  cookieString 形如 "a=1; b=2"，按源域名存入该源的 cookie 罐，之后该源所有请求自动带上。 */
+export function jsSetSourceCookies(sourceKey, cookieString, domain) {
+  const key = String(sourceKey || '').replace(/^js:/, '');
+  if (!key) return { ok: false, error: '缺少来源标识' };
+  const raw = String(cookieString || '').trim();
+  if (!raw) {
+    delete cookieMap[key];
+    saveSoon(COOKIE_FILE, cookieMap);
+    return { ok: true, cleared: true };
+  }
+  // 兜底域名：优先用传入值，否则用源对象的 baseUrl
+  let dm = String(domain || '').trim();
+  if (!dm) {
+    try { const s = getJsSource('js:' + key); dm = s && s.baseUrl ? new URL(s.baseUrl).hostname : ''; } catch { /* 忽略 */ }
+  }
+  const cookies = raw.split(';').map((p) => {
+    const i = p.indexOf('=');
+    const name = (i >= 0 ? p.slice(0, i) : p).trim();
+    const value = i >= 0 ? p.slice(i + 1).trim() : '';
+    if (!name) return null;
+    return { name, value, domain: dm ? (dm.startsWith('.') ? dm : '.' + dm) : '', path: '/' };
+  }).filter(Boolean);
+  cookieMap[key] = cookies;
+  saveSoon(COOKIE_FILE, cookieMap);
+  return { ok: true, count: cookies.length, domain: dm };
 }

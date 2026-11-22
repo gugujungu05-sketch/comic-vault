@@ -21,14 +21,19 @@ import * as cheerio from 'cheerio';
 import { nanoid } from 'nanoid';
 import { loadDb, saveDbSoon, newId, getComic, comicDir, DATA_DIR, TMP_DIR } from './store.js';
 import { storePage } from './page-store.js';
+import { normalizeSourceImage } from './media.js';
 import { requireUser } from './social.js';
 import {
   loadJsSources, allJsSources, getJsSource,
-  jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders,
-  jsDiscoverTabs, jsDiscoverLoad,
+  jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode,
+  jsDiscoverTabs, jsDiscoverLoad, jsSetSourceCookies,
 } from './js-sources.js';
 
 const now = () => Date.now();
+
+/** 发现页缓存：切源/重复点击秒开。key=源:tab:页，5 分钟有效，失败结果不缓存。 */
+const discoverCache = new Map();
+const DISCOVER_TTL = 5 * 60 * 1000;
 
 /** 导入实时进度：key = userId，值 = { chapterIndex, chapterTotal, imageDone, imageTotal, title, ts }。
  *  前端轮询 /api/sources/import/progress 显示，避免「卡住不动」的体感。 */
@@ -234,10 +239,10 @@ async function createSourceComic(db, p) {
 }
 
 /** 首次导入时下载站点封面存为漫画封面 */
-async function attachSourceCover(p, comic, coverUrl, imgHeaders) {
+async function attachSourceCover(p, comic, coverUrl, imgHeaders, decodeScheme = null) {
   if (comic.cover || !coverUrl || !String(coverUrl).startsWith('http')) return null;
   try {
-    const tmpCover = await downloadSourceImage(coverUrl, imgHeaders);
+    const tmpCover = await downloadSourceImage(coverUrl, imgHeaders, '', decodeScheme);
     const name = `cover_${nanoid(6)}${path.extname(tmpCover) || '.jpg'}`;
     const dir = path.join(comicDir(comic.id), '_cover');
     await fsp.mkdir(dir, { recursive: true });
@@ -253,9 +258,17 @@ async function attachSourceCover(p, comic, coverUrl, imgHeaders) {
 }
 
 /** 下载一张源站图片到临时文件（带防盗链头；失败自动补 Referer 重试一次） */
-async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
+async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '', decodeScheme = null) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 30000);
+  // 下载→还原混淆→（必要时）转 JPEG→落盘。返回临时文件路径与真实扩展名。
+  const save = async (rawBuf) => {
+    const norm = await normalizeSourceImage(rawBuf, decodeScheme);
+    const tmp = path.join(TMP_DIR, `src-${nanoid(8)}.${norm.ext}`);
+    await fsp.mkdir(TMP_DIR, { recursive: true });
+    await fsp.writeFile(tmp, norm.buf);
+    return tmp;
+  };
   try {
     const r = await fetch(imgUrl, {
       headers: { 'User-Agent': UA_DEFAULT, ...headers },
@@ -267,11 +280,7 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
     if (!ct.startsWith('image/') && !ct.includes('octet-stream')) throw new Error(`非图片响应: ${ct}`);
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length < 32) throw new Error('图片内容为空');
-    const ext = ct.includes('png') ? 'png' : ct.includes('webp') ? 'webp' : ct.includes('gif') ? 'gif' : ct.includes('avif') ? 'avif' : 'jpg';
-    const tmp = path.join(TMP_DIR, `src-${nanoid(8)}.${ext}`);
-    await fsp.mkdir(TMP_DIR, { recursive: true });
-    await fsp.writeFile(tmp, buf);
-    return tmp;
+    return await save(buf);
   } catch (err) {
     // 防盗链兜底：源脚本没给 Referer 时用源站域名重试一次
     if (fallbackReferer && !headers.Referer && !headers.referer) {
@@ -285,13 +294,7 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
           const ct2 = r2.headers.get('content-type') || '';
           if (ct2.startsWith('image/') || ct2.includes('octet-stream')) {
             const buf2 = Buffer.from(await r2.arrayBuffer());
-            if (buf2.length >= 32) {
-              const ext2 = ct2.includes('png') ? 'png' : ct2.includes('webp') ? 'webp' : ct2.includes('gif') ? 'gif' : ct2.includes('avif') ? 'avif' : 'jpg';
-              const tmp2 = path.join(TMP_DIR, `src-${nanoid(8)}.${ext2}`);
-              await fsp.mkdir(TMP_DIR, { recursive: true });
-              await fsp.writeFile(tmp2, buf2);
-              return tmp2;
-            }
+            if (buf2.length >= 32) return await save(buf2);
           }
         }
       } catch { /* 兜底也失败则按原错误抛出 */ }
@@ -306,7 +309,8 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '') {
 export async function importJsChapter(p, onProgress) {
   const db = loadDb();
   let comic = p.comic || null;
-  const { images, headers } = await jsChapterImages(p.source, p.bookId, p.chapterPath);
+  const { images, headers, decode } = await jsChapterImages(p.source, p.bookId, p.chapterPath);
+  const decodeScheme = decode || jsImageDecode(p.source);
 
   // createSourceComic 是 async（内部可能下载封面资源），必须 await；
   // 缺少 await 时 comic 是 Promise，后续 storePage 收到 undefined 目录名，
@@ -316,24 +320,25 @@ export async function importJsChapter(p, onProgress) {
   const chapter = {
     id: newId('ch'),
     title: (p.chapterTitle || `第 ${comic.chapters.length + 1} 话`).trim(),
+    sourceUrl: p.chapterPath || '',
     pages: [],
     uploadedBy: p.userId,
     uploadedAt: now(),
   };
-  // 并发分批下载（每批 5 张）：几百页不再串行等待；单张失败自动补 Referer 重试
+  // 并发分批下载（每批 10 张）：几百页不再串行等待；单张失败自动补 Referer 重试
   const fallbackRef = `${p.source.baseUrl || 'https://' + (() => { try { return new URL(images[0]).host; } catch { return 'example.com'; } })()}/`;
   let stored = 0;
   const pages = new Array(images.length).fill(null);
-  const BATCH = 5;
+  const BATCH = 10;
   for (let i = 0; i < images.length; i += BATCH) {
     const batch = images.slice(i, i + BATCH);
     const results = await Promise.all(batch.map(async (imgUrl, j) => {
       let tmp = null;
       try {
         const ih = jsImageHeaders(p.source, imgUrl) || headers || {};
-        tmp = await downloadSourceImage(imgUrl, ih, fallbackRef);
+        tmp = await downloadSourceImage(imgUrl, ih, fallbackRef, decodeScheme);
         if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length });
-        const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id);
+        const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id, decodeScheme);
         return page;
       } catch (err) {
         if (tmp) await fsp.rm(tmp, { force: true });
@@ -354,7 +359,7 @@ export async function importJsChapter(p, onProgress) {
   comic.updatedAt = now();
   comic.lastActivityAt = now();
 
-  const coverUrl = await attachSourceCover(p, comic, p.cover, jsImageHeaders(p.source, p.cover || images[0]));
+  const coverUrl = await attachSourceCover(p, comic, p.cover, jsImageHeaders(p.source, p.cover || images[0]), decodeScheme);
   saveDbSoon();
   return { comic, chapter, total: images.length, stored, coverUrl };
 }
@@ -547,6 +552,21 @@ export function registerSources(app) {
     res.json({ ok: true });
   });
 
+  // 书源站点账号登录：把登录后的 Cookie 存进该源的 cookie 罐，供后续请求自动携带
+  router.get('/:id/cookies', requireUser, (req, res) => {
+    const js = jsOf(req.params.id);
+    if (!js) return res.status(404).json({ error: '书源不存在' });
+    res.json({ ok: true, source: js.name, accountHint: js.accountHint || '' });
+  });
+  router.post('/:id/cookies', requireUser, (req, res) => {
+    const js = jsOf(req.params.id);
+    if (!js) return res.status(404).json({ error: '书源不存在' });
+    try {
+      const r = jsSetSourceCookies(req.params.id, req.body?.cookies || '', req.body?.domain || '');
+      res.json(r);
+    } catch (e) { res.status(400).json({ error: e?.message || '保存 Cookie 失败' }); }
+  });
+
   // 发现 / 浏览：进入书源不搜索也能看到漫画 / 小说列表
   router.get('/:id/discover', async (req, res) => {
     const js = jsOf(req.params.id);
@@ -556,8 +576,15 @@ export function registerSources(app) {
       const tabs = jsDiscoverTabs(js);
       if (!tabs.length) return res.json({ tabs: [], items: [], maxPage: 1 });
       const tabIndex = Math.min(Math.max(0, parseInt(req.query.tab, 10) || 0), tabs.length - 1);
+      const ck = `${js.key}:${tabIndex}:${page}`;
+      const hit = discoverCache.get(ck);
+      if (hit && now() - hit.at < DISCOVER_TTL) {
+        return res.json({ ...hit.data, tabs, tab: tabIndex, cached: true });
+      }
       const r = await jsDiscoverLoad(js, tabIndex, page);
-      return res.json({ tabs, items: r.items, maxPage: r.maxPage, tab: tabIndex });
+      const data = { items: r.items, maxPage: r.maxPage };
+      if (r.items && r.items.length) discoverCache.set(ck, { at: now(), data });
+      return res.json({ ...data, tabs, tab: tabIndex });
     } catch (err) {
       return sourceError(res, err);
     }
@@ -675,13 +702,49 @@ export function registerSources(app) {
       const bookId = String(b.bookId || b.comicUrl || '').trim();
       const chapterPath = String(b.chapterUrl || '').trim();
       if (!bookId || !chapterPath) return res.status(400).json({ error: '缺少书籍或章节标识' });
+      const db = loadDb();
       let comic = b.comicId ? getComic(b.comicId) : null;
       if (b.comicId && (!comic || comic.createdBy !== req.user.id))
         return res.status(404).json({ error: '目标漫画不存在或不属于你' });
+      // 中断续导：前端若没传 comicId（刷新/退出后丢失），按来源书籍标识找回已建的漫画，
+      // 避免同一本书被拆成「一话一本」。只匹配当前用户创建、带同名来源的书。
+      if (!comic && b.sourceId) {
+        const key = String(b.bookId || b.comicUrl || '').trim();
+        const srcName = String(b.sourceName || '').trim().toLowerCase();
+        const comicUrl = String(b.comicUrl || '').trim();
+        comic = (db.comics || []).find((c) => {
+          if ((c.createdBy || c.ownerId) !== req.user.id || !c.source) return false;
+          const sid = String(c.source.id || '');
+          // source.id 老数据可能为空，此时不强制比对 id，靠 URL + 来源名判定
+          if (sid && sid !== String(b.sourceId)) return false;
+          const ckey = String(c.source.url || '').trim();
+          // 精确匹配：详情页 URL 或 bookId 一致（不模糊 endsWith，避免误并不同漫画）
+          if (comicUrl && ckey === comicUrl) return true;
+          if (key && ckey === key) return true;
+          if (srcName && String(c.source.name || '').toLowerCase() === srcName && c.title === String(b.title || '').trim()) return true;
+          return false;
+        }) || null;
+      }
       setImportProgress(req.user.id, {
         chapterTitle: b.chapterTitle || '正在导入', imageDone: 0, imageTotal: 0, phase: 'fetch',
       });
       try {
+        // 断点续导：若这本已有同名章节（上次导入中断前已完成），直接跳过不重复下载。
+        // 章节可能存源 URL（sourceUrl）或标题，两者任一命中即视为已导入。
+        const wantTitle = String(b.chapterTitle || '').trim();
+        const wantUrl = String(chapterPath || '').trim();
+        const dup = comic && (comic.chapters || []).find((ch) => {
+          const t = String(ch.title || '').trim();
+          const u = String(ch.sourceUrl || ch.url || '').trim();
+          return (wantTitle && t === wantTitle) || (wantUrl && u === wantUrl);
+        });
+        if (dup) {
+          return res.json({
+            comicId: comic.id, chapterId: dup.id, chapterTitle: dup.title,
+            stored: (dup.pages || []).length, failed: 0,
+            chaptersDone: comic.chapters.length, skipped: true,
+          });
+        }
         const r = await importJsChapter({
           source: js, userId: req.user.id, comic,
           title: b.title, cover: b.cover, comicUrl: b.comicUrl,

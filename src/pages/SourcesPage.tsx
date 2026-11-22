@@ -5,6 +5,7 @@ import { Modal } from '../components/Modal';
 import { ReaderView } from '../components/ReaderView';
 import { useErrorToast, useToast } from '../components/Toasts';
 import { online as onlineApi, sources as sourcesApi, mediaUrl } from '../lib/api';
+import { importTaskStore } from '../lib/importTask';
 import type {
   OnlineShelfItem,
   SourceChapterItem,
@@ -48,6 +49,8 @@ export default function SourcesPage() {
   const [bookmarked, setBookmarked] = useState(false);
   const [novelImporting, setNovelImporting] = useState(false);
   const [showManage, setShowManage] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  const [accountCookie, setAccountCookie] = useState('');
   const [onlineReader, setOnlineReader] = useState<OnlineReaderState | null>(null);
   const toast = useToast();
   const errorToast = useErrorToast();
@@ -237,7 +240,9 @@ export default function SourcesPage() {
     const picked = chapters.filter((_, i) => detail.checked.has(i));
     if (!picked.length) return toast('请先勾选要导入的章节');
     setImporting({ done: 0, total: picked.length, failed: 0 });
+    importTaskStore.start(`正在导入 ${detail.title} · 0/${picked.length} 话`);
     // 轮询后端图片级进度：显示「第 N 话 · 第 x/y 张」，不再长时间卡在 0/N
+    // 进度同时写入全局任务栏，返回/切到任何页面都继续可见。
     let progAlive = true;
     let curChapter = 1;
     (async () => {
@@ -245,7 +250,9 @@ export default function SourcesPage() {
         try {
           const pg = await sourcesApi.importProgress();
           if (!pg.idle && pg.imageTotal) {
-            setImportProgressLabel(`第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`);
+            const label = `第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`;
+            setImportProgressLabel(label);
+            importTaskStore.progress({ label, done: curChapter - 1, total: picked.length });
           }
         } catch { /* 忽略轮询错误 */ }
         await new Promise((r) => setTimeout(r, 400));
@@ -278,21 +285,30 @@ export default function SourcesPage() {
         if (failed === 1) errorToast(err, '导入失败');
       }
       setImporting({ done, total: picked.length, failed });
+      importTaskStore.progress({ done, total: picked.length, failed, label: `正在导入 ${detail.title} · ${done}/${picked.length} 话` });
     }
     progAlive = false;
     setImportProgressLabel('');
     setImporting(null);
-    if (done) toast(`导入完成：成功 ${done} 话${failed ? `，失败 ${failed} 话` : ''}`);
+    if (done) {
+      importTaskStore.finish(done, picked.length, failed, comicId);
+      toast(`导入完成：成功 ${done} 话${failed ? `，失败 ${failed} 话` : ''}`);
+    } else {
+      importTaskStore.clear();
+    }
   }
 
   async function importNovelBook() {
     if (!detailSourceId || !detail?.bookId) return;
     setNovelImporting(true);
+    importTaskStore.start(`正在整本导入《${detail.title}》…`);
     try {
       const r = await onlineApi.importBook(detailSourceId, detail.bookId);
       toast(`已加入书库：《${detail.title}》共 ${r.comic.chapterCount} 章，可在书库里编辑`);
+      importTaskStore.finish(r.comic.chapterCount || 1, r.comic.chapterCount || 1, 0, r.comic.id);
       onImportedNavigate(r.comic.id);
     } catch (err) {
+      importTaskStore.clear();
       errorToast(err, '整本导入失败');
     } finally {
       setNovelImporting(false);
@@ -331,6 +347,13 @@ export default function SourcesPage() {
           </p>
         </div>
         <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
+          <button className="btn" onClick={async () => {
+            setAccountCookie('');
+            if (activeId) { try { await sourcesApi.getCookies(activeId); } catch { /* 忽略 */ } }
+            setShowAccount(true);
+          }} title="给需要登录的站点设置 Cookie">
+            <Icon name="book" size={16} /> 站点账号
+          </button>
           <button className="btn" onClick={() => setShowManage(true)}>
             <Icon name="settings" size={16} /> 书源管理
           </button>
@@ -605,6 +628,34 @@ export default function SourcesPage() {
           onExit={() => { setOnlineReader(null); refreshShelf(); }}
           onStateChange={(next) => setOnlineReader({ ...next })}
         />
+      )}
+
+      {showAccount && (
+        <Modal title="站点账号" onClose={() => setShowAccount(false)} width={560}>
+          <div className="muted" style={{ fontSize: 12, lineHeight: 1.8, marginBottom: 12 }}>
+            当前来源：<b>{active?.name || '未选择'}</b><br />
+            部分站点（拷贝漫画、热辣漫画、vomic 等）看详情/图片需要登录。在浏览器登录该站点后，
+            打开开发者工具 → Network → 任选一个请求 → 复制请求头里的 <b>Cookie</b>，粘贴到下面保存即可。
+            之后本站访问该源会自动带上登录态。Cookie 只存在服务端，不会上传第三方。
+          </div>
+          <textarea
+            className="textarea" rows={4} value={accountCookie}
+            onChange={(e) => setAccountCookie(e.target.value)}
+            placeholder="key1=value1; key2=value2（留空并保存 = 清除登录）"
+            style={{ fontFamily: 'monospace', fontSize: 11, width: '100%' }}
+          />
+          <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+            <button className="btn" onClick={() => setShowAccount(false)}>取消</button>
+            <button className="btn primary" onClick={async () => {
+              if (!activeId) { errorToast(new Error('请先选择一个来源'), '保存失败'); return; }
+              try {
+                const r = await sourcesApi.saveCookies(activeId, accountCookie.trim());
+                toast(r.cleared ? '已清除该站点登录态' : `已保存登录态（${r.count || 0} 项）`);
+                setShowAccount(false);
+              } catch (err) { errorToast(err, '保存失败'); }
+            }}>保存登录态</button>
+          </div>
+        </Modal>
       )}
 
       {showManage && (

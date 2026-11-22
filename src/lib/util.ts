@@ -108,15 +108,25 @@ export async function saveImageToDevice(url: string, fileName: string): Promise<
     a.remove();
     return true;
   } catch {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    return false;
+    // 绝不用 target=_blank 打开原 URL：在线来源图片是 /api/online/img 相对地址，
+    // 网页版新标签会打开到站点首页 / 404，表现为「下载图片跳到浏览器首页」。
+    // 尽力再取一次 blob（带凭据）本地保存；实在不行只返回 false 让上层提示，不导航。
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return false;
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

@@ -11,6 +11,90 @@ export const hasSharp = !!sharp;
 
 export const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'tif', 'tiff']);
 
+/**
+ * 部分漫画源站对图片字节做了轻量混淆，浏览器端 JS 会先解码再显示；
+ * 后端若直接保存原始字节，用户看到的就是一张破图。这里在落盘/代理前统一还原。
+ *
+ * 已知方案：爱漫画（MCCMS）用 ((byte - SHIFT) & 0xff) ^ KEY，
+ * 其中 XOR_KEY=0xAB(171)、SHIFT_VALUE=47（见 server/js-sources/aimanhua.js）。
+ * 解码后是标准 avif（头 00 00 00 .. ftyp avif）。
+ *
+ * @param {Buffer} buf 源站返回的原始字节
+ * @param {{sub?:number, xor?:number}|null} scheme 书源声明的解码参数；不传则尝试已知方案
+ * @returns {Buffer|null} 解码后的可用图片字节；不是混淆数据/无法解码时返回 null
+ */
+export function decodeSourceImage(buf, scheme = null) {
+  if (!Buffer.isBuffer(buf) || buf.length < 32) return null;
+  const schemes = [];
+  if (scheme && Number.isFinite(Number(scheme.sub)) && Number.isFinite(Number(scheme.xor))) {
+    schemes.push({ sub: Number(scheme.sub), xor: Number(scheme.xor) });
+  }
+  // 已知内置方案：爱漫画 sub=47 xor=171；去重避免重复尝试
+  const builtin = { sub: 47, xor: 171 };
+  if (!schemes.some((s) => s.sub === builtin.sub && s.xor === builtin.xor)) schemes.push(builtin);
+
+  for (const { sub, xor } of schemes) {
+    const out = Buffer.allocUnsafe(buf.length);
+    for (let i = 0; i < buf.length; i++) out[i] = ((buf[i] - sub) & 0xff) ^ (xor & 0xff);
+    // 校验解码结果确实是常见图片，避免把正常图片误解码成乱码
+    if (looksLikeImage(out)) return out;
+  }
+  return null;
+}
+
+/** 魔数判定：Buffer 是否已经是浏览器可直接显示的图片 */
+export function looksLikeImage(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 16) return false;
+  // JPEG
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true;
+  // PNG
+  if (buf[0] === 0x89 && buf.toString('ascii', 1, 4) === 'PNG') return true;
+  // WEBP
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return true;
+  // GIF
+  if (buf.toString('ascii', 0, 3) === 'GIF') return true;
+  // BMP
+  if (buf.toString('ascii', 0, 2) === 'BM') return true;
+  // ISO BMFF: avif / heic / heif（ftyp 在第 4 字节）
+  if (buf.toString('ascii', 4, 8) === 'ftyp') {
+    const brand = buf.toString('ascii', 8, 12);
+    if (/^(avif|avis|heic|heix|hevc|hevx|mif1|msf1|miaf)$/i.test(brand)) return true;
+  }
+  return false;
+}
+
+/**
+ * 把源站图片字节归一化为浏览器可显示、content-type 明确的格式。
+ * - 混淆数据先解码；
+ * - avif/heif 在无 sharp 或调用方需要时转 JPEG（兼容性最好）。
+ * @returns {Promise<{buf:Buffer, ext:string, mime:string, decoded:boolean}>}
+ */
+export async function normalizeSourceImage(buf, scheme = null, { forceJpeg = true } = {}) {
+  let data = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  let decoded = false;
+  if (!looksLikeImage(data)) {
+    const fixed = decodeSourceImage(data, scheme);
+    if (fixed) { data = fixed; decoded = true; }
+  }
+  // 探测格式
+  let ext = 'jpg';
+  let mime = 'image/jpeg';
+  if (data.toString('ascii', 4, 8) === 'ftyp') {
+    ext = 'avif'; mime = 'image/avif';
+  } else if (data.toString('ascii', 1, 4) === 'PNG') { ext = 'png'; mime = 'image/png'; }
+  else if (data.toString('ascii', 0, 4) === 'RIFF') { ext = 'webp'; mime = 'image/webp'; }
+  else if (data.toString('ascii', 0, 3) === 'GIF') { ext = 'gif'; mime = 'image/gif'; }
+  else if (data[0] === 0xff && data[1] === 0xd8) { ext = 'jpg'; mime = 'image/jpeg'; }
+  // avif/heif 兼容：部分老浏览器不认 avif，统一转 JPEG
+  if (forceJpeg && sharp && ext === 'avif') {
+    try {
+      const jpg = await sharp(data, { failOn: 'none' }).rotate().jpeg({ quality: 88, mozjpeg: true }).toBuffer();
+      if (jpg.length) return { buf: jpg, ext: 'jpg', mime: 'image/jpeg', decoded: true };
+    } catch { /* 转码失败则保留原 avif */ }
+  }
+  return { buf: data, ext, mime, decoded };
+}
+
 export async function toJpegBuffer(buf, { maxWidth = 0, quality = 88 } = {}) {
   if (!sharp) return { data: buf, mime: 'image/jpeg', fallback: true };
   let pipeline = sharp(buf, { failOn: 'none' }).rotate();

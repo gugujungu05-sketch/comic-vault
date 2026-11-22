@@ -10,6 +10,9 @@ class AiManhua extends ComicSource {
     minAppVersion = "1.6.0";
     url = "https://www.alipaypay.com";
     baseUrl = "https://www.alipaypay.com";
+    // 站点把正文图片字节混淆为 ((b - SHIFT) & 0xff) ^ XOR，浏览器端 JS 解码。
+    // 后端落盘/代理前据此还原，否则用户只能看到破图。
+    imageDecode = { sub: 47, xor: 171 };
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8"

@@ -247,6 +247,8 @@ export interface TranslateConfig {
   fontSizeOffset: number;
   inkColor: string;
   useOutline: boolean;
+  /** 译文样式跟随原文（颜色/粗细），默认开启；关闭则用上面的固定字号与颜色 */
+  autoStyle: boolean;
   defaults: Record<'gemini' | 'openai' | 'custom', { baseUrl: string; model: string }>;
 }
 

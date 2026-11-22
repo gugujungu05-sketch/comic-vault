@@ -26,7 +26,7 @@ import {
   dirStats,
 } from './store.js';
 import { exportArchive, exportPdf, exportEpub, safeName, extOf } from './exporters.js';
-import { metadata, thumbnail, hasSharp, transformImage, splitSpread, mergeSpread, isSpread } from './media.js';
+import { metadata, thumbnail, hasSharp, transformImage, splitSpread, mergeSpread, isSpread, normalizeSourceImage, looksLikeImage } from './media.js';
 import { extractWith7z, warmup, engineStatus, SEVENZ_RE } from './archive.js';
 const EPUB_OK = /\.epub$/i;
 const PDF_OK = /\.pdf$/i;
@@ -2327,7 +2327,7 @@ app.post('/api/import/folder', requireUser, async (req, res) => {
 
 /* ------------------------------ 文件服务 ------------------------------ */
 
-app.get('/api/files/:comicId/:chapterId/:file', assetGuard, (req, res) => {
+app.get('/api/files/:comicId/:chapterId/:file', assetGuard, async (req, res) => {
   const { comicId, chapterId, file } = req.params;
   if (!isSafeSegment(comicId) || !isSafeSegment(chapterId) || !isSafeSegment(file)) {
     return res.status(400).json({ error: '非法路径' });
@@ -2335,6 +2335,20 @@ app.get('/api/files/:comicId/:chapterId/:file', assetGuard, (req, res) => {
   const full = path.join(STORE_DIR, comicId, chapterId, file);
   if (!fs.existsSync(full)) return res.status(404).json({ error: '文件不存在' });
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  // 存量兼容：在线书源早期把混淆字节原样存成 .avif，浏览器打开是破图。
+  // 检测到「非标准图片」时按真实字节还原并转 JPEG，结果落盘为 .norm.jpg 旁车缓存。
+  try {
+    const ext = path.extname(file).toLowerCase();
+    if (ext === '.avif' || ext === '.heif' || ext === '.heic' || !looksLikeImage(await fsp.readFile(full).catch(() => Buffer.alloc(0)))) {
+      const normPath = path.join(STORE_DIR, comicId, chapterId, `${file}.norm.jpg`);
+      if (fs.existsSync(normPath)) return res.type('image/jpeg').sendFile(normPath);
+      const buf = await fsp.readFile(full);
+      const norm = await normalizeSourceImage(buf, null, { forceJpeg: true });
+      await fsp.writeFile(normPath, norm.buf).catch(() => {});
+      res.setHeader('Content-Type', norm.mime);
+      return res.send(norm.buf);
+    }
+  } catch { /* 归一化失败则回退原文件 */ }
   res.sendFile(full);
 });
 
