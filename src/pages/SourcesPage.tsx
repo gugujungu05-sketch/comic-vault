@@ -637,7 +637,10 @@ export default function SourcesPage() {
         <OnlineReader
           state={onlineReader}
           onExit={() => { setOnlineReader(null); refreshShelf(); }}
-          onStateChange={(next) => setOnlineReader({ ...next })}
+          onStateChange={(next) => setOnlineReader((prev) => {
+            if (!prev) return prev;
+            return typeof next === 'function' ? next(prev) : { ...next };
+          })}
         />
       )}
 
@@ -743,7 +746,7 @@ function OnlineReader({
 }: {
   state: OnlineReaderState;
   onExit: () => void;
-  onStateChange: (s: OnlineReaderState) => void;
+  onStateChange: (s: OnlineReaderState | ((prev: OnlineReaderState) => OnlineReaderState)) => void;
 }) {
   const errorToast = useErrorToast();
 
@@ -751,10 +754,12 @@ function OnlineReader({
     try {
       const r = await onlineApi.chapterImages(state.sourceKey, state.bookId, ch.id);
       const pages: Page[] = (r.images || []).map((u, i) => ({ id: `${ch.id}_${i}`, url: u, file: '', width: 0, height: 0 }));
-      onStateChange({
-        ...state,
-        chapters: state.chapters.map((c) => (c.id === ch.id ? { ...c, pages } : c)),
-      });
+      // 用函数式更新基于最新 state 追加，避免链式多章并发加载时旧闭包互相覆盖，
+      // 导致刚加载好的章节 pages 被后来的空 state 清掉（表现为"一话只显示几张就没了"）。
+      onStateChange((prev) => ({
+        ...prev,
+        chapters: prev.chapters.map((c) => (c.id === ch.id && !c.pages.length ? { ...c, pages } : c)),
+      }));
     } catch (err) {
       errorToast(err, '本章加载失败');
     }
