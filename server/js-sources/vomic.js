@@ -202,6 +202,22 @@ class VomicSource extends ComicSource {
 
     explore = [
         {
+            title: "vomic 最新更新",
+            type: "singlePageWithMultiPart",
+            load: async () => {
+                const res = await Network.get(this.site("/"), this.rscHeaders(await this.token()));
+                if (res.status !== 200) throw "加载失败";
+                const cards = this.parseHomeCards(res.body);
+                const comics = cards.map(function (c) {
+                    return { id: c.id, title: c.name, cover: c.cover,
+                        subtitle: c.subtitle || "", author: c.author || "", updatedAt: c.subtitle || null,
+                        clicks: c.clicks, discussions: c.discussions, status: c.status, tags: c.tags || [] };
+                });
+                return { "最新更新": comics };
+            }
+        },
+        {
+            // 账号说明放最后：默认进入「最新更新」显示内容，不再只看到一张登录提示卡
             title: "vomic 账号",
             type: "singlePageWithMultiPart",
             load: async () => {
@@ -216,21 +232,6 @@ class VomicSource extends ComicSource {
                     tags: ["账号", "说明"]
                 });
                 return { "账号": [guide] };
-            }
-        },
-        {
-            title: "vomic 最新更新",
-            type: "singlePageWithMultiPart",
-            load: async () => {
-                const res = await Network.get(this.site("/"), this.rscHeaders(await this.token()));
-                if (res.status !== 200) throw "加载失败";
-                const cards = this.parseHomeCards(res.body);
-                const comics = cards.map(function (c) {
-                    return { id: c.id, title: c.name, cover: c.cover,
-                        subtitle: c.subtitle || "", author: c.author || "", updatedAt: c.subtitle || null,
-                        clicks: c.clicks, discussions: c.discussions, status: c.status, tags: c.tags || [] };
-                });
-                return { "最新更新": comics };
             }
         }
     ]
