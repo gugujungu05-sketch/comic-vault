@@ -18,7 +18,7 @@ import { social, detectApiBase, getApiBase, setApiCredential } from './lib/api';
 import { rememberShareCode, withShareCode } from './lib/util';
 import { normalizeTheme } from './lib/themes';
 import { Avatar } from './components/Avatar';
-import { ImportTaskBar } from './components/ImportTaskBar';
+import { DownloadButton } from './components/DownloadButton';
 
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => normalizeTheme(localStorage.getItem('cv-theme')));
@@ -79,6 +79,7 @@ function Header({ theme, onToggleTheme }: { theme: string; onToggleTheme: () => 
         </NavLink>
       </nav>
       <div className="header-right">
+        <DownloadButton />
         <button className="btn icon ghost" onClick={onToggleTheme} title="切换主题" aria-label="切换主题">
           <Icon name={theme === 'dark' ? 'eye' : 'settings'} />
         </button>
@@ -313,7 +314,6 @@ function Shell() {
         </div>
       )}
       {!immersive && <Header theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />}
-      <ImportTaskBar />
       <Routes>
         <Route path="/" element={shareFromQuery ? <SharePage /> : <LibraryPage />} />
         <Route path="/community" element={<CommunityPage />} />
