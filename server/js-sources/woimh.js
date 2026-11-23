@@ -33,20 +33,33 @@ class Woimh extends ComicSource {
             .replace(/&gt;/g, ">").replace(/&#39;|&apos;/g, "'").replace(/&nbsp;/g, " ").trim();
     }
 
-    // 站点已把封面统一成占位图；旧 CDN tu.petatt.cn 已失效（404/478）。
-    // 从列表页 <a> 里取 background-image 或 img 作为封面，取不到就用站点占位图，避免裂图。
+    // 封面 CDN：站点已把 pic.woimh.com 切到 tu.petatt.cn（pic 域名现返回 403）。
+    // 统一把旧 pic 域名重写为可用的 tu 域名，避免封面 403 裂图。
+    fixCoverHost(u) {
+        return String(u || "").replace(/^https?:\/\/pic\.woimh\.com/i, "https://tu.petatt.cn");
+    }
+    isPlaceholder(u) { return !u || /zwfm|\/static\/|logo/i.test(u); }
+
+    // 封面实际位于 <a> 内的 <p class="mh-cover" style="background-image:url(...)">，
+    // 不在 <a> 自身 style 上——旧实现读 a.style 始终取不到，导致全部回退占位图。
+    // 现在从子元素的 background-image（含 data-src/img）里取，并修域名。
     coverFrom(a, num) {
         try {
-            const img = a && a.querySelector ? a.querySelector("img") : null;
-            const raw = (img && (img.attributes.src || img.attributes["data-src"] || img.attributes["data-echo"])) || "";
-            const bg = /background-image:\s*url\(([^)]+)\)/i.exec(String((a && a.attributes.style) || ""));
-            const picked = raw || (bg ? bg[1] : "");
-            if (picked) {
-                const u = this.abs(picked, this.baseUrl);
-                if (u && !/zwfm|\/static\/|logo/i.test(u)) return u;
+            if (!a || !a.querySelectorAll) return this.placeholderCover();
+            const nodes = [a].concat(Array.from(a.querySelectorAll("p,div,span,img")));
+            for (const node of nodes) {
+                const attrs = node.attributes || {};
+                const imgSrc = attrs.src || attrs["data-src"] || attrs["data-echo"] || attrs["data-original"] || "";
+                const style = String(attrs.style || "");
+                const bgm = /background-image\s*:\s*url\(([^)]+)\)/i.exec(style);
+                const bg = bgm ? bgm[1].replace(/^['"]|['"]$/g, "") : "";
+                const picked = imgSrc || bg;
+                if (!picked) continue;
+                const u = this.fixCoverHost(this.abs(picked, this.baseUrl));
+                if (u && !this.isPlaceholder(u)) return u;
             }
         } catch (e) { /* 忽略 */ }
-        return "https://img.woimh.com/zwfm.jpg";
+        return this.placeholderCover();
     }
     placeholderCover() { return "https://img.woimh.com/zwfm.jpg"; }
 
@@ -155,12 +168,14 @@ class Woimh extends ComicSource {
                 let title = "", cover = this.placeholderCover(), description = "";
                 const h1 = doc.querySelector("h1");
                 if (h1) title = this.decode(h1.text || "");
-                // 封面：详情页的 banner_detail_bg / 大图，排除 logo 与占位图本身
-                for (const sel of ["img.banner_detail_bg", ".detail-cover img", ".book-cover img"]) {
+                // 封面：详情页 banner_detail_bg / .cover img。该站详情页主图多为 zwfm 占位，
+                // 真实封面只在搜索/发现列表的 background-image 里，详情页无法可靠对应，
+                // 因此这里只取本页明确的有效封面，取不到保留占位图（不从「相关推荐」误取别的书）。
+                for (const sel of ["img.banner_detail_bg", ".banner_detail_form .cover img", ".detail-cover img", ".book-cover img"]) {
                     const n = doc.querySelector(sel);
                     if (n) {
-                        const u = this.abs(String(n.attributes.src || ""), this.baseUrl);
-                        if (u && !/zwfm|\/static\/|logo/i.test(u)) { cover = u; break; }
+                        const u = this.fixCoverHost(this.abs(String(n.attributes.src || ""), this.baseUrl));
+                        if (u && !this.isPlaceholder(u)) { cover = u; break; }
                     }
                 }
                 // 简介：常见 class 描述块
@@ -224,11 +239,16 @@ class Woimh extends ComicSource {
                     // 统一以「图片 CDN 的 /book/ 路径」为准，过滤站内广告/logo/占位图
                     if (!/petatt\.cn\/book\//i.test(u) && !/\/book\/\d+\/\d+\/\d+\.(?:jpg|png|webp)/i.test(u)) continue;
                     u = this.abs(u, this.baseUrl);
+                    // 站点对非浏览器请求统一下发同一张「本站声明」占位图（11833918.jpg），
+                    // 它不是正文；识别并剔除，避免把广告图当漫画显示。
+                    if (/11833918\.jpg/.test(u)) continue;
                     if (seen.has(u)) continue;
                     seen.add(u);
                     imgs.push(u);
                 }
-                if (!imgs.length) throw new Error("该章节没有解析到图片，可能已下架或需要 VIP");
+                if (!imgs.length) {
+                    throw new Error("我爱漫画网本章正文需要浏览器会话：站点对服务器请求只返回声明占位图，请在官网阅读或登录后再试");
+                }
                 return imgs;
             } finally { doc.dispose(); }
         },

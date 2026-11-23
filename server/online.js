@@ -278,11 +278,26 @@ export function registerOnline(app, helpers) {
     }
   });
 
+  // 图片代理服务端缓存：封面墙/章节图重复请求极多，源站（woimh 等）单张可达数秒，
+  // 命中缓存直接回字节，避免每次都回源站，是「在线来源加载慢」的主要优化点。
+  // key 含 sid + url；上限 600 条、单条 24h，超出按插入顺序淘汰最旧。
+  const IMG_CACHE = new Map();
+  const IMG_CACHE_TTL = 24 * 60 * 60 * 1000;
+  const IMG_CACHE_MAX = 600;
+
   // 图片代理：带源站防盗链头转发，阅读器/封面直接用
   router.get('/img', async (req, res) => {
     const source = getJsSource(String(req.query.sid || ''));
     const url = String(req.query.u || '');
     if (!source || !/^https?:\/\//i.test(url)) return res.status(400).end('bad request');
+    const ck = source.key + '|' + url;
+    const hit = IMG_CACHE.get(ck);
+    if (hit && Date.now() - hit.t < IMG_CACHE_TTL) {
+      res.setHeader('Content-Type', hit.ct);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('X-Img-Cache', 'HIT');
+      return res.send(hit.buf);
+    }
     try {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 30000);
@@ -310,6 +325,14 @@ export function registerOnline(app, helpers) {
         buf = norm.buf;
         ct = norm.mime;
       } catch { /* 归一化失败时回退原始字节 */ }
+      // 仅缓存正常大小的图片，避免异常大响应撑爆内存；超出上限淘汰最旧条目
+      if (buf && buf.length > 32 && buf.length < 8 * 1024 * 1024) {
+        if (IMG_CACHE.size >= IMG_CACHE_MAX) {
+          const oldest = IMG_CACHE.keys().next().value;
+          if (oldest !== undefined) IMG_CACHE.delete(oldest);
+        }
+        IMG_CACHE.set(ck, { t: Date.now(), buf, ct });
+      }
       res.setHeader('Content-Type', ct);
       res.setHeader('Cache-Control', 'public, max-age=86400');
       res.send(buf);

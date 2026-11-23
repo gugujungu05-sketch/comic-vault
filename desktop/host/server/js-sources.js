@@ -99,7 +99,9 @@ class HtmlDocument {
 /* 书源 HTTP 响应缓存：发现页/详情/章节等 GET 请求重复率高，短时缓存可显著降低卡顿与站点压力。
    只对无请求体的 GET 生效；带 Cookie 的响应分开缓存，避免串号。 */
 const HTTP_CACHE = new Map();
-const HTTP_CACHE_TTL = 60 * 1000;
+// 源站（尤其 woimh 首页可达 11s）重复抓取代价高，延长 GET 缓存到 5 分钟，
+// 发现页/搜索/详情二次打开直接命中，显著改善「在线来源加载太慢」。
+const HTTP_CACHE_TTL = 5 * 60 * 1000;
 function httpCacheKey(url, headers, sourceKey) {
   const ck = Object.entries(headers || {})
     .filter(([k]) => /cookie/i.test(k))
@@ -370,6 +372,30 @@ export async function jsSearch(source, keyword, page = 1) {
   }));
 }
 
+/** 章节按标题话数升序排列。
+ *  部分源详情页把第 1 话置顶、其余倒序（如 rawkuma 的 Odaroku：1,8,7,6…），
+ *  框架层按 HTML 出现顺序输出就会乱序。
+ *  为安全起见，仅当「所有标题都能解析出唯一数字」且「当前确实非升序」时才排序：
+ *  分卷、番外、无数字标题等保持源站原顺序。 */
+function sortChaptersByNumber(chapters) {
+  if (!Array.isArray(chapters) || chapters.length < 2) return chapters;
+  const keys = chapters.map((c) => {
+    const m = String(c && c.title || "").match(/\d+(?:\.\d+)?/);
+    return m ? parseFloat(m[0]) : null;
+  });
+  if (keys.some((k) => k === null)) return chapters;          // 有标题无数字 → 保持源站顺序
+  if (new Set(keys).size !== keys.length) return chapters;    // 数字重复（分卷/重话） → 保持源站顺序
+  let needSort = false;
+  for (let i = 1; i < keys.length; i++) {
+    if (keys[i] < keys[i - 1]) { needSort = true; break; }
+  }
+  if (!needSort) return chapters;                             // 已升序 → 不改动
+  return chapters
+    .map((c, i) => ({ c, k: keys[i], i }))
+    .sort((a, b) => a.k - b.k || a.i - b.i)                   // 稳定排序
+    .map((x) => x.c);
+}
+
 /** 详情：ComicDetails → {title, cover, url, chapters:[{title,url}], author, description, tags} */
 export async function jsComicDetail(source, bookId) {
   const info = await source.comic.loadInfo(bookId);
@@ -389,7 +415,7 @@ export async function jsComicDetail(source, bookId) {
     tags,
     kind: info.mediaType === 'novel' || source.mediaType === 'novel' ? 'novel' : 'comic',
     chapters: chaptersMap
-      ? Object.entries(chaptersMap).map(([p, t], i) => ({ title: String(t || `第 ${i + 1} 话`), url: String(p) }))
+      ? sortChaptersByNumber(Object.entries(chaptersMap).map(([p, t], i) => ({ title: String(t || `第 ${i + 1} 话`), url: String(p) })))
       : null, // null = 小说整本（EPUB）下载
   };
 }

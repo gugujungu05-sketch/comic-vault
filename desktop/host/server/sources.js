@@ -609,16 +609,23 @@ export function registerSources(app) {
     }
   });
 
-  // 搜索
+  // 搜索（短时缓存：同一关键词重复搜索秒回，降低站点压力与等待）
+  const searchCache = new Map();
+  const SEARCH_TTL = 3 * 60 * 1000;
   router.get('/:id/search', async (req, res) => {
     const kw = String(req.query.kw || '').trim();
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     if (!kw) return res.status(400).json({ error: '请输入搜索关键词' });
+    const sck = `${req.params.id}:${kw}:${page}`;
+    const sh = searchCache.get(sck);
+    if (sh && now() - sh.t < SEARCH_TTL) return res.json({ ...sh.data, cached: true });
     try {
       const js = jsOf(req.params.id);
       if (js) {
         const items = await jsSearch(js, kw, page);
-        return res.json({ items });
+        const data = { items };
+        if (items.length) { searchCache.set(sck, { t: now(), data }); if (searchCache.size > 300) searchCache.delete(searchCache.keys().next().value); }
+        return res.json(data);
       }
       const source = allSources().find((s) => s.id === req.params.id);
       if (!source) return res.status(404).json({ error: '书源不存在' });

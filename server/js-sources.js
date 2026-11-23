@@ -99,7 +99,9 @@ class HtmlDocument {
 /* 书源 HTTP 响应缓存：发现页/详情/章节等 GET 请求重复率高，短时缓存可显著降低卡顿与站点压力。
    只对无请求体的 GET 生效；带 Cookie 的响应分开缓存，避免串号。 */
 const HTTP_CACHE = new Map();
-const HTTP_CACHE_TTL = 60 * 1000;
+// 源站（尤其 woimh 首页可达 11s）重复抓取代价高，延长 GET 缓存到 5 分钟，
+// 发现页/搜索/详情二次打开直接命中，显著改善「在线来源加载太慢」。
+const HTTP_CACHE_TTL = 5 * 60 * 1000;
 function httpCacheKey(url, headers, sourceKey) {
   const ck = Object.entries(headers || {})
     .filter(([k]) => /cookie/i.test(k))

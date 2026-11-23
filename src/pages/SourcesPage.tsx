@@ -202,8 +202,11 @@ export default function SourcesPage() {
     setSearching(true);
     try {
       const r = await sourcesApi.comic(sid, item.link);
+      // 部分源（如我爱漫画网）详情页只给占位封面，但列表卡片里有真实封面；用列表封面兜底
+      const detailCover = /zwfm|\/static\/|logo/i.test(r.cover || '') && item.cover ? item.cover : r.cover;
       setDetail({
         ...r,
+        cover: detailCover,
         sourceId: sid,
         sourceName: item.sourceName || active?.name || '',
         bookId: r.bookId || item.link,
