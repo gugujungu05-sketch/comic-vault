@@ -247,7 +247,7 @@ class Woimh extends ComicSource {
                     imgs.push(u);
                 }
                 if (!imgs.length) {
-                    throw new Error("我爱漫画网本章正文需要浏览器会话：站点对服务器请求只返回声明占位图，请在官网阅读或登录后再试");
+                    throw new Error("这一话没有正文图片，可能已下架或需要 VIP；请换一部作品或到官网确认");
                 }
                 return imgs;
             } finally { doc.dispose(); }
