@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "comment": "唯一版本源。五段式 主.次.修.构建.修订；小改动递增第 4 段（第 5 段归零），热修只递增第 5 段。改完运行 npm run version:sync 同步全仓库。",
-  "web": "2.7.0.35.1",
-  "desktop": "3.4.0.31.1",
-  "android": "3.4.0.31.1",
+  "web": "2.7.0.35.2",
+  "desktop": "3.4.0.31.2",
+  "android": "3.4.0.31.2",
   "buildVersion": "3.4.0",
-  "androidVersionCode": 42,
-  "build": 42,
+  "androidVersionCode": 43,
+  "build": 43,
   "releasedAt": 1795333581461,
   "driveZipUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
@@ -18,6 +18,7 @@
   },
   "notes": {
     "web": [
+      "热修：修复在线来源章节乱序（框架层按话数安全升序，如 Odaroku 第1话置顶+其余倒序问题）",
       "热修：修复 vomic 详情标题/封面失效与章节取图；修复我爱漫画网封面域名失效+章节图片解析；修复再漫画发现页接口失效；MangaDex 过滤无图失效章节；在线书架/阅读进度支持未登录本地保存",
       "新增 3 个书源：再漫画（漫画）、再漫画轻小说、拷贝轻小说，在线来源现共 17 个源，漫画/小说标签分开显示",
       "新增「我爱漫画网」书源：搜索/发现/分类/详情/章节图片全链路可用，题材标签（恋爱/奇幻等）同步显示",
@@ -44,6 +45,7 @@
       "翻译设置新增快速预设：Google Gemini / 智谱 GLM-4V-Flash（国内免费直连）/ 硅基流动 Qwen-VL / OpenAI，一键填好地址与模型，附免费 Key 领取指引"
     ],
     "desktop": [
+      "同步书源热修：在线章节顺序修正",
       "同步书源热修：vomic/我爱漫画网/再漫画/MangaDex",
       "新增再漫画、再漫画轻小说、拷贝轻小说 3 个书源；在线小说整本导入支持通用逐章正文适配器",
       "新增「我爱漫画网」书源（含题材标签）；修复 Rawkuma 搜不到 Odaroku 的搜索参数",
