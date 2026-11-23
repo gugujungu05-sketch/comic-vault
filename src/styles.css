@@ -2454,46 +2454,100 @@ html, body, #root { overscroll-behavior-x: none; }
 /* 全局导入任务栏：导入中/完成后悬浮，返回任何页面都能看到进度与结果 */
 .import-taskbar {
   position: fixed; z-index: 90; right: 18px; bottom: 18px;
-  display: flex; align-items: center; gap: 4px;
-  max-width: min(460px, calc(100vw - 28px));
-  padding: 8px 8px 8px 6px;
-  background: color-mix(in srgb, var(--bg, #14161c) 94%, #000 6%);
+  display: flex; align-items: stretch; gap: 10px;
+  width: min(430px, calc(100vw - 28px));
+  padding: 10px;
+  background: color-mix(in srgb, var(--bg, #14161c) 92%, #000 8%);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow: hidden;
 }
-.import-taskbar.done { border-color: color-mix(in srgb, #3ddc84 55%, var(--border)); }
-.itb-main {
-  display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
-  background: none; border: 0; color: var(--text); cursor: pointer; text-align: left;
-  padding: 4px 6px; border-radius: 10px;
+.import-taskbar::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--accent, #7c6cff);
 }
-.itb-main:hover { background: rgba(124, 108, 255, 0.1); }
-.itb-icon { display: flex; color: var(--accent, #7c6cff); flex: none; }
-.import-taskbar.done .itb-icon { color: #3ddc84; }
-.itb-text { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }
-.itb-title {
-  font-size: 13px; font-weight: 700; line-height: 1.3;
+.import-taskbar.itb-done::before { background: #3ddc84; }
+.import-taskbar.itb-warn::before { background: #f0a742; }
+.import-taskbar.itb-paused::before { background: var(--muted, #888); }
+
+.itb-cover {
+  flex: none; width: 54px; height: 72px; border-radius: 9px; overflow: hidden;
+  background: var(--border); display: flex; align-items: center; justify-content: center;
+  color: var(--muted);
+}
+.itb-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.itb-cover-ph { opacity: .55; }
+
+.itb-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 1px 0; }
+.itb-topline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.itb-badge {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 6px;
+  background: color-mix(in srgb, var(--accent, #7c6cff) 22%, transparent);
+  color: var(--accent, #7c6cff);
+}
+.itb-done .itb-badge { background: rgba(61, 220, 132, .16); color: #3ddc84; }
+.itb-warn .itb-badge { background: rgba(240, 167, 66, .16); color: #f0a742; }
+.itb-source {
+  font-size: 10.5px; font-weight: 700; color: var(--muted); letter-spacing: .02em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.itb-bar { display: block; height: 4px; border-radius: 3px; background: var(--border); overflow: hidden; }
-.itb-bar-fill { display: block; height: 100%; background: var(--accent, #7c6cff); transition: width .3s ease; }
-.itb-action {
-  flex: none; border: 0; cursor: pointer; font-size: 12.5px; font-weight: 800;
-  color: #fff; background: var(--accent, #7c6cff); padding: 8px 12px; border-radius: 9px;
+.itb-paused-tag, .itb-state-tag {
+  flex: none; font-size: 9.5px; font-weight: 800; padding: 2px 6px; border-radius: 6px;
 }
+.itb-paused-tag { background: color-mix(in srgb, var(--muted, #888) 24%, transparent); color: var(--muted); }
+.itb-state-tag { background: rgba(61, 220, 132, .14); color: #3ddc84; }
+.itb-warn .itb-state-tag { background: rgba(240, 167, 66, .14); color: #f0a742; }
 .itb-close {
-  flex: none; display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border: 0; border-radius: 8px; cursor: pointer;
+  flex: none; margin-left: auto; display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border: 0; border-radius: 6px; cursor: pointer;
   background: none; color: var(--muted);
 }
 .itb-close:hover { background: var(--border); color: var(--text); }
+
+.itb-title {
+  font-size: 13px; font-weight: 750; line-height: 1.3; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.itb-detail {
+  font-size: 11px; color: var(--muted); line-height: 1.35; min-height: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.itb-progress { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.itb-bar {
+  flex: 1; display: block; height: 6px; border-radius: 99px;
+  background: color-mix(in srgb, var(--border) 80%, transparent); overflow: hidden;
+}
+.itb-bar-fill {
+  display: block; height: 100%; border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent, #7c6cff), color-mix(in srgb, var(--accent, #7c6cff) 55%, #fff));
+  transition: width .35s ease;
+}
+.itb-done .itb-bar-fill { background: linear-gradient(90deg, #2eb86d, #3ddc84); }
+.itb-warn .itb-bar-fill { background: linear-gradient(90deg, #e08b2e, #f0a742); }
+.itb-pct { flex: none; font-size: 10.5px; font-weight: 800; color: var(--muted); min-width: 32px; text-align: right; }
+
+.itb-actions { flex: none; display: flex; align-items: center; }
+.itb-action {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  border: 1px solid var(--border); cursor: pointer;
+  font-size: 11.5px; font-weight: 750; color: var(--text);
+  background: color-mix(in srgb, var(--border) 45%, transparent);
+  padding: 8px 10px; border-radius: 10px;
+}
+.itb-action:hover { background: color-mix(in srgb, var(--border) 75%, transparent); }
+.itb-action-primary { color: #fff; background: var(--accent, #7c6cff); border-color: transparent; }
+.itb-action-primary:hover { filter: brightness(1.08); }
+
+@keyframes itb-spin { to { transform: rotate(360deg); } }
+.spin-slow { animation: itb-spin 2s linear infinite; }
 @media (max-width: 720px) {
   .import-taskbar {
     right: 10px; left: 10px; bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-    max-width: none;
+    width: auto;
   }
 }
 

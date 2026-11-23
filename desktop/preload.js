@@ -2,7 +2,7 @@
 /** 本地界面专用桥：只暴露最小 API，页面拿不到 Node 能力 */
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const VERSION = '3.4.0.31.2';
+const VERSION = '3.4.0.31.3';
 
 contextBridge.exposeInMainWorld('cvApp', {
   version: VERSION,
