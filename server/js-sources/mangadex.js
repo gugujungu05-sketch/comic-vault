@@ -135,6 +135,9 @@ class MangaDex extends ComicSource {
             });
             for (const c of list) {
                 const at = c.attributes || {};
+                // feed 里混有已删除/外链章节（pages=0 或 externalUrl），点进去 at-home 会 404
+                // （表现为「加载不出来」）。只保留本站有图片的正经章节。
+                if (at.externalUrl || !(Number(at.pages) > 0)) continue;
                 const lang = at.translatedLanguage || "en";
                 const num = at.chapter != null ? String(at.chapter) : "";
                 const title = at.title || "";

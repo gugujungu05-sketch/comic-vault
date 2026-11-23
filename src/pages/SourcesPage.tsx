@@ -7,6 +7,7 @@ import { useErrorToast, useToast } from '../components/Toasts';
 import { useSession } from '../lib/session';
 import { online as onlineApi, sources as sourcesApi, mediaUrl } from '../lib/api';
 import { importTaskStore } from '../lib/importTask';
+import { onlineShelfLocal } from '../lib/onlineShelfLocal';
 import type {
   OnlineShelfItem,
   SourceChapterItem,
@@ -26,6 +27,14 @@ function coverUrl(sid: string | undefined, url: string | undefined): string {
   if (!url) return '';
   if (!sid) return mediaUrl(url);
   return mediaUrl(`/api/online/img?sid=${encodeURIComponent(sid.replace(/^js:/, ''))}&u=${encodeURIComponent(url)}`);
+}
+
+/** 合并云端+本地书架，并为本地项补上封面代理地址，保证未登录收藏也有封面 */
+function mergedShelf(remote: OnlineShelfItem[]): OnlineShelfItem[] {
+  return onlineShelfLocal.merge(remote).map((it) => ({
+    ...it,
+    coverProxy: it.coverProxy || coverUrl(it.sourceKey, it.cover),
+  }));
 }
 
 export default function SourcesPage() {
@@ -74,7 +83,8 @@ export default function SourcesPage() {
       const [r, s] = await Promise.all([sourcesApi.list(), onlineApi.shelf().catch(() => ({ items: [] }))]);
       setList(r.sources);
       setLoadError('');
-      setShelf(s.items || []);
+      // 未登录云端书架为空时，本地兜底书架仍要显示，保证收藏/阅读历史不丢
+      setShelf(mergedShelf(s.items || []));
       const first = r.sources.find((x) => (x.mediaType || 'comic') === tab)?.id || ALL_SOURCES;
       setActiveId((cur) => cur || first);
       if (first) loadDiscover(first, 0, 1);
@@ -97,8 +107,11 @@ export default function SourcesPage() {
   async function refreshShelf() {
     try {
       const s = await onlineApi.shelf();
-      setShelf(s.items || []);
-    } catch { /* 未登录等情况忽略 */ }
+      setShelf(mergedShelf(s.items || []));
+    } catch {
+      // 未登录时云端 401，仍显示本地兜底书架
+      setShelf(mergedShelf([]));
+    }
   }
 
   async function loadDiscover(sid: string, tab = 0, page = 1) {
@@ -197,7 +210,8 @@ export default function SourcesPage() {
         checked: new Set((r.chapters || []).map((_, i) => i)),
       });
       const s = await onlineApi.shelf().catch(() => ({ items: [] as OnlineShelfItem[] }));
-      setBookmarked(!!(s.items || []).find((x) => x.key === `${sid.replace(/^js:/, '')}:${r.bookId || item.link}`));
+      const allShelf = onlineShelfLocal.merge(s.items || []);
+      setBookmarked(!!allShelf.find((x) => x.key === `${sid.replace(/^js:/, '')}:${r.bookId || item.link}`));
     } catch (err) {
       errorToast(err, '读取章节失败');
     } finally {
@@ -231,28 +245,46 @@ export default function SourcesPage() {
   async function bookmark(detail2: SourceComicDetail & { checked: Set<number>; sourceId?: string; sourceName?: string }) {
     const sid = detail2.sourceId || detailSourceId;
     if (!sid) return;
+    const sourceKey = sid.replace(/^js:/, '');
+    const key = `${sourceKey}:${detail2.bookId}`;
+    const addInput = {
+      sourceKey,
+      sourceName: detail2.sourceName || detailSourceName,
+      bookId: detail2.bookId || '',
+      title: detail2.title,
+      cover: detail2.cover,
+      author: detail2.author || '',
+      kind: (detail2.kind || tab) as 'comic' | 'novel',
+      chaptersTotal: detail2.chapters?.length || 0,
+    };
     try {
       if (bookmarked) {
-        const it = shelf.find((x) => x.key === `${sid.replace(/^js:/, '')}:${detail2.bookId}`);
-        if (it) await onlineApi.removeFromShelf(it.id);
+        const it = shelf.find((x) => x.key === key);
+        if (it && !sessionUser && it.id.startsWith('local_')) onlineShelfLocal.remove(it.id);
+        else if (it) await onlineApi.removeFromShelf(it.id);
         setBookmarked(false);
         toast('已从书架移除');
       } else {
-        await onlineApi.addToShelf({
-          sourceId: sid,
-          bookId: detail2.bookId || '',
-          title: detail2.title,
-          cover: detail2.cover,
-          author: detail2.author || '',
-          kind: detail2.kind || tab,
-          chaptersTotal: detail2.chapters?.length || 0,
-        });
+        if (sessionUser) {
+          await onlineApi.addToShelf({ sourceId: sid, ...addInput });
+        } else {
+          // 未登录：写本地兜底书架，收藏与阅读历史照样记录
+          onlineShelfLocal.add(addInput);
+        }
         setBookmarked(true);
         toast('已收藏到书架');
       }
       refreshShelf();
     } catch (err) {
-      errorToast(err, '书架操作失败');
+      // 云端写入失败（如登录态失效）时降级为本地，避免收藏丢失
+      if (!bookmarked) {
+        onlineShelfLocal.add(addInput);
+        setBookmarked(true);
+        toast('已收藏到书架（本地）');
+        refreshShelf();
+      } else {
+        errorToast(err, '书架操作失败');
+      }
     }
   }
 
@@ -355,25 +387,33 @@ export default function SourcesPage() {
     // 在线阅读的每一本都自动进书架，确保翻页进度能落库、回来能「继续阅读」。
     // 以前只有先手动收藏的书才有 shelfId，直接点章节播放的书进度完全不保存。
     let sid = shelfItem?.id || '';
+    const sourceKey = detailSourceId.replace(/^js:/, '');
+    const key = `${sourceKey}:${bookId}`;
+    const addInput = {
+      sourceKey,
+      sourceName: detail?.sourceName || detailSourceName,
+      bookId,
+      title: detail?.title || shelfItem?.title || '在线阅读',
+      cover: detail?.cover || '',
+      author: detail?.author || '',
+      kind: (detail?.kind || 'comic') as 'comic' | 'novel',
+      chaptersTotal: chapters.length,
+    };
     if (!sid) {
-      const key = `${detailSourceId.replace(/^js:/, '')}:${bookId}`;
       const existing = shelf.find((x) => x.key === key);
-      if (existing) sid = existing.id;
-      else {
+      if (existing) {
+        sid = existing.id;
+      } else if (sessionUser) {
         try {
-          const r = await onlineApi.addToShelf({
-            sourceId: detailSourceId,
-            bookId,
-            title: detail?.title || shelfItem?.title || '在线阅读',
-            cover: detail?.cover || '',
-            author: detail?.author || '',
-            kind: detail?.kind || 'comic',
-            chaptersTotal: chapters.length,
-          });
-          // 后端返回 {ok,item}，用 key 重新取回带 id 的书架项
+          const r = await onlineApi.addToShelf({ sourceId: detailSourceId, ...addInput });
           sid = r?.item?.id || '';
           refreshShelf();
-        } catch { /* 加入失败不影响阅读，只是进度暂不保存 */ }
+        } catch { /* 云端失败降级为本地 */ }
+      }
+      // 未登录或云端失败：写入本地兜底书架，保证进度能记录
+      if (!sid) {
+        sid = onlineShelfLocal.add(addInput).id;
+        refreshShelf();
       }
     }
     setOnlineReader({
@@ -456,7 +496,8 @@ export default function SourcesPage() {
                   onClick={async (e) => {
                     e.stopPropagation();
                     try {
-                      await onlineApi.removeFromShelf(it.id);
+                      if (it.id.startsWith('local_')) onlineShelfLocal.remove(it.id);
+                      else await onlineApi.removeFromShelf(it.id);
                       refreshShelf();
                     } catch (err) { errorToast(err, '移除失败'); }
                   }}
@@ -837,9 +878,28 @@ function OnlineReader({
   const saveProgress = (chapterId: string, pageIndex: number) => {
     if (!state.shelfId) return;
     const ch = state.chapters.find((c) => c.id === chapterId);
-    onlineApi
-      .progress(state.shelfId, { chapterUrl: chapterId, chapterTitle: ch?.title || '', pageIndex })
-      .catch(() => {});
+    const payload = { chapterUrl: chapterId, chapterTitle: ch?.title || '', pageIndex };
+    if (state.shelfId.startsWith('local_')) {
+      // 未登录的本地兜底项：进度写 localStorage
+      onlineShelfLocal.progress(state.shelfId, payload);
+    } else {
+      onlineApi.progress(state.shelfId, payload).catch(() => {
+        // 云端写入失败（登录态失效）时降级为本地，按 key 找到对应本地/远程项
+        const key = `${state.sourceKey}:${state.bookId}`;
+        const local = onlineShelfLocal.find(key);
+        if (local) onlineShelfLocal.progress(local.id, payload);
+        else {
+          const added = onlineShelfLocal.add({
+            sourceKey: state.sourceKey,
+            sourceName: '',
+            bookId: state.bookId,
+            title: state.title,
+            kind: 'comic',
+          });
+          onlineShelfLocal.progress(added.id, payload);
+        }
+      });
+    }
   };
 
   return (

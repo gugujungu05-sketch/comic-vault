@@ -35,6 +35,9 @@ class Zaimanhua extends ComicSource {
     card(c) {
         const title = String(c.title || c.name || "").trim();
         if (!title) return null;
+        // 注：搜索接口不返回可靠的章节计数字段（last_update_chapter_id 常为 0），
+        // 不能据此过滤，否则会把所有书都过滤掉。无章节的书在详情页 chapterList 为空，
+        // loadInfo 里已有「未解析到章节」提示。
         // 各接口 id 字段名/有效性不一（有的 comic_id=0 但 id 有效），取第一个正整数
         let id = "";
         for (const k of ["comic_id", "id", "obj_id", "lnovel_id", "novel_id"]) {
@@ -59,12 +62,22 @@ class Zaimanhua extends ComicSource {
         } catch (e) { return { comics: [], maxPage: page }; }
     }};
 
-    explore = [{ title: "最近更新", type: "multiPageComicList", load: async (page) => {
-        const d = await this.api("/api/v1/comic2/update_list?status=all&theme=all&zone=all&cate=all&firstLetter=all&sortType=default&page=" + page + "&size=20");
-        const list = (d && (d.list || (d.data && d.data.list))) || [];
-        const comics = list.map((c) => this.card(c)).filter(Boolean);
-        return { comics, maxPage: comics.length ? page + 1 : page };
-    }}];
+    explore = [
+        { title: "最近更新", type: "singlePageWithMultiPart", load: async () => {
+            // update_list 旧参数已失效（errno 1 参数错误），改用 index 聚合接口。
+            const d = await this.api("/api/v1/comic2/index");
+            const data = (d && d.data) || d || {};
+            const pick = (list, label) => (Array.isArray(list) ? list.map((c) => this.card(c)).filter(Boolean) : []);
+            const update = pick(data.updateList);
+            const rec = pick(data.recList);
+            const rank = pick(data.monthRankList);
+            const parts = {};
+            if (update.length) parts["最近更新"] = update;
+            if (rec.length) parts["为你推荐"] = rec;
+            if (rank.length) parts["月榜"] = rank;
+            return parts;
+        }},
+    ];
 
     category = {
         title: "再漫画分类",
@@ -100,6 +113,10 @@ class Zaimanhua extends ComicSource {
                     if (!cid) continue;
                     chapters[cid] = String(ch.chapter_title || "第" + cid + "话");
                 }
+            }
+            if (!Object.keys(chapters).length) {
+                // 该条目在本站漫画端无可读章节（多为小说/资料页），给出明确提示而不是空白目录
+                throw new Error("这部作品在再漫画暂无可读章节（可能是小说/资料条目），请换一部漫画");
             }
             const tags = {};
             const collect = (arr) => { for (const t of (arr || [])) { const n = String(t.tagName || t.name || "").trim(); if (n) (tags["题材"] || (tags["题材"] = [])).push(n); } };

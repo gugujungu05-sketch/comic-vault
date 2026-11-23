@@ -294,12 +294,26 @@ class VomicSource extends ComicSource {
             const url = this.site("/detail/" + id);
             const res = await Network.get(url, this.headers);
             if (res.status !== 200) throw "加载详情失败";
-            const body = this.unesc(res.body);
+            const raw = String(res.body || "");
+            const body = this.unesc(raw);
             if (body.includes("在线阅读，只收录")) throw "源站只收录这部作品的信息，未提供在线章节";
-            const wm = body.match(/"id":\d+,"name":"([^"]{1,80})","cover":"([^"]{1,200})","intro":"([^"]{0,400})","updated_at"/);
-            const title = wm ? this.unesc(wm[1]) : id;
-            const cover = wm ? this.unesc(wm[2]) : "";
-            const intro = wm ? this.unesc(wm[3]) : "";
+            // 新版详情页把作品主对象拆进 RSC 记录，旧的 name/cover/intro 内嵌正则已失效
+            // （表现为标题变成 id、封面为空）。改用稳定的 <meta>/<title> 标签提取元数据。
+            const meta = (key) => {
+                const m = new RegExp('<meta[^>]+(?:property|name)="' + key + '"[^>]+content="([^"]*)"', "i").exec(raw)
+                    || new RegExp('<meta[^>]+content="([^"]*)"[^>]+(?:property|name)="' + key + '"', "i").exec(raw);
+                return m ? this.unesc(m[1]).replace(/&amp;/g, "&") : "";
+            };
+            let title = meta("og:title").replace(/\s*-\s*vomic漫\s*$/i, "").trim();
+            if (!title) {
+                const tm = /<title>([^<]*)<\/title>/i.exec(raw);
+                title = tm ? tm[1].replace(/\s*-\s*vomic漫\s*$/i, "").trim() : id;
+            }
+            const cover = meta("og:image");
+            let intro = meta("og:description") || meta("description");
+            intro = intro.replace(/^\d+\s*/, "").trim();
+            const kws = meta("keywords");
+            const author = kws ? kws.split(/[\s,，]/)[0] : "";
             const cre = /"id":(\d+),"name":"([^"]{1,80})","car_id":(\d+),"img_list"[^}]*?"img_num":(\d+),"likes_num"[^}]*?"group_name":"([^"]{0,30})"[^}]*?"identity":(?:"([a-f0-9]{32})"|null)/g;
             const chapters = {};
             const groups = [];
@@ -318,10 +332,12 @@ class VomicSource extends ComicSource {
                 throw "未解析到章节列表";
             }
             return new ComicDetails({
+                id: id,
                 url: url,
                 title: title,
                 cover: cover,
                 description: intro,
+                author: author,
                 chapters: chapters,
                 tags: groups.length ? { "分组": groups } : {}
             });
@@ -334,6 +350,20 @@ class VomicSource extends ComicSource {
             if (imgNum <= 0) throw "该章节无图片";
             const auth = await this.token();
             if (!auth) throw "请先在源管理登录 vomic 账号";
+
+            // 首选：网页端阅读时由服务端渲染 img_list（含完整签名图片 URL），
+            // 与浏览器访问 /chapter/{carId}/{章节id} 看到的一致。identity 字段新版已为 null，
+            // 旧的逐张 getImgUrl?name=carId/identity-n 拼法不可靠，故改为直接解析页面数据。
+            try {
+                const chUrl = this.site("/chapter/" + encodeURIComponent(carId) + "/" + encodeURIComponent(identity));
+                const chRes = await Network.get(chUrl, this.rscHeaders(auth));
+                if (chRes && chRes.status === 200 && chRes.body) {
+                    const urls = this.extractChapterUrls(String(chRes.body));
+                    if (urls.length) return { images: urls };
+                }
+            } catch (_) { /* 落到 getImgUrl 回退 */ }
+
+            // 回退：旧的逐张 getImgUrl（identity 为 hash 的老章节仍走这里）
             const images = new Array(imgNum);
             let cursor = 0;
             const CONC = 6;
@@ -360,6 +390,62 @@ class VomicSource extends ComicSource {
         onImageLoad: (url, comicId, epId) => {
             return { headers: this.headers };
         }
+    }
+
+    // 解析 Next.js RSC flight 记录为 ref -> value 映射（章节页的 img_list 以 $ref 引用给出）
+    flightMap(raw) {
+        const records = [];
+        const re = /self\.__next_f\.push\((\[1,"(?:\\.|[^"\\])*"\])\)/g;
+        let m;
+        while ((m = re.exec(raw)) !== null) {
+            try { records.push(JSON.parse(m[1])[1]); } catch (_) {}
+        }
+        if (!records.length) records.push(raw);
+        const map = {};
+        for (const rec of records) {
+            for (const line of rec.split(/\r?\n/)) {
+                const colon = line.indexOf(":");
+                if (colon < 0) continue;
+                const key = line.slice(0, colon).trim();
+                const json = line.slice(colon + 1);
+                if (json[0] !== "[" && json[0] !== "{" && json[0] !== '"') continue;
+                try { map[key] = JSON.parse(json); } catch (_) {}
+            }
+        }
+        return map;
+    }
+
+    // 递归还原 $ref 引用
+    resolveRef(map, v, depth) {
+        if (depth > 12) return v;
+        if (typeof v === "string" && /^\$[0-9a-f]+$/i.test(v)) return this.resolveRef(map, map[v.slice(1)], depth + 1);
+        if (Array.isArray(v)) return v.map((x) => this.resolveRef(map, x, depth + 1));
+        if (v && typeof v === "object") {
+            const o = {};
+            for (const k of Object.keys(v)) o[k] = this.resolveRef(map, v[k], depth + 1);
+            return o;
+        }
+        return v;
+    }
+
+    // 从章节页 RSC 数据里提取 img_list 的图片 URL 数组（网页端渲染用的就是这里）
+    extractChapterUrls(raw) {
+        const map = this.flightMap(raw);
+        let urls = [];
+        const collect = (o, depth) => {
+            if (!o || typeof o !== "object" || depth > 24) return;
+            if (Array.isArray(o)) { o.forEach((x) => collect(x, depth + 1)); return; }
+            if (Array.isArray(o.img_list)) {
+                const us = o.img_list
+                    .map((x) => ((x && x.url) || (typeof x === "string" ? x : "")))
+                    .map((u) => String(u).replace(/&amp;/g, "&"))
+                    .filter((u) => /^https?:\/\//i.test(u));
+                if (us.length > urls.length) urls = us;
+            }
+            for (const k of Object.keys(o)) if (k !== "img_list") collect(o[k], depth + 1);
+        };
+        for (const k of Object.keys(map)) collect(this.resolveRef(map, map[k], 0), 0);
+        return urls;
     }
 
     site(path) {
