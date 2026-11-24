@@ -139,23 +139,39 @@ class CopyNovel extends ComicSource {
 
     // 逐章正文 EPUB 适配器（online.js 通用分支调用）
     comic = {
+        /* 拷贝轻小说 API 2026 改版：卷正文响应 {results:{book,volume:{txt_addr,txt_encoding,contents[]}}}，
+           章节列表在 volume.contents（不再是 volume.chapters），正文是整卷一个 txt 文件，
+           每章用 start_lines/end_lines 标记行段；编码多为 GBK。
+           这里把章节 id 编码成 "起始行_结束行"，chapter 方法据此从整卷 txt 切片。 */
         textNovelCatalog: async (bookId) => {
             const det = await this.api("/api/v3/book/" + encodeURIComponent(bookId));
             const book = (det && det.book) || det || {};
             const volsRes = await this.api("/api/v3/book/" + encodeURIComponent(bookId) + "/volumes");
             const volumeList = (volsRes && (volsRes.list || volsRes.volumes)) || [];
+            if (!this.__cnVolCache) this.__cnVolCache = {};
+            const loadVol = async (vid) => {
+                if (this.__cnVolCache[vid]) return this.__cnVolCache[vid];
+                const vd = await this.api("/api/v3/book/" + encodeURIComponent(bookId) + "/volume/" + encodeURIComponent(vid));
+                const vol = (vd && vd.volume) || vd || {};
+                this.__cnVolCache[vid] = vol;
+                return vol;
+            };
             const volumes = [];
             for (const v of volumeList) {
                 const vid = String(v.volume_id || v.uuid || v.id || "");
                 if (!vid) continue;
-                const vd = await this.api("/api/v3/book/" + encodeURIComponent(bookId) + "/volume/" + encodeURIComponent(vid));
-                const volume = (vd && vd.volume) || vd || {};
+                const vol = await loadVol(vid);
                 const chapters = [];
-                for (const c of (volume.chapters || [])) {
-                    if (!c || (c.is_lock && c.is_lock !== 0 && c.is_lock !== false)) continue;
-                    chapters.push({ id: String(c.chapter_id || c.uuid || c.id || ""), title: String(c.title || "正文") });
+                for (const c of (vol.contents || vol.chapters || [])) {
+                    if (!c) continue;
+                    const start = c.start_lines != null ? Number(c.start_lines) : null;
+                    const end = c.end_lines != null ? Number(c.end_lines) : null;
+                    // 新结构：用行段编码 id；旧结构：用章节 id
+                    const id = (start != null && end != null) ? (start + "_" + end) : String(c.chapter_id || c.uuid || c.id || "");
+                    if (!id) continue;
+                    chapters.push({ id, title: String(c.name || c.title || "正文") });
                 }
-                volumes.push({ id: vid, title: String(v.title || v.name || "卷"), chapters });
+                volumes.push({ id: vid, title: String(v.title || v.name || vol.name || "卷"), chapters });
             }
             return {
                 title: String(book.name || book.title || "在线小说"),
@@ -166,19 +182,28 @@ class CopyNovel extends ComicSource {
         },
         textNovelChapter: async (bookId, chapterId, volumeId) => {
             try {
-                const vd = await this.api("/api/v3/book/" + encodeURIComponent(bookId) + "/volume/" + encodeURIComponent(volumeId));
-                const volume = (vd && vd.volume) || vd || {};
-                let target = null;
-                for (const c of (volume.chapters || [])) {
-                    if (String(c.chapter_id || c.uuid || c.id) === String(chapterId)) { target = c; break; }
+                if (!this.__cnVolCache) this.__cnVolCache = {};
+                let vol = this.__cnVolCache[volumeId];
+                if (!vol) {
+                    const vd = await this.api("/api/v3/book/" + encodeURIComponent(bookId) + "/volume/" + encodeURIComponent(volumeId));
+                    vol = (vd && vd.volume) || vd || {};
+                    this.__cnVolCache[volumeId] = vol;
                 }
-                if (!target) return "";
-                const txtAddr = String((target.volume && target.volume.txtAddr) || target.txtAddr || volume.txtAddr || "");
+                const txtAddr = String(vol.txt_addr || vol.txtAddr || "");
                 if (!/^https?:\/\//i.test(txtAddr)) return "";
                 const r = await Network.get(txtAddr, { "User-Agent": "Mozilla/5.0" });
                 if (!r || r.status !== 200) return "";
-                let text = String(r.body || "");
-                // 拷贝正文可能是 HTML 片段，剥标签后转段落
+                // 按卷声明的编码解码（GBK/UTF-8）
+                const enc = String(vol.txt_encoding || vol.txtEncoding || "utf-8").toLowerCase();
+                let text = (r.bytes && /gbk|gb2312|gb18030/.test(enc)) ? Convert.decodeGbk(r.bytes) : String(r.body || "");
+                // 新结构：按 start_lines/end_lines 切出本章
+                const m = /^(\d+)_(\d+)$/.exec(String(chapterId));
+                if (m) {
+                    const start = parseInt(m[1]), end = parseInt(m[2]);
+                    const lines = text.split(/\r?\n/);
+                    text = lines.slice(Math.max(0, start - 1), end).join("\n");
+                }
+                // 正文可能是 HTML 片段，剥标签后转段落
                 if (/<[a-z][\s\S]*>/i.test(text)) text = text.replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n").replace(/<[^>]+>/g, "");
                 const paras = text.split(/\n+/).map((s) => s.trim()).filter(Boolean);
                 return paras.map((p) => "<p>" + p.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</p>").join("");

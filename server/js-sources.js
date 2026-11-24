@@ -157,7 +157,10 @@ async function httpRequest(method, url, headers = {}, body = undefined, sourceKe
     }
     if (setCookies.length) saveSoon(COOKIE_FILE, cookieMap);
     const buf = await res.arrayBuffer();
-    const out = { status: res.status, body: Buffer.from(buf).toString('utf8'), url: res.url || url };
+    const bytes = Buffer.from(buf);
+    // bytes 供需要按指定编码解码的源使用（如拷贝轻小说 GBK 正文 txt）；
+    // body 仍是 utf8 字符串，保持对所有现有源的行为不变。
+    const out = { status: res.status, body: bytes.toString('utf8'), bytes: new Uint8Array(bytes), url: res.url || url };
     if (cacheable && res.status >= 200 && res.status < 400) {
       HTTP_CACHE.set(ckey, { t: Date.now(), v: { ...out } });
       if (HTTP_CACHE.size > 300) {

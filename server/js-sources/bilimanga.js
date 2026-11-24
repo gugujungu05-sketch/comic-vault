@@ -18,15 +18,21 @@ class BiliManga extends ComicSource {
 
     baseUrl = "https://www.bilimanga.net"
 
+    // 站点对请求头敏感：Android 简头会被 Cloudflare 判 403；完整桌面浏览器头可达。
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
-        "Accept": "*/*",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://www.bilimanga.net/",
-        "Accept-Language": "zh"
+        "Upgrade-Insecure-Requests": "1"
     }
 
     readerHeaders() {
-        return Object.assign({}, this.headers);
+        // 阅读页要求移动端 UA：桌面 UA 会被站点判为"不支持电脑端阅读"。
+        return Object.assign({}, this.headers, {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
+        });
     }
 
     verificationError() { return new Error("哔哩漫画访问受限（HTTP 403），请在书源管理中打开该源的「验证」后重试"); }
@@ -62,7 +68,7 @@ class BiliManga extends ComicSource {
                 Network.get(`${this.baseUrl}/search.html?search_guard=js`, this.headers)
             ]);
             if (cssRes.status === 403 || jsRes.status === 403) throw this.verificationError();
-            if (cssRes.status !== 200 || jsRes.status !== 200) throw "搜索凭证请求失败，请稍后重试";
+            if (cssRes.status !== 200 || jsRes.status !== 200) throw new Error("搜索凭证请求失败，请稍后重试");
             if (typeof jsRes.body !== "string" || !jsRes.body.trim()) throw new Error("哔哩搜索凭证返回空响应，请重试");
             const m = jsRes.body.match(/cookie="(.*?)";/);
             if (m) {
@@ -85,25 +91,27 @@ class BiliManga extends ComicSource {
         if (redeemed.status === 403) throw this.verificationError();
         const after = (await Network.getCookies(this.baseUrl) || []).map(c => c.name);
         if (redeemed.status !== 200 || !this.hasCookie(after, "jieqiSearchTicket")) {
-            throw "獲取搜索憑證失敗，請稍後重試";
+            throw new Error("獲取搜索憑證失敗，請稍後重試");
         }
     }
 
     search = {
         load: async (keyword, options, page) => {
-            for (let attempt = 0; attempt < 2; attempt++) {
-                await this.ensureSearchTicket();
-                const cookie = await this.cookieHeader();
-                const res = await Network.get(
-                    `${this.baseUrl}/search/${encodeURIComponent(keyword)}_${page}.html`,
-                    Object.assign({}, this.headers, cookie ? { Cookie: cookie } : {})
-                );
-                if (res.status === 403 && attempt === 0) { this.searchGuardsReadyAt = 0; continue; }
-                if (res.status === 403) throw "哔哩漫画访问受限（HTTP 403），请在书源管理中打开该源的「验证」后重试";
-                if (res.status !== 200) throw `搜索失败: ${res.status}`;
-                if (typeof res.body !== "string" || !res.body.length) throw "搜索响应为空，请稍后重试";
-                return this.parseSearch(res, page);
+            // 站点已于 2026 年把搜索改为图片验证码（/checkcode.php + search_challenge），
+            // 旧的 search_guard 三步换 ticket 流程已失效。直接请求搜索页：
+            // 命中验证码页时给出明确提示，不再因 redeem 失败而报"抓取失败"。
+            const cookie = await this.cookieHeader();
+            const res = await Network.get(
+                `${this.baseUrl}/search/${encodeURIComponent(keyword)}_${page}.html`,
+                Object.assign({}, this.headers, cookie ? { Cookie: cookie } : {})
+            );
+            if (res.status === 403) throw new Error("嗶哩漫畫搜索受限（HTTP 403），请在书源管理中对该源打开网站验证后重试");
+            if (res.status !== 200) throw new Error("搜索失败: " + res.status);
+            if (typeof res.body !== "string" || !res.body.length) throw new Error("搜索响应为空，请稍后重试");
+            if (/搜尋驗證|search_challenge|checkcode\.php/.test(res.body)) {
+                throw new Error("嗶哩漫畫搜索需要图片验证码（站点已启用人机验证），暂时无法自动搜索，请用其它漫画源");
             }
+            return this.parseSearch(res, page);
         }
     }
 
@@ -159,11 +167,11 @@ class BiliManga extends ComicSource {
                 const target = (res.url || "").match(/\/detail\/(\d+)\.html(?:[?#]|$)/);
                 const coverId = ((cover && cover.attributes.src) || "").match(/\/(\d+)\/\1s\./);
                 const id = target ? target[1] : (coverId ? coverId[1] : "");
-                if (!id || !title) throw "搜索详情未返回有效漫画标识，请重试";
+                if (!id || !title) throw new Error("搜索详情未返回有效漫画标识，请重试");
                 return { comics: [new Comic({ id: this.baseUrl + "/detail/" + id + ".html",
                     title: title.text.trim(), cover: cover ? this.absUrl(cover.attributes.src || "") : "", tags: [] })], maxPage: 1 };
             }
-            if (res.url && !/\/search(?:\/|\.html)/.test(res.url)) throw "站点未返回搜索结果，请稍后重试";
+            if (res.url && !/\/search(?:\/|\.html)/.test(res.url)) throw new Error("站点未返回搜索结果，请稍后重试");
             const comics = [];
             for (const el of doc.querySelectorAll('a.book-layout[href*="/detail/"]')) {
                 const img = el.querySelector("img");
@@ -267,7 +275,7 @@ class BiliManga extends ComicSource {
                     }
                 }
             }
-            if (!Object.keys(chapters).length) throw "源站未提供可读取的章节目录";
+            if (!Object.keys(chapters).length) throw new Error("源站未提供可读取的章节目录");
             return new ComicDetails({
                 title: titleEl ? titleEl.text.trim() : "",
                 cover: coverEl ? this.absUrl(coverEl.attributes["src"] || "") : "",
@@ -298,7 +306,7 @@ class BiliManga extends ComicSource {
                 if (!path) {
                     // 变量缺失时按章节 id ±1 预测（上游 predictUrlByContext 同款）
                     const cm = base.match(/\/read\/(\d+)\/(\d+)\.html/);
-                    if (!cm) throw "章节鏈接错误";
+                    if (!cm) throw new Error("章节鏈接错误");
                     const step = fragMatch[1] === "prev" ? -1 : 1;
                     path = `/read/${cm[1]}/${parseInt(cm[2]) + step}.html`;
                 }
@@ -316,8 +324,8 @@ class BiliManga extends ComicSource {
             }
             if (!images.length) {
                 const tip = doc.querySelector("#acontentz");
-                if (tip && tip.text.indexOf("電腦端") >= 0) throw "该站点不支持电脑端 UA 阅读";
-                throw "未取到章节图片（可能已下架或需要权限）";
+                if (tip && tip.text.indexOf("電腦端") >= 0) throw new Error("该站点不支持电脑端 UA 阅读");
+                throw new Error("未取到章节图片（可能已下架或需要权限）");
             }
             return { images };
         },

@@ -46,22 +46,23 @@ class BiliNovel extends ComicSource {
     search = { load: async (keyword) => {
         const kw = String(keyword || "").trim();
         if (!kw) return { comics: [], maxPage: 1 };
-        // lnovel 没有独立 search 端点：用榜单合集做关键词过滤（覆盖热门书），
-        // 再尝试官方站搜索页兜底。这里用多个榜单聚合后本地匹配。
+        // lnovel 没有独立 search 端点：用榜单合集做关键词过滤（覆盖热门书）。
+        // 并发拉取所有榜单，避免串行累加导致搜索超时/极慢（原实现 5 个榜单串行，
+        // 单个 1~4s 累加超过 10s，偶发卡住直接 40s 超时）。
         const buckets = ["weekvisit", "monthvisit", "weekrecommend", "monthrecommend", "new"];
+        const results = await Promise.all(buckets.map(async (b) => {
+            try { return ((await this.getJson("/api/bili/top/" + b))?.data?.items) || []; }
+            catch { return []; } // 单个榜单失败不影响其它
+        }));
         const seen = new Set();
         const out = [];
-        for (const b of buckets) {
-            try {
-                const j = await this.getJson("/api/bili/top/" + b);
-                const items = (j?.data?.items) || [];
-                for (const it of items) {
-                    const book = this.bookOf(it);
-                    if (seen.has(book.id)) continue;
-                    seen.add(book.id);
-                    if (book.title.toLowerCase().includes(kw.toLowerCase()) || book.author.toLowerCase().includes(kw.toLowerCase())) out.push(book);
-                }
-            } catch { /* 单个榜单失败不影响其它 */ }
+        for (const items of results) {
+            for (const it of items) {
+                const book = this.bookOf(it);
+                if (seen.has(book.id)) continue;
+                seen.add(book.id);
+                if (book.title.toLowerCase().includes(kw.toLowerCase()) || book.author.toLowerCase().includes(kw.toLowerCase())) out.push(book);
+            }
         }
         return { comics: out, maxPage: 1 };
     } };
