@@ -919,6 +919,8 @@ export interface OnlineShelfItem {
   kind: 'comic' | 'novel';
   chaptersTotal: number;
   progress: { chapterUrl: string; chapterTitle: string; pageIndex: number; updatedAt: number } | null;
+  /** 是否主动收藏：true=书架收藏，false=仅在线阅读产生的历史记录 */
+  favorite: boolean;
   addedAt: number;
 }
 
@@ -932,9 +934,14 @@ export const online = {
     author?: string;
     kind?: 'comic' | 'novel';
     chaptersTotal?: number;
+    favorite?: boolean;
   }) =>
     request<{ ok: boolean; item: OnlineShelfItem }>('/api/online/shelf', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
+  setFavorite: (id: string, favorite: boolean) =>
+    request<{ ok: boolean; item: OnlineShelfItem }>(`/api/online/shelf/${id}/favorite`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ favorite }),
     }),
   removeFromShelf: (id: string) =>
     request<{ ok: boolean }>(`/api/online/shelf/${id}`, { method: 'DELETE' }),

@@ -188,6 +188,8 @@ export function registerOnline(app, helpers) {
     const db = loadDb();
     const items = shelfOf(db, req.user.id).map((it) => ({
       ...it,
+      // 老数据没有 favorite 字段：默认视为收藏，平滑迁移（新逻辑会逐步写入真实值）
+      favorite: it.favorite !== false,
       coverProxy: it.cover ? `/api/online/img?sid=${encodeURIComponent(it.sourceKey)}&u=${encodeURIComponent(it.cover)}` : '',
     }));
     res.json({ items });
@@ -216,6 +218,8 @@ export function registerOnline(app, helpers) {
         kind: b.kind === 'novel' || source.mediaType === 'novel' ? 'novel' : 'comic',
         chaptersTotal: Number(b.chaptersTotal) || 0,
         progress: null,
+        // 收藏标记：默认 true（主动收藏）；仅记录阅读历史而自动加入时前端传 false
+        favorite: b.favorite !== false,
         addedAt: now(),
       };
       shelf.unshift(item);
@@ -225,8 +229,20 @@ export function registerOnline(app, helpers) {
       item.cover = item.cover || b.cover || '';
       item.author = item.author || b.author || '';
       if (b.chaptersTotal) item.chaptersTotal = Number(b.chaptersTotal) || item.chaptersTotal;
+      // 显式传入时更新收藏标记（例如从阅读历史再次收藏）
+      if (typeof b.favorite === 'boolean') item.favorite = b.favorite;
       saveDbSoon();
     }
+    res.json({ ok: true, item });
+  });
+
+  // 切换收藏标记（不删除条目，便于历史与收藏互相保留）
+  router.put('/shelf/:id/favorite', requireUser, (req, res) => {
+    const db = loadDb();
+    const item = shelfOf(db, req.user.id).find((x) => x.id === req.params.id);
+    if (!item) return res.status(404).json({ error: '书架里没有这条' });
+    item.favorite = !!(req.body && req.body.favorite);
+    saveDbSoon();
     res.json({ ok: true, item });
   });
 

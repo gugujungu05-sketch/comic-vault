@@ -58,6 +58,8 @@ export default function SourcesPage() {
   const [importProgressLabel, setImportProgressLabel] = useState('');
   const [importedComicId, setImportedComicId] = useState('');
   const [shelf, setShelf] = useState<OnlineShelfItem[]>([]);
+  /** 书架视图：收藏（主动加入） / 历史（在线阅读自动记录），彻底分开显示 */
+  const [shelfView, setShelfView] = useState<'favorite' | 'history'>('favorite');
   const [bookmarked, setBookmarked] = useState(false);
   const [novelImporting, setNovelImporting] = useState(false);
   const [showManage, setShowManage] = useState(false);
@@ -77,6 +79,14 @@ export default function SourcesPage() {
   // 详情可能来自「全部」聚合结果，必须用结果自带的来源，而不是当前选中的虚拟源
   const detailSourceId = detail?.sourceId || activeId;
   const detailSourceName = detail?.sourceName || active?.name || '';
+
+  // 收藏 / 阅读历史分开：收藏=主动加入(favorite!==false)；历史=有阅读进度(progress)
+  const favShelf = useMemo(() => shelf.filter((x) => x.favorite !== false), [shelf]);
+  const historyShelf = useMemo(
+    () => shelf.filter((x) => !!x.progress).sort((a, b) => (b.progress!.updatedAt || 0) - (a.progress!.updatedAt || 0)),
+    [shelf],
+  );
+  const shownShelf = shelfView === 'favorite' ? favShelf : historyShelf;
 
   async function load() {
     try {
@@ -214,7 +224,8 @@ export default function SourcesPage() {
       });
       const s = await onlineApi.shelf().catch(() => ({ items: [] as OnlineShelfItem[] }));
       const allShelf = onlineShelfLocal.merge(s.items || []);
-      setBookmarked(!!allShelf.find((x) => x.key === `${sid.replace(/^js:/, '')}:${r.bookId || item.link}`));
+      // 只有主动收藏才算「已在书架」；仅阅读历史的不算，避免收藏按钮状态错乱
+      setBookmarked(!!allShelf.find((x) => x.key === `${sid.replace(/^js:/, '')}:${r.bookId || item.link}` && x.favorite !== false));
     } catch (err) {
       errorToast(err, '读取章节失败');
     } finally {
@@ -233,7 +244,8 @@ export default function SourcesPage() {
       });
       setActiveId(sourceId);
       setTab(item.kind);
-      setBookmarked(true);
+      // 从历史视图打开的书不一定被收藏，按实际标记显示收藏按钮状态
+      setBookmarked(item.favorite !== false);
       setKw('');
       setResults([]);
       if (item.progress && r.chapters?.length) {
@@ -262,17 +274,25 @@ export default function SourcesPage() {
     };
     try {
       if (bookmarked) {
+        // 取消收藏：只翻 favorite 标记，不删条目——若这本书有阅读历史要保留在「历史」里
         const it = shelf.find((x) => x.key === key);
-        if (it && !sessionUser && it.id.startsWith('local_')) onlineShelfLocal.remove(it.id);
-        else if (it) await onlineApi.removeFromShelf(it.id);
+        if (it) {
+          if (!sessionUser && it.id.startsWith('local_')) onlineShelfLocal.setFavorite(it.id, false);
+          else await onlineApi.setFavorite(it.id, false);
+        }
         setBookmarked(false);
-        toast('已从书架移除');
+        toast('已取消收藏（阅读记录仍保留在历史）');
       } else {
-        if (sessionUser) {
-          await onlineApi.addToShelf({ sourceId: sid, ...addInput });
+        const it = shelf.find((x) => x.key === key);
+        if (it) {
+          // 已在历史里（自动阅读加入过）：直接翻为收藏，不重复建条目
+          if (!sessionUser && it.id.startsWith('local_')) onlineShelfLocal.setFavorite(it.id, true);
+          else await onlineApi.setFavorite(it.id, true);
+        } else if (sessionUser) {
+          await onlineApi.addToShelf({ sourceId: sid, ...addInput, favorite: true });
         } else {
-          // 未登录：写本地兜底书架，收藏与阅读历史照样记录
-          onlineShelfLocal.add(addInput);
+          // 未登录：写本地兜底书架
+          onlineShelfLocal.add({ ...addInput, favorite: true });
         }
         setBookmarked(true);
         toast('已收藏到书架');
@@ -281,7 +301,9 @@ export default function SourcesPage() {
     } catch (err) {
       // 云端写入失败（如登录态失效）时降级为本地，避免收藏丢失
       if (!bookmarked) {
-        onlineShelfLocal.add(addInput);
+        const it = shelf.find((x) => x.key === key);
+        if (it && it.id.startsWith('local_')) onlineShelfLocal.setFavorite(it.id, true);
+        else onlineShelfLocal.add({ ...addInput, favorite: true });
         setBookmarked(true);
         toast('已收藏到书架（本地）');
         refreshShelf();
@@ -408,14 +430,15 @@ export default function SourcesPage() {
         sid = existing.id;
       } else if (sessionUser) {
         try {
-          const r = await onlineApi.addToShelf({ sourceId: detailSourceId, ...addInput });
+          // 仅记录阅读历史，不占用收藏：favorite=false
+          const r = await onlineApi.addToShelf({ sourceId: detailSourceId, ...addInput, favorite: false });
           sid = r?.item?.id || '';
           refreshShelf();
         } catch { /* 云端失败降级为本地 */ }
       }
-      // 未登录或云端失败：写入本地兜底书架，保证进度能记录
+      // 未登录或云端失败：写入本地兜底书架，保证进度能记录（同样标记为历史）
       if (!sid) {
-        sid = onlineShelfLocal.add(addInput).id;
+        sid = onlineShelfLocal.add({ ...addInput, favorite: false }).id;
         refreshShelf();
       }
     }
@@ -463,52 +486,80 @@ export default function SourcesPage() {
         </div>
       </div>
 
-      {/* 我的在线书架 */}
+      {/* 我的在线书架：收藏 / 阅读历史 分开 */}
       {!!shelf.length && !onlineReader && (
         <section className="panel" style={{ marginBottom: 16 }}>
-          <div className="row" style={{ gap: 10, marginBottom: 12 }}>
+          <div className="row" style={{ gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0, fontSize: 16 }}>我的在线书架</h2>
-            <span className="muted">{shelf.length} 本 · 在线阅读，进度自动保存</span>
+            <div className="row" style={{ gap: 6 }}>
+              <button className={`chip ${shelfView === 'favorite' ? 'active' : ''}`} onClick={() => setShelfView('favorite')}>
+                <Icon name="star" size={12} /> 我的收藏 <span className="chip-count">{favShelf.length}</span>
+              </button>
+              <button className={`chip ${shelfView === 'history' ? 'active' : ''}`} onClick={() => setShelfView('history')}>
+                <Icon name="clock" size={12} /> 阅读历史 <span className="chip-count">{historyShelf.length}</span>
+              </button>
+            </div>
+            <span className="muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
+              {shelfView === 'favorite' ? '主动收藏，长期保留' : '读过自动记录，进度随时续读'}
+            </span>
           </div>
-          <div className="comic-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
-            {shelf.map((it) => (
-              <div key={it.id} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openShelfItem(it)}>
-                <div className="cover">
-                  {it.coverProxy ? (
-                    <img src={it.coverProxy} alt={it.title} loading="lazy" />
-                  ) : (
-                    <div className="cover-empty"><Icon name="book" size={26} /></div>
-                  )}
-                  <span className="wide-tag" style={{ position: 'absolute', top: 6, left: 6 }}>
-                    {it.kind === 'novel' ? '小说' : '漫画'}
-                  </span>
-                </div>
-                <div className="card-body">
-                  <div className="card-title" title={it.title}>{it.title}</div>
-                  <div className="muted" style={{ fontSize: 11 }}>
-                    {it.progress ? (
-                      <span className="shelf-continue" title="点击继续阅读">
-                        <Icon name="play" size={11} /> 继续阅读 · {it.progress.chapterTitle || `第 ${it.progress.pageIndex + 1} 页`}
-                      </span>
-                    ) : (`开始阅读 · ${it.sourceName}`)}
+          {shownShelf.length ? (
+            <div className="comic-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
+              {shownShelf.map((it) => (
+                <div key={it.id} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openShelfItem(it)}>
+                  <div className="cover">
+                    {it.coverProxy ? (
+                      <img src={it.coverProxy} alt={it.title} loading="lazy" />
+                    ) : (
+                      <div className="cover-empty"><Icon name="book" size={26} /></div>
+                    )}
+                    <span className="wide-tag" style={{ position: 'absolute', top: 6, left: 6 }}>
+                      {it.kind === 'novel' ? '小说' : '漫画'}
+                    </span>
                   </div>
+                  <div className="card-body">
+                    <div className="card-title" title={it.title}>{it.title}</div>
+                    <div className="muted" style={{ fontSize: 11 }}>
+                      {it.progress ? (
+                        <span className="shelf-continue" title="点击继续阅读">
+                          <Icon name="play" size={11} /> 继续阅读 · {it.progress.chapterTitle || `第 ${it.progress.pageIndex + 1} 页`}
+                        </span>
+                      ) : (`开始阅读 · ${it.sourceName}`)}
+                    </div>
+                  </div>
+                  <button
+                    className="btn sm ghost"
+                    style={{ position: 'absolute', top: 6, right: 6, opacity: 0.85 }}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      try {
+                        const isLocal = it.id.startsWith('local_');
+                        if (shelfView === 'favorite') {
+                          // 收藏视图：取消收藏，但保留阅读历史条目
+                          if (isLocal) onlineShelfLocal.setFavorite(it.id, false);
+                          else await onlineApi.setFavorite(it.id, false);
+                          toast('已取消收藏，阅读记录保留在历史');
+                        } else {
+                          // 历史视图：删除这条阅读记录（若同时是收藏会一并移除）
+                          if (isLocal) onlineShelfLocal.remove(it.id);
+                          else await onlineApi.removeFromShelf(it.id);
+                          toast('已删除阅读记录');
+                        }
+                        refreshShelf();
+                      } catch (err) { errorToast(err, '移除失败'); }
+                    }}
+                    title={shelfView === 'favorite' ? '取消收藏（保留阅读历史）' : '删除这条阅读记录'}
+                  >×</button>
                 </div>
-                <button
-                  className="btn sm ghost"
-                  style={{ position: 'absolute', top: 6, right: 6, opacity: 0.85 }}
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    try {
-                      if (it.id.startsWith('local_')) onlineShelfLocal.remove(it.id);
-                      else await onlineApi.removeFromShelf(it.id);
-                      refreshShelf();
-                    } catch (err) { errorToast(err, '移除失败'); }
-                  }}
-                  title="从书架移除"
-                >×</button>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+              {shelfView === 'favorite'
+                ? '还没有收藏。在搜索结果详情里点「收藏到书架」即可添加。'
+                : '还没有阅读记录。在线看过书后，这里会自动按最近阅读排序。'}
+            </p>
+          )}
         </section>
       )}
 
@@ -898,6 +949,7 @@ function OnlineReader({
             bookId: state.bookId,
             title: state.title,
             kind: 'comic',
+            favorite: false,
           });
           onlineShelfLocal.progress(added.id, payload);
         }

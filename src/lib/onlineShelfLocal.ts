@@ -18,7 +18,9 @@ function read(): OnlineShelfItem[] {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return [];
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
+    if (!Array.isArray(arr)) return [];
+    // 老数据没有 favorite 字段：默认视为收藏，平滑迁移
+    return arr.map((x) => ({ ...x, favorite: x.favorite !== false }));
   } catch { return []; }
 }
 
@@ -35,6 +37,8 @@ export interface LocalShelfAddInput {
   author?: string;
   kind?: 'comic' | 'novel';
   chaptersTotal?: number;
+  /** true=主动收藏（默认），false=仅在线阅读产生的历史记录 */
+  favorite?: boolean;
 }
 
 export const onlineShelfLocal = {
@@ -64,6 +68,7 @@ export const onlineShelfLocal = {
         kind: input.kind === 'novel' ? 'novel' : 'comic',
         chaptersTotal: Number(input.chaptersTotal) || 0,
         progress: null,
+        favorite: input.favorite !== false,
         addedAt: Date.now(),
       } as OnlineShelfItem;
       items.unshift(item);
@@ -72,9 +77,20 @@ export const onlineShelfLocal = {
       item.cover = item.cover || input.cover || '';
       item.author = item.author || input.author || '';
       if (input.chaptersTotal) item.chaptersTotal = Number(input.chaptersTotal) || item.chaptersTotal;
+      // 显式传入时更新收藏标记（例如从阅读历史再次收藏）
+      if (typeof input.favorite === 'boolean') item.favorite = input.favorite;
     }
     write(items);
     return item;
+  },
+
+  /** 切换收藏标记（不删除条目，便于历史与收藏互相保留） */
+  setFavorite(id: string, favorite: boolean) {
+    const items = read();
+    const item = items.find((x) => x.id === id);
+    if (!item) return;
+    item.favorite = !!favorite;
+    write(items);
   },
 
   remove(id: string) {

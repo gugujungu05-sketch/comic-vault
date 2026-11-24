@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "comment": "唯一版本源。五段式 主.次.修.构建.修订；小改动递增第 4 段（第 5 段归零），热修只递增第 5 段。改完运行 npm run version:sync 同步全仓库。",
-  "web": "2.7.0.38.0",
-  "desktop": "3.4.0.34.0",
-  "android": "3.4.0.34.0",
+  "web": "2.7.0.39.0",
+  "desktop": "3.4.0.35.0",
+  "android": "3.4.0.35.0",
   "buildVersion": "3.4.0",
-  "androidVersionCode": 48,
-  "build": 48,
-  "releasedAt": 1795530227492,
+  "androidVersionCode": 49,
+  "build": 49,
+  "releasedAt": 1795531036988,
   "driveZipUrl": "https://github.com/gugujungu05-sketch/comic-vault/releases/latest",
   "versionRule": {
     "major": "第 1 段：架构 / 数据格式不兼容的重大改版",
@@ -18,6 +18,7 @@
   },
   "notes": {
     "web": [
+      "在线来源书架拆分「我的收藏 / 阅读历史」两个视图：主动收藏与在线阅读进度不再混在一起，取消收藏保留历史，历史按最近阅读排序",
       "导入任务栏改为浏览器式下载导航键：顶栏常驻图标+进度角标，点击展开任务面板，不再悬浮遮挡",
       "修复 MangaDex 封面加载（封面 URL 改用 manga id + 绕过 POWBlock）；重做导入任务栏 UI（封面/来源/百分比/状态/失败统计）",
       "热修：修复在线来源章节乱序（框架层按话数安全升序，如 Odaroku 第1话置顶+其余倒序问题）",

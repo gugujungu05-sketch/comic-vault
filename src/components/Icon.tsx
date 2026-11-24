@@ -40,6 +40,7 @@ type IconName =
   | 'logout'
   | 'user'
   | 'check-square'
+  | 'clock'
   | 'x';
 
 const paths: Record<IconName, string> = {
@@ -83,6 +84,7 @@ const paths: Record<IconName, string> = {
   logout: 'M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M14 8l4 4-4 4M18 12H9',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 8v-1a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v1',
   'check-square': 'M4 4h16v16H4V4Zm5 10 3 3 5-6',
+  clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4v5l3.5 2',
   x: 'M6 6l12 12M18 6 6 18',
 };
 
