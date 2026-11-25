@@ -20,6 +20,12 @@ class Woimh extends ComicSource {
         "Referer": "https://www.woimh.com/"
     };
 
+    // 站点对未登录用户限制大部分章节（返回登录页）。无公开账号密码 API，
+    // 走「打开官网登录 → 粘贴 Cookie」；Cookie domain 用主域，自动带到章节请求。
+    account = {
+        registerWebsite: "https://www.woimh.com/login",
+    };
+
     abs(p, origin) {
         p = String(p || "").trim();
         if (/^https?:\/\//i.test(p)) return p.replace(/^http:\/\//i, "https://");
@@ -270,6 +276,11 @@ class Woimh extends ComicSource {
             if (/^\d+-\d+\/?$/i.test(path)) path = "/chapter/" + path;
             const url = this.abs(path, this.baseUrl);
             const html = await this.get(url);
+            // 站点对未登录用户限制大部分章节：请求返回的是登录页（含「用户登录」/验证码），
+            // 而非正文。明确提示去「站点账号」登录，避免误报「已下架/VIP」。
+            if (/用户登录|请尽快绑定您的手机号|<img[^>]+src=["']\/captcha/.test(html) && !/petatt\.cn\/book\/\d+\/\d+\//.test(html)) {
+                throw new Error("这一话需要我爱漫画网账号：请在「站点账号」里打开官网登录，再粘贴登录后的 Cookie 保存；或到官网阅读");
+            }
             const doc = new HtmlDocument(html);
             try {
                 const imgs = [], seen = new Set();
@@ -288,7 +299,7 @@ class Woimh extends ComicSource {
                     imgs.push(u);
                 }
                 if (!imgs.length) {
-                    throw new Error("这一话没有正文图片，可能已下架或需要 VIP；请换一部作品或到官网确认");
+                    throw new Error("这一话没有正文图片，可能已下架或需要登录；请在「站点账号」登录后再试，或换一部作品");
                 }
                 return imgs;
             } finally { doc.dispose(); }
