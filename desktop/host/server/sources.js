@@ -26,7 +26,8 @@ import { requireUser } from './social.js';
 import {
   loadJsSources, allJsSources, getJsSource,
   jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode,
-  jsDiscoverTabs, jsDiscoverLoad, jsSetSourceCookies, jsAccountLogin, jsRegisterWebsite,
+  jsDiscoverTabs, jsDiscoverLoad, jsLotteryGenreEntries, jsLotteryLoad,
+  jsSetSourceCookies, jsAccountLogin, jsRegisterWebsite,
   jsSourceLoginStatus, jsClearSourceLogin,
 } from './js-sources.js';
 
@@ -42,6 +43,55 @@ const importProgress = new Map();
 export function getImportProgress(userId) { return importProgress.get(String(userId)) || null; }
 function setImportProgress(userId, v) { importProgress.set(String(userId), { ...v, ts: now() }); }
 function clearImportProgress(userId) { importProgress.delete(String(userId)); }
+
+/* ------------------------------------------------------------------ *
+ *  抽奖机：跨所有来源按「类型 / 题材标签」抽取书籍推荐。
+ *  - 题材词典把用户可见的题材名映射到各源 category 名称的别名。
+ *  - 书池缓存：同一题材组合 30 分钟内复用候选集，抽奖只做本地洗牌，秒开。
+ *  - 跨源去重：按归一化书名去重，同一本书只保留一个来源，避免同书重复出现。
+ * ------------------------------------------------------------------ */
+const LOTTERY_GENRES = [
+  { id: 'all', label: '随便来点', aliases: [] },
+  { id: 'hot', label: '热门', aliases: ['热门', '排行', '榜', 'hot', 'popular', '推荐', '今日', '本周', '本月'] },
+  { id: 'action', label: '热血战斗', aliases: ['热血', '熱血', '战斗', '戰鬥', '动作', '動作', 'action', 'shounen', '少年', '冒險', '冒险'] },
+  { id: 'romance', label: '恋爱爱情', aliases: ['恋爱', '戀愛', '爱情', '愛情', 'romance', 'love', '纯爱', '純愛', '耽美', '百合'] },
+  { id: 'fantasy', label: '奇幻魔幻', aliases: ['奇幻', '魔幻', 'fantasy', '魔法', '异世界', '異世界', 'fantasyadventure', '奇异', '奇異'] },
+  { id: 'adventure', label: '冒险', aliases: ['冒险', '冒險', 'adventure'] },
+  { id: 'mystery', label: '悬疑推理', aliases: ['悬疑', '懸疑', '推理', 'mystery', '惊悚', '驚悚', '犯罪', '侦探', '偵探', 'suspense'] },
+  { id: 'scifi', label: '科幻未来', aliases: ['科幻', 'sci-fi', 'scifi', 'sf', '未来', '未來'] },
+  { id: 'school', label: '校园青春', aliases: ['校园', '校園', 'school', '青春', '学生'] },
+  { id: 'city', label: '都市生活', aliases: ['都市', '职场', '職場', 'workplace', '生活', '日常', 'slice of life'] },
+  { id: 'comedy', label: '搞笑日常', aliases: ['搞笑', '喜劇', '喜剧', 'comedy', '轻松'] },
+  { id: 'history', label: '历史武侠', aliases: ['历史', '歷史', '武侠', '武俠', '古风', '古風', 'historical'] },
+  { id: 'completed', label: '完结', aliases: ['完结', '完結', '已完结', 'finish', 'completed'] },
+];
+const LOTTERY_POOL_TTL = 30 * 60 * 1000;
+const lotteryPoolCache = new Map(); // key = `${media}|${genreIds.sort().join(',')}` → { at, items }
+
+/** 中文书名归一化：简繁常见字折叠 + 去标点空格，用于跨源去重 */
+const T2S_MAP = {
+  '熱':'热','戰':'战','鬥':'斗','戀':'恋','愛':'爱','無':'无','龍':'龙','東':'东','萬':'万','與':'与',
+  '風':'风','雲':'云','電':'电','書':'书','畫':'画','國':'国','學':'学','實':'实','體':'体','動':'动',
+  '靜':'静','類':'类','島':'岛','馬':'马','鳥':'鸟','魚':'鱼','貝':'贝','車':'车','軌':'轨','軍':'军',
+  '農':'农','醫':'医','長':'长','門':'门','問':'问','間':'间','關':'关','會':'会','說':'说','話':'话',
+  '記':'记','論':'论','讀':'读','變':'变','還':'还','過':'过','進':'进','達':'达','遠':'远','適':'适',
+  '選':'选','開':'开','閉':'闭','橫':'横','歡':'欢','樂':'乐','驚':'惊','懸':'悬','疑':'疑','麗':'丽',
+  '優':'优','復':'复','殺':'杀','靈':'灵','異':'异','夢':'梦','亞':'亚','傳':'传','傷':'伤','倫':'伦',
+};
+function normalizeBookTitle(t) {
+  return String(t || '')
+    .replace(/[（(].*?[）)]/g, '')
+    .replace(/[\s\p{P}\p{S}]/gu, '')
+    .split('').map((c) => T2S_MAP[c] || c).join('')
+    .toLowerCase();
+}
+
+/** 判断某个源的分类入口是否命中题材；未选题材(all)时返回 null 表示走发现页 */
+function matchGenreEntry(entries, aliases) {
+  if (!aliases.length) return null;
+  const hit = entries.find((e) => aliases.some((a) => e.name.toLowerCase().includes(a.toLowerCase())));
+  return hit || null;
+}
 
 /** 启动时加载内置 JS 书源（Ciallo-Reader 移植脚本） */
 loadJsSources();
@@ -523,6 +573,88 @@ export function registerSources(app) {
       hasRules: !!(s.rules && s.rules.search && s.rules.chapter),
     }));
     res.json({ sources: [...js, ...rules] });
+  });
+
+  // 抽奖机：题材 / 类型清单（前端渲染选择题材用）
+  router.get('/lottery/genres', (_req, res) => {
+    res.json({ genres: LOTTERY_GENRES.map((g) => ({ id: g.id, label: g.label })) });
+  });
+
+  // 抽奖机：从所有来源按题材抽取书籍，跨源按书名去重，返回多本推荐。
+  // query: media=comic|novel|all, genres=hot,action(逗号分隔), count=12, refresh=1
+  router.get('/lottery', async (req, res) => {
+    const media = ['comic', 'novel', 'all'].includes(req.query.media) ? req.query.media : 'all';
+    const count = Math.min(30, Math.max(1, parseInt(req.query.count, 10) || 12));
+    const wanted = String(req.query.genres || '')
+      .split(',').map((x) => x.trim()).filter(Boolean)
+      .filter((id) => LOTTERY_GENRES.some((g) => g.id === id));
+    // 「随便来点」或不选题材 → 不按题材过滤，走各源发现/热门
+    const genreIds = wanted.filter((id) => id !== 'all');
+    const aliases = genreIds.flatMap((id) => LOTTERY_GENRES.find((g) => g.id === id).aliases);
+    const refresh = String(req.query.refresh || '') === '1';
+
+    const poolKey = `${media}|${[...genreIds].sort().join(',')}`;
+    let pool = lotteryPoolCache.get(poolKey);
+    const poolWasCached = !refresh && !!pool && now() - pool.at <= LOTTERY_POOL_TTL;
+    if (!poolWasCached) {
+      const sources = allJsSources().filter((s) => media === 'all' || s.mediaType === media);
+      const picked = await Promise.all(sources.map(async (meta) => {
+        try {
+          const js = getJsSource(meta.id);
+          if (!js) return [];
+          const entries = await jsLotteryGenreEntries(js);
+          const eligible = entries.filter((e) => e.name !== '全部' && e.param);
+          let items = [];
+          if (aliases.length) {
+            // 有题材：命中该题材的分类入口 → 拉取候选；同一题材该源的多个命中入口都取，凑够候选
+            const hits = eligible.filter((e) => aliases.some((a) => e.name.toLowerCase().includes(a.toLowerCase())));
+            for (const e of hits.slice(0, 3)) {
+              try { items.push(...await jsLotteryLoad(js, e, 1)); } catch {}
+            }
+          }
+          if (!items.length) {
+            // 未选题材 / 题材在该源无分类入口 → 用发现页热门兜底
+            const tabs = jsDiscoverTabs(js);
+            const tabIdx = tabs.findIndex((t) => /热门|推荐|排行|最新|榜/.test(t.title));
+            const r = await jsDiscoverLoad(js, Math.max(0, tabIdx), 1);
+            items = r.items;
+          }
+          return items.map((it) => ({
+            ...it,
+            sourceId: meta.id,
+            sourceName: meta.name,
+            media: meta.mediaType,
+          })).filter((it) => it.title && it.link);
+        } catch { return []; }
+      }));
+
+      // 跨源去重：同一本书（归一化书名相同）只保留一条，优先保留有封面的
+      const seen = new Map();
+      for (const group of picked) {
+        for (const it of group) {
+          const k = normalizeBookTitle(it.title);
+          if (!k) continue;
+          const prev = seen.get(k);
+          if (!prev || (!prev.cover && it.cover)) seen.set(k, it);
+        }
+      }
+      pool = { at: now(), items: [...seen.values()] };
+      if (pool.items.length) lotteryPoolCache.set(poolKey, pool);
+    }
+
+    // 每次抽奖做一次 Fisher-Yates 洗牌，从书池里取 count 本；请求数大于池子则允许重复源但书不重复
+    const shuffled = pool.items.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const items = shuffled.slice(0, count).map((it) => ({
+      ...it,
+      coverProxy: it.cover
+        ? `/api/online/img?sid=${encodeURIComponent(String(it.sourceId).replace(/^js:/, ''))}&u=${encodeURIComponent(it.cover)}`
+        : '',
+    }));
+    res.json({ items, poolSize: pool.items.length, media, genres: genreIds, cached: poolWasCached });
   });
 
   // 新增 / 更新自定义书源

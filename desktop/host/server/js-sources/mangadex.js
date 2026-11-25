@@ -53,11 +53,14 @@ class MangaDex extends ComicSource {
         return t["zh"] || t["zh-Hans"] || t["en"] || t["ja"] || Object.values(t)[0] || "未命名";
     }
 
-    /** 从 relationships 找封面文件名 */
-    coverOf(rels) {
+    /** 从 relationships 找封面文件名。
+     *  注意：官方封面 URL 的路径是「漫画 id」而非 cover_art 关系 id，
+     *  用 c.id 会得到 404 —— 这是封面加载不出来的主因。 */
+    coverOf(rels, mangaId) {
         const c = (rels || []).find((x) => x.type === "cover_art");
         const file = c && c.attributes && c.attributes.fileName;
-        return file ? "https://uploads.mangadex.org/covers/" + c.id + "/" + file + ".512.jpg" : "";
+        const id = mangaId || (c && c.id) || "";
+        return file && id ? "https://uploads.mangadex.org/covers/" + id + "/" + file + ".512.jpg" : "";
     }
 
     card(m) {
@@ -69,7 +72,7 @@ class MangaDex extends ComicSource {
         return new Comic({
             id: m.id,
             title: this.titleOf(a),
-            cover: this.coverOf(m.relationships),
+            cover: this.coverOf(m.relationships, m.id),
             tags,
             status: st || null,
             description: (a.description && (a.description["zh"] || a.description["en"])) || "",
@@ -135,6 +138,9 @@ class MangaDex extends ComicSource {
             });
             for (const c of list) {
                 const at = c.attributes || {};
+                // feed 里混有已删除/外链章节（pages=0 或 externalUrl），点进去 at-home 会 404
+                // （表现为「加载不出来」）。只保留本站有图片的正经章节。
+                if (at.externalUrl || !(Number(at.pages) > 0)) continue;
                 const lang = at.translatedLanguage || "en";
                 const num = at.chapter != null ? String(at.chapter) : "";
                 const title = at.title || "";
@@ -147,7 +153,7 @@ class MangaDex extends ComicSource {
             return new ComicDetails({
                 id: id,
                 title: this.titleOf(a),
-                cover: this.coverOf(m.relationships),
+                cover: this.coverOf(m.relationships, id),
                 description: (a.description && (a.description["zh"] || a.description["en"])) || "",
                 tags: {},
                 chapters,
@@ -166,6 +172,15 @@ class MangaDex extends ComicSource {
             const imgs = files.map((f) => base + "/" + (saver ? "data-saver" : "data") + "/" + hash + "/" + f);
             return { images: imgs };
         },
-        onImageLoad: (url) => new ImageLoadingConfig({ url: url, headers: { "Referer": "https://mangadex.org/" } }),
+        // uploads.mangadex.org（封面）启用了 POWBlock：浏览器 UA 会被 302 到验证页，
+        // 必须用非浏览器 UA 才能直出图片；章节图 CDN（*.mangadex.network）不受影响，
+        // 保持默认浏览器 UA 即可。这里按域名区分，避免影响章节阅读。
+        onImageLoad: (url) => {
+            const u = String(url || "");
+            const coverHost = /uploads\.mangadex\.org/i.test(u);
+            const h = { "Referer": "https://mangadex.org/" };
+            if (coverHost) h["User-Agent"] = "ComicVault/1.0 (ComicVault MangaDex source)";
+            return new ImageLoadingConfig({ url: u, headers: h });
+        },
     };
 }

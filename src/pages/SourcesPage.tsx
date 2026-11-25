@@ -14,6 +14,8 @@ import type {
   SourceComicDetail,
   SourceInfo,
   SourceSearchItem,
+  LotteryItem,
+  LotteryGenre,
 } from '../lib/api';
 import type { Chapter, Page } from '../types';
 
@@ -72,6 +74,16 @@ export default function SourcesPage() {
   const [loginStatus, setLoginStatus] = useState<Record<string, { loggedIn: boolean; cookieCount: number; credentialCount: number }>>({});
   const activeLogin = activeId ? loginStatus[activeId] : undefined;
   const [onlineReader, setOnlineReader] = useState<OnlineReaderState | null>(null);
+  /* 抽奖机：按类型/题材从所有源抽取书籍，跨源去重 */
+  const [showLottery, setShowLottery] = useState(false);
+  const [lotteryGenres, setLotteryGenres] = useState<LotteryGenre[]>([]);
+  const [lotteryGenre, setLotteryGenre] = useState('all');
+  const [lotteryMedia, setLotteryMedia] = useState<'comic' | 'novel' | 'all'>('all');
+  const [lotteryCount, setLotteryCount] = useState(12);
+  const [lotteryItems, setLotteryItems] = useState<LotteryItem[]>([]);
+  const [lotteryPoolSize, setLotteryPoolSize] = useState(0);
+  const [lotteryRolling, setLotteryRolling] = useState(false);
+  const [lotteryMsg, setLotteryMsg] = useState('');
   /* 浏览器返回键：把「详情(1)/阅读器(2)」当作历史层压入 history.state，
      popstate 时按目标层卸载对应 UI，而不是让浏览器退回主页。 */
   const viewLayerRef = useRef(0);
@@ -224,6 +236,35 @@ export default function SourcesPage() {
       }
     } catch { setResults([]); setDiscoverTabs([]); }
     finally { setDiscovering(false); }
+  }
+
+  /** 打开抽奖机：题材清单只拉一次 */
+  async function openLottery() {
+    setShowLottery(true);
+    if (!lotteryGenres.length) {
+      try { setLotteryGenres((await sourcesApi.lotteryGenres()).genres || []); } catch {}
+    }
+  }
+
+  /** 抽一次：先显示滚动动画，再落结果（首抽会构建书池，稍慢；之后跨源书池命中缓存秒开） */
+  async function drawLottery(refresh = false) {
+    if (lotteryRolling) return;
+    setLotteryRolling(true);
+    setLotteryMsg('');
+    try {
+      const genres = lotteryGenre === 'all' ? ['all'] : [lotteryGenre];
+      const r = await sourcesApi.lottery({ media: lotteryMedia, genres, count: lotteryCount, refresh });
+      // 至少滚一帧动画，避免命中缓存时瞬间跳出、没有抽奖手感
+      await new Promise((res) => setTimeout(res, 620));
+      setLotteryItems(r.items || []);
+      setLotteryPoolSize(r.poolSize || 0);
+      if (!r.items?.length) setLotteryMsg('这个题材暂时没抽到书，换个题材或点「换一批」试试');
+    } catch (err) {
+      setLotteryMsg('抽奖失败，请稍后重试');
+      errorToast(err, '抽奖失败');
+    } finally {
+      setLotteryRolling(false);
+    }
   }
 
   async function doSearch(modeOverride?: 'fuzzy' | 'exact') {
@@ -529,7 +570,10 @@ export default function SourcesPage() {
             内置多来源：搜到即可收藏到书架在线看，也能一键加入自己的书库离读、编辑
           </p>
         </div>
-        <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
+        <div className="row" style={{ marginLeft: 'auto', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn primary" onClick={openLottery} title="从所有来源按题材抽取多本书推荐">
+            <Icon name="dice" size={16} /> 抽奖机
+          </button>
           <button className="btn" onClick={async () => {
             setAccountCookie(''); setAccountUser(''); setAccountPwd('');
             if (activeId) {
@@ -867,6 +911,99 @@ export default function SourcesPage() {
             return typeof next === 'function' ? next(prev) : { ...next };
           })}
         />
+      )}
+
+      {/* 抽奖机：跨所有来源按类型/题材抽书，自动去重 */}
+      {showLottery && (
+        <Modal title="书籍抽奖机" icon={<Icon name="dice" />} onClose={() => setShowLottery(false)} width={720}>
+          <p className="muted" style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.7 }}>
+            从<b>所有来源</b>按类型与题材抽取书籍，自动<b>跨源去重</b>（同一本书只出现一次）。抽到后点封面即可查看详情、在线观看或加入书库。
+          </p>
+
+          {/* 类型 */}
+          <div style={{ marginBottom: 12 }}>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>类型</div>
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              {([['all', '全部'], ['comic', '漫画'], ['novel', '小说']] as const).map(([k, label]) => (
+                <button key={k} className={`chip ${lotteryMedia === k ? 'active' : ''}`}
+                  onClick={() => { setLotteryMedia(k); setLotteryItems([]); }}>{label}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* 题材标签 */}
+          <div style={{ marginBottom: 12 }}>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>题材标签</div>
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              {(lotteryGenres.length ? lotteryGenres : [{ id: 'all', label: '随便来点' }]).map((g) => (
+                <button key={g.id} className={`chip ${lotteryGenre === g.id ? 'active' : ''}`}
+                  onClick={() => { setLotteryGenre(g.id); setLotteryItems([]); }}>{g.label}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* 数量 + 抽奖按钮 */}
+          <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
+            <span className="muted" style={{ fontSize: 12 }}>抽取数量</span>
+            <select className="input" style={{ width: 72 }} value={lotteryCount}
+              onChange={(e) => setLotteryCount(parseInt(e.target.value, 10) || 12)}>
+              {[6, 9, 12, 18, 24].map((n) => <option key={n} value={n}>{n} 本</option>)}
+            </select>
+            <button className="btn primary" disabled={lotteryRolling} onClick={() => drawLottery(false)}>
+              {lotteryRolling
+                ? <><Icon name="spinner" size={16} className="spin" /> 抽取中…</>
+                : <><Icon name="dice" size={16} /> {lotteryItems.length ? '再抽一次' : '开始抽奖'}</>}
+            </button>
+            {lotteryItems.length > 0 && (
+              <button className="btn sm" disabled={lotteryRolling} onClick={() => drawLottery(true)} title="重新从各源拉取候选">
+                <Icon name="refresh" size={14} /> 换一批书源
+              </button>
+            )}
+            {lotteryPoolSize > 0 && <span className="muted" style={{ fontSize: 11 }}>候选池 {lotteryPoolSize} 本</span>}
+          </div>
+
+          {/* 抽奖动画占位 */}
+          {lotteryRolling && (
+            <div className="lottery-rolling">
+              <div className="lottery-dice"><Icon name="dice" size={44} /></div>
+              <div className="muted" style={{ fontSize: 13 }}>正在从各个来源抽取并去重…</div>
+            </div>
+          )}
+
+          {lotteryMsg && !lotteryRolling && <p className="muted" style={{ fontSize: 13 }}>{lotteryMsg}</p>}
+
+          {/* 抽奖结果 */}
+          {!!lotteryItems.length && !lotteryRolling && (
+            <div className="comic-grid lottery-grid">
+              {lotteryItems.map((it, i) => (
+                <div key={`${it.sourceId}-${it.link}-${i}`} className="comic-card lottery-card"
+                  style={{ cursor: 'pointer', animationDelay: `${Math.min(i, 16) * 45}ms` }}
+                  onClick={() => {
+                    setShowLottery(false);
+                    openComic(it);
+                  }}>
+                  <div className="cover">
+                    {(it.coverProxy || it.cover)
+                      ? <img src={it.coverProxy || coverUrl(it.sourceId, it.cover)} alt={it.title} loading="lazy" />
+                      : <div className="cover-empty"><Icon name="book" size={28} /></div>}
+                    <span className="wide-tag" style={{ position: 'absolute', top: 6, left: 6 }}>
+                      {it.media === 'novel' ? '小说' : '漫画'}
+                    </span>
+                  </div>
+                  <div className="card-body">
+                    <div className="card-title" title={it.title}>{it.title}</div>
+                    <div className="muted" style={{ fontSize: 11 }}>{it.sourceName}</div>
+                    {!!it.tags?.length && (
+                      <div className="lottery-tags">
+                        {it.tags.slice(0, 2).map((t, ti) => <span key={ti} className="lottery-tag">{t}</span>)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
       )}
 
       {showAccount && (

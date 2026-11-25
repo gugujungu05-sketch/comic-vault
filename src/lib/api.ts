@@ -959,8 +959,37 @@ export const online = {
     }),
 };
 
+/** 抽奖机：跨所有来源抽取的推荐书籍（已跨源去重，可直接 openComic） */
+export interface LotteryItem extends SourceSearchItem {
+  sourceId: string;
+  sourceName: string;
+  media?: 'comic' | 'novel';
+  tags?: string[];
+  coverProxy?: string;
+}
+export interface LotteryGenre { id: string; label: string }
+
 export const sources = {
   list: () => request<{ sources: SourceInfo[] }>('/api/sources'),
+
+  /** 抽奖机题材清单 */
+  lotteryGenres: () => request<{ genres: LotteryGenre[] }>('/api/sources/lottery/genres'),
+
+  /** 抽奖机：按类型/题材从所有源抽取书籍（自动跨源按书名去重） */
+  lottery: (body: { media?: 'comic' | 'novel' | 'all'; genres?: string[]; count?: number; refresh?: boolean }) => {
+    const q = new URLSearchParams();
+    if (body.media) q.set('media', body.media);
+    if (body.genres?.length) q.set('genres', body.genres.join(','));
+    if (body.count) q.set('count', String(body.count));
+    if (body.refresh) q.set('refresh', '1');
+    return request<{
+      items: LotteryItem[];
+      poolSize: number;
+      media: string;
+      genres: string[];
+      cached: boolean;
+    }>(`/api/sources/lottery?${q.toString()}`);
+  },
 
   save: (body: {
     id?: string;

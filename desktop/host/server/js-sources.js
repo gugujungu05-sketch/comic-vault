@@ -504,15 +504,60 @@ export async function jsDiscoverLoad(source, tabIndex, page = 1) {
     }
   }
   return {
-    items: comics.map((c) => ({
-      title: c.title || '',
-      link: String(c.id || ''),
-      cover: c.cover || '',
-      author: c.author || '',
-      latestChapter: c.latestChapter || null,
-    })),
+    items: toComicItems(comics),
     maxPage: Math.max(1, Number(out?.maxPage) || page),
   };
+}
+
+/** Comic[] → 统一的书籍列表项（搜索 / 发现 / 抽奖共用） */
+function toComicItems(comics) {
+  return (Array.isArray(comics) ? comics : []).map((c) => ({
+    title: c.title || '',
+    link: String(c.id || ''),
+    cover: c.cover || '',
+    author: c.author || '',
+    latestChapter: c.latestChapter || null,
+    tags: Array.isArray(c.tags) ? c.tags.map(String).slice(0, 6)
+      : (c.tags && typeof c.tags === 'object' ? Object.values(c.tags).flat().map(String).slice(0, 6) : []),
+  }));
+}
+
+/** 抽奖机：枚举某个源支持的分类/题材入口。
+ *  fixed 分类直接取 categories/categoryParams；dynamic 分类调用 loader() 展开。
+ *  返回 [{ part, name, param }]，供后端按题材别名匹配。 */
+export async function jsLotteryGenreEntries(source) {
+  const cat = source.category;
+  const out = [];
+  if (!cat || !Array.isArray(cat.parts)) return out;
+  for (const part of cat.parts) {
+    if (!part) continue;
+    if (Array.isArray(part.categories)) {
+      const params = Array.isArray(part.categoryParams) ? part.categoryParams : [];
+      part.categories.forEach((name, i) => {
+        if (name) out.push({ part: part.name, name: String(name), param: String(params[i] ?? name) });
+      });
+    } else if (typeof part.loader === 'function') {
+      try {
+        const rows = await part.loader();
+        for (const r of (Array.isArray(rows) ? rows : [])) {
+          const label = r && (r.label || r.name || r.title);
+          const attrs = r && r.target && r.target.attributes;
+          const param = attrs && (attrs.param || attrs.category);
+          if (label) out.push({ part: part.name, name: String(label), param: String(param || label) });
+        }
+      } catch { /* 单个动态分类失败不影响该源其它题材 */ }
+    }
+  }
+  return out;
+}
+
+/** 抽奖机：按某个分类入口加载一页书（categoryComics.load(category, param, options, page)） */
+export async function jsLotteryLoad(source, entry, page = 1) {
+  const cc = source.categoryComics;
+  if (!cc || typeof cc.load !== 'function') throw new Error('该源不支持分类加载');
+  const out = await cc.load(entry.part, entry.param, [], Math.max(1, Number(page) || 1));
+  const comics = Array.isArray(out) ? out : (out && Array.isArray(out.comics) ? out.comics : []);
+  return toComicItems(comics);
 }
 
 /** 为某个 JS 源设置站点登录 Cookie（书源账号登录入口用）。

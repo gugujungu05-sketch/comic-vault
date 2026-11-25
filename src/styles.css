@@ -2657,3 +2657,65 @@ html, body, #root { overscroll-behavior-x: none; }
   .nv-title { max-width: 34vw; }
   .novel-bar { gap: 5px; padding: 6px 9px; }
 }
+
+/* ===== 书籍抽奖机 ===== */
+.lottery-rolling {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 220px;
+  border: 1px dashed var(--border, #444);
+  border-radius: 12px;
+  background: rgba(127, 127, 127, 0.04);
+}
+.lottery-dice {
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  border-radius: 20px;
+  color: var(--primary, #6c8cff);
+  background: rgba(108, 140, 255, 0.12);
+  animation: lottery-tumble 0.9s cubic-bezier(.4, 0, .2, 1) infinite;
+}
+@keyframes lottery-tumble {
+  0%   { transform: rotate(0deg) scale(1); }
+  50%  { transform: rotate(180deg) scale(1.08); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+.lottery-grid {
+  margin-top: 4px;
+}
+.lottery-card {
+  opacity: 0;
+  animation: lottery-reveal 0.42s ease-out forwards;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.lottery-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+@keyframes lottery-reveal {
+  from { opacity: 0; transform: translateY(14px) scale(0.94); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.lottery-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.lottery-tag {
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--muted, #aaa);
+  background: rgba(127, 127, 127, 0.14);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lottery-card { opacity: 1; animation: none; }
+  .lottery-dice { animation: none; }
+}

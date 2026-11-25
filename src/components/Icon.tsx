@@ -41,6 +41,8 @@ type IconName =
   | 'user'
   | 'check-square'
   | 'clock'
+  | 'dice'
+  | 'sparkle'
   | 'x';
 
 const paths: Record<IconName, string> = {
@@ -85,6 +87,8 @@ const paths: Record<IconName, string> = {
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 8v-1a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v1',
   'check-square': 'M4 4h16v16H4V4Zm5 10 3 3 5-6',
   clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4v5l3.5 2',
+  dice: 'M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm2.5 4h.01M16.5 8h.01M12 12h.01M8 16h.01M16 16h.01',
+  sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Zm7 11 .8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14Z',
   x: 'M6 6l12 12M18 6 6 18',
 };
 
