@@ -63,6 +63,45 @@ class Woimh extends ComicSource {
     }
     placeholderCover() { return "https://img.woimh.com/zwfm.jpg"; }
 
+    // 站点搜索结果里混入大量已下架的老书：这些书的章节页只返回「本站声明」占位图，
+    // 没有正文，用户点进去就是「看不了」。它们的可靠特征是：详情页/封面 CDN 上没有
+    // 本书封面（tu.petatt.cn/book/{id}/cover.jpg 返回 404），而有效书都有真实封面。
+    // 因此在列表结果上并发探测封面：200→替换为真实封面（顺带修复封面不显示），
+    // 404→判定为失效书剔除。探测结果缓存，避免重复请求。
+    _coverProbe = {};
+    coverCdn(id) { return "https://tu.petatt.cn/book/" + String(id).replace(/^mh/, "") + "/cover.jpg/0"; }
+    async coverAlive(id) {
+        const key = String(id).replace(/^mh/, "");
+        const hit = this._coverProbe[key];
+        if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.ok;
+        let ok = true; // 网络异常时保守判为有效，避免误杀
+        try {
+            const r = await Network.sendRequest("HEAD", this.coverCdn(key), this.headers);
+            if (r && (r.status === 404 || r.status === 403 || r.status >= 500)) ok = false;
+            else ok = true; // 200 / 其它状态都保留
+        } catch (e) { ok = true; }
+        this._coverProbe[key] = { at: Date.now(), ok };
+        return ok;
+    }
+    // 并发探测并过滤失效书、替换真实封面。只剔除明确 404/403/5xx 的下架书，
+    // 避免把站点抖动误判成下架。全被过滤时返回空，让前端显示「没有找到结果」，
+    // 好过让用户点到一堆点开看不了的书。
+    async filterAvailable(comics) {
+        if (!comics || !comics.length) return comics;
+        const alive = await Promise.all(comics.map(c => this.coverAlive(c.id).catch(() => true)));
+        const out = [];
+        for (let i = 0; i < comics.length; i++) {
+            if (alive[i]) {
+                // 真实封面替换占位图/失效旧 CDN 封面
+                if (this.isPlaceholder(comics[i].cover) || /img\.woimh\.com\/qingnianmanhua/i.test(comics[i].cover)) {
+                    comics[i].cover = this.coverCdn(comics[i].id);
+                }
+                out.push(comics[i]);
+            }
+        }
+        return out;
+    }
+
     async get(url) {
         const r = await Network.get(url, this.headers);
         if (!r || r.status !== 200 || !r.body) throw new Error("我爱漫画网请求失败：HTTP " + (r && r.status));
@@ -118,18 +157,18 @@ class Woimh extends ComicSource {
                 out.push(new Comic({ id, title, cover, tags: [] }));
             }
         } finally { doc.dispose(); }
-        return { comics: out, maxPage: page };
+        return { comics: await this.filterAvailable(out), maxPage: page };
     }};
 
     explore = [
         { title: "最近更新", type: "multiPageComicList", load: async (page) => {
             const html = await this.get(this.baseUrl + "/booklist?last=1" + (page > 1 ? "&page=" + page : ""));
-            const comics = this.parseCards(html);
+            const comics = await this.filterAvailable(this.parseCards(html));
             return { comics, maxPage: comics.length ? page + 1 : page };
         }},
         { title: "完结优选", type: "multiPageComicList", load: async (page) => {
             const html = await this.get(this.baseUrl + "/booklist?end=1" + (page > 1 ? "&page=" + page : ""));
-            const comics = this.parseCards(html);
+            const comics = await this.filterAvailable(this.parseCards(html));
             return { comics, maxPage: comics.length ? page + 1 : page };
         }},
     ];
@@ -150,7 +189,7 @@ class Woimh extends ComicSource {
         const url = this.baseUrl + "/booklist/" + encodeURIComponent(String(param || "")) + (page > 1 ? "?page=" + page : "");
         try {
             const html = await this.get(url);
-            const comics = this.parseCards(html);
+            const comics = await this.filterAvailable(this.parseCards(html));
             return { comics, maxPage: comics.length >= 10 ? page + 1 : page };
         } catch (e) {
             return { comics: [], maxPage: page };
@@ -178,6 +217,8 @@ class Woimh extends ComicSource {
                         if (u && !this.isPlaceholder(u)) { cover = u; break; }
                     }
                 }
+                // 详情页主图多为占位；按书 id 构造的 tu 封面才是有效图（与本源列表一致）
+                if (this.isPlaceholder(cover)) cover = this.coverCdn(num);
                 // 简介：常见 class 描述块
                 for (const sel of ["p.detail-desc", ".book-desc", ".intro", ".description", "div.desc"]) {
                     const n = doc.querySelector(sel);
