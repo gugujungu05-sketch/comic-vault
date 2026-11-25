@@ -17,10 +17,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import * as cheerio from 'cheerio';
 import crypto from 'node:crypto';
 import iconv from 'iconv-lite';
 import { DATA_DIR } from './store.js';
+
+/* MangaFire 源需要动态 VRF token（站点 VM 混淆算法 + Cloudflare），
+   由独立桥接模块按需启动无头浏览器生成并磁盘缓存。此处仅在沙箱里暴露一个
+   async 方法，源脚本不接触进程/文件系统。 */
+const __require = createRequire(import.meta.url);
+let _mangaFireVrf = null;
+function mangaFireVrf() {
+  if (!_mangaFireVrf) {
+    try { _mangaFireVrf = __require('./mangafire-vrf.cjs'); }
+    catch (e) { console.error('[mangafire] VRF 桥接加载失败:', e.message); _mangaFireVrf = { generate: async () => { throw new Error('VRF 服务不可用'); } }; }
+  }
+  return _mangaFireVrf;
+}
 
 const SRC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'js-sources');
 const COOKIE_FILE = path.join(DATA_DIR, 'js-source-cookies.json');
@@ -268,6 +282,10 @@ function buildSandbox(sourceKey) {
     Comic: function Comic(o) { return o || {}; },
     ComicDetails: function ComicDetails(o) { return o || {}; },
     ImageLoadingConfig: function ImageLoadingConfig(o) { return o || {}; },
+    /** MangaFire 专用：生成带 vrf 的 API 路径。返回形如 /api/titles?...&vrf=... */
+    MangaFireVrf: {
+      generate: (action, value, page) => mangaFireVrf().generate(action, value, page),
+    },
     setTimeout, clearTimeout, setInterval: undefined, clearInterval: undefined,
     /* Venera 系源用来生成设备指纹/盐值：randomInt(min,max) 闭区间整数。 */
     randomInt: (min, max) => {

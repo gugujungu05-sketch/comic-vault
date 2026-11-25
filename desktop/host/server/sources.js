@@ -283,23 +283,24 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '', d
     if (buf.length < 32) throw new Error('图片内容为空');
     return await save(buf);
   } catch (err) {
-    // 防盗链兜底：源脚本没给 Referer 时用源站域名重试一次
-    if (fallbackReferer && !headers.Referer && !headers.referer) {
-      try {
-        const r2 = await fetch(imgUrl, {
-          headers: { 'User-Agent': UA_DEFAULT, ...headers, Referer: fallbackReferer },
-          signal: ac.signal,
-          redirect: 'follow',
-        });
-        if (r2.ok) {
-          const ct2 = r2.headers.get('content-type') || '';
-          if (ct2.startsWith('image/') || ct2.includes('octet-stream')) {
-            const buf2 = Buffer.from(await r2.arrayBuffer());
-            if (buf2.length >= 32) return await save(buf2);
-          }
+    // 兜底重试：① 源脚本没给 Referer 时补站点域名；② 任何失败（并发限流/抖动）延迟后
+    // 再试一次。部分 CDN（如 mangafire）并发下载时限流返回非 200，串行重试即可成功。
+    const needRef = fallbackReferer && !headers.Referer && !headers.referer;
+    const retryCtrl = new AbortController();
+    const retryTimer = setTimeout(() => retryCtrl.abort(), 40000);
+    try {
+      await new Promise((r) => setTimeout(r, 600 + Math.random() * 600));
+      const headers2 = needRef ? { 'User-Agent': UA_DEFAULT, ...headers, Referer: fallbackReferer } : { 'User-Agent': UA_DEFAULT, ...headers };
+      const r2 = await fetch(imgUrl, { headers: headers2, signal: retryCtrl.signal, redirect: 'follow' });
+      if (r2.ok) {
+        const ct2 = r2.headers.get('content-type') || '';
+        if (ct2.startsWith('image/') || ct2.includes('octet-stream')) {
+          const buf2 = Buffer.from(await r2.arrayBuffer());
+          if (buf2.length >= 32) return await save(buf2);
         }
-      } catch { /* 兜底也失败则按原错误抛出 */ }
-    }
+      }
+    } catch { /* 兜底也失败则按原错误抛出 */ }
+    finally { clearTimeout(retryTimer); }
     throw err;
   } finally {
     clearTimeout(timer);
