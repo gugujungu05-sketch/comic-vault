@@ -360,6 +360,22 @@ textarea {
   color: var(--text);
 }
 
+/* 站点账号登录态：顶栏角标 + 弹窗状态卡 */
+.acct-badge {
+  display: inline-flex; align-items: center;
+  padding: 1px 6px; border-radius: 999px; margin-left: 4px;
+  font-size: 10px; font-weight: 700; line-height: 1.6;
+  color: #fff; background: #2e9e5b;
+}
+.acct-status {
+  padding: 12px 14px; margin-bottom: 14px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2);
+}
+.acct-status.on { border-color: color-mix(in srgb, #2e9e5b 55%, var(--border)); background: color-mix(in srgb, #2e9e5b 8%, var(--surface-2)); }
+.acct-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; align-self: center; }
+.acct-status.on .acct-dot { background: #2e9e5b; box-shadow: 0 0 0 3px color-mix(in srgb, #2e9e5b 22%, transparent); }
+
 .switch {
   position: relative;
   width: 46px;

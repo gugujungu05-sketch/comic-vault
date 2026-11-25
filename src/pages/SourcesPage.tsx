@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
@@ -65,10 +65,16 @@ export default function SourcesPage() {
   const [showManage, setShowManage] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
   const [accountCookie, setAccountCookie] = useState('');
-  const [accountInfo, setAccountInfo] = useState<{ website: string; canPasswordLogin: boolean }>({ website: '', canPasswordLogin: false });
+  const [accountInfo, setAccountInfo] = useState<{ website: string; canPasswordLogin: boolean; loggedIn: boolean; cookieCount: number; credentialCount: number }>({ website: '', canPasswordLogin: false, loggedIn: false, cookieCount: 0, credentialCount: 0 });
   const [accountUser, setAccountUser] = useState('');
   const [accountPwd, setAccountPwd] = useState('');
+  // 各源登录态：顶栏「站点账号」按钮显示当前源是否已登录（不依赖弹窗打开）
+  const [loginStatus, setLoginStatus] = useState<Record<string, { loggedIn: boolean; cookieCount: number; credentialCount: number }>>({});
+  const activeLogin = activeId ? loginStatus[activeId] : undefined;
   const [onlineReader, setOnlineReader] = useState<OnlineReaderState | null>(null);
+  /* 浏览器返回键：把「详情(1)/阅读器(2)」当作历史层压入 history.state，
+     popstate 时按目标层卸载对应 UI，而不是让浏览器退回主页。 */
+  const viewLayerRef = useRef(0);
   const toast = useToast();
   const errorToast = useErrorToast();
 
@@ -95,6 +101,8 @@ export default function SourcesPage() {
       setLoadError('');
       // 未登录云端书架为空时，本地兜底书架仍要显示，保证收藏/阅读历史不丢
       setShelf(mergedShelf(s.items || []));
+      // 并发拉取每个源的登录态，顶栏按钮据此显示「已登录」角标
+      refreshLoginStatus(r.sources);
       const first = r.sources.find((x) => (x.mediaType || 'comic') === tab)?.id || ALL_SOURCES;
       setActiveId((cur) => cur || first);
       if (first) loadDiscover(first, 0, 1);
@@ -103,6 +111,57 @@ export default function SourcesPage() {
       errorToast(err, '加载书源失败');
     }
   }
+
+  async function refreshLoginStatus(sources = list) {
+    const real = sources.filter((s) => s.id !== ALL_SOURCES);
+    if (!real.length) return;
+    const pairs = await Promise.all(real.map(async (s) => {
+      try {
+        const r = await sourcesApi.getCookies(s.id);
+        return [s.id, { loggedIn: !!r.loggedIn, cookieCount: r.cookieCount || 0, credentialCount: r.credentialCount || 0 }] as const;
+      } catch { return [s.id, { loggedIn: false, cookieCount: 0, credentialCount: 0 }] as const; }
+    }));
+    setLoginStatus(Object.fromEntries(pairs));
+  }
+
+  /* ---- 历史层管理：详情=1，阅读器=2，列表=0 ---- */
+  const setLayer = (n: number) => { viewLayerRef.current = n; };
+  function pushLayer(n: number) {
+    if (n <= viewLayerRef.current) return;
+    // 合并保留 React Router 自身的 state 字段，避免干扰路由前进/后退
+    try { window.history.pushState({ ...(window.history.state || {}), cvSourcesLayer: n }, ''); } catch { /* 忽略 */ }
+    setLayer(n);
+  }
+  function backOneLayer() {
+    if (viewLayerRef.current > 0) window.history.back(); // popstate 统一卸载
+  }
+  function resetToList() {
+    // 切 tab/源/搜索时把当前历史条目标记为列表层（不动栈深，避免误跳主页）
+    try { window.history.replaceState({ ...(window.history.state || {}), cvSourcesLayer: 0 }, ''); } catch { /* 忽略 */ }
+    setLayer(0);
+    setDetail(null);
+  }
+
+  useEffect(() => {
+    // 进入本页时把当前条目标记为列表层 0
+    try { window.history.replaceState({ ...(window.history.state || {}), cvSourcesLayer: 0 }, ''); } catch { /* 忽略 */ }
+    setLayer(0);
+    const onPop = (e: PopStateEvent) => {
+      const target = (e.state && e.state.cvSourcesLayer) || 0;
+      setLayer(target);
+      if (target <= 0) {
+        setOnlineReader(null);
+        setDetail(null);
+        refreshShelf();
+      } else if (target === 1) {
+        setOnlineReader(null); // 从阅读器退回详情
+        refreshShelf();
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     load();
@@ -174,7 +233,7 @@ export default function SourcesPage() {
     if (!targets.length) return;
     setSearching(true);
     // 从书籍详情里再次搜索时，先退出详情，否则结果被详情面板遮住，看起来像「搜索没反应」
-    setDetail(null);
+    resetToList();
     setResults([]);
     try {
       const rs = await Promise.all(targets.map((s) => sourcesApi.search(s.id, kw.trim()).catch(() => ({ items: [] as SourceSearchItem[] }))));
@@ -222,6 +281,7 @@ export default function SourcesPage() {
         bookId: r.bookId || item.link,
         checked: new Set((r.chapters || []).map((_, i) => i)),
       });
+      pushLayer(1); // 详情纳入浏览器历史，返回键先关详情
       const s = await onlineApi.shelf().catch(() => ({ items: [] as OnlineShelfItem[] }));
       const allShelf = onlineShelfLocal.merge(s.items || []);
       // 只有主动收藏才算「已在书架」；仅阅读历史的不算，避免收藏按钮状态错乱
@@ -242,6 +302,7 @@ export default function SourcesPage() {
         bookId: r.bookId || item.bookId,
         checked: new Set((r.chapters || []).map((_, i) => i)),
       });
+      pushLayer(1); // 详情纳入历史，返回键先回列表而不是跳主页
       setActiveId(sourceId);
       setTab(item.kind);
       // 从历史视图打开的书不一定被收藏，按实际标记显示收藏按钮状态
@@ -456,6 +517,7 @@ export default function SourcesPage() {
       index,
       shelfId: sid,
     });
+    pushLayer(2); // 阅读器纳入历史，返回键退回详情/列表
   }
 
   return (
@@ -473,12 +535,16 @@ export default function SourcesPage() {
             if (activeId) {
               try {
                 const info = await sourcesApi.getCookies(activeId);
-                setAccountInfo({ website: info.website || '', canPasswordLogin: !!info.canPasswordLogin });
-              } catch { setAccountInfo({ website: '', canPasswordLogin: false }); }
+                setAccountInfo({
+                  website: info.website || '', canPasswordLogin: !!info.canPasswordLogin,
+                  loggedIn: !!info.loggedIn, cookieCount: info.cookieCount || 0, credentialCount: info.credentialCount || 0,
+                });
+              } catch { setAccountInfo({ website: '', canPasswordLogin: false, loggedIn: false, cookieCount: 0, credentialCount: 0 }); }
             }
             setShowAccount(true);
-          }} title="可选：登录站点以同步书架 / 解锁受限内容">
+          }} title={activeLogin?.loggedIn ? '该源已保存登录态，点击查看 / 清除' : '可选：登录站点以解锁会员或受限章节'}>
             <Icon name="book" size={16} /> 站点账号
+            {activeLogin?.loggedIn && <span className="acct-badge" title="当前源已登录">已登录</span>}
           </button>
           <button className="btn" onClick={() => setShowManage(true)}>
             <Icon name="settings" size={16} /> 书源管理
@@ -568,7 +634,7 @@ export default function SourcesPage() {
         <div className="row" style={{ gap: 10, marginBottom: 12 }}>
           {([['comic', '漫画'], ['novel', '小说']] as [MediaTab, string][]).map(([k, label]) => (
             <button key={k} className={`chip ${tab === k ? 'active' : ''}`} onClick={() => {
-              setTab(k); setResults([]); setDetail(null); setKw(''); setSearched(false);
+              setTab(k); setResults([]); resetToList(); setKw(''); setSearched(false);
       const first = list.find((s) => (s.mediaType || 'comic') === k)?.id || ALL_SOURCES;
       setActiveId(first);
       if (first) loadDiscover(first, 0, 1);
@@ -585,7 +651,7 @@ export default function SourcesPage() {
           <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
             <button
               className={`btn sm ${isAll ? 'primary' : ''}`}
-              onClick={() => { setActiveId(ALL_SOURCES); setDetail(null); setKw(''); setSearched(false); loadDiscover(ALL_SOURCES, 0, 1); }}
+              onClick={() => { setActiveId(ALL_SOURCES); resetToList(); setKw(''); setSearched(false); loadDiscover(ALL_SOURCES, 0, 1); }}
               title="跨所有来源聚合搜索与发现，按标题去重"
             >
               <Icon name="grid" size={14} /> 全部{tab === 'comic' ? '漫画' : '小说'}（{tabSources.length} 源）
@@ -594,7 +660,7 @@ export default function SourcesPage() {
               <button
                 key={s.id}
                 className={`btn sm ${s.id === activeId ? 'primary' : ''}`}
-                onClick={() => { setActiveId(s.id); setDetail(null); setKw(''); loadDiscover(s.id, 0, 1); }}
+                onClick={() => { setActiveId(s.id); resetToList(); setKw(''); loadDiscover(s.id, 0, 1); }}
               >
                 <Icon name="globe" size={14} /> {s.name}
               </button>
@@ -695,7 +761,7 @@ export default function SourcesPage() {
                     </p>
                   )}
                   <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                    <button className="btn sm" onClick={() => setDetail(null)}>← 返回</button>
+                    <button className="btn sm" onClick={() => backOneLayer()}>← 返回</button>
                     <button className={`btn sm ${bookmarked ? 'primary' : ''}`} onClick={() => bookmark(detail)}>
                       <Icon name="star" size={14} /> {bookmarked ? '已在书架' : '收藏到书架'}
                     </button>
@@ -795,7 +861,7 @@ export default function SourcesPage() {
       {onlineReader && (
         <OnlineReader
           state={onlineReader}
-          onExit={() => { setOnlineReader(null); refreshShelf(); }}
+          onExit={() => backOneLayer()}
           onStateChange={(next) => setOnlineReader((prev) => {
             if (!prev) return prev;
             return typeof next === 'function' ? next(prev) : { ...next };
@@ -805,13 +871,37 @@ export default function SourcesPage() {
 
       {showAccount && (
         <Modal title="站点账号（可选）" onClose={() => setShowAccount(false)} width={560}>
-          <div className="muted" style={{ fontSize: 12, lineHeight: 1.8, marginBottom: 12 }}>
-            当前来源：<b>{active?.name || '未选择'}</b><br />
-            登录<b>不是必须</b>的——不登录也能浏览、搜索、免费内容。登录只用于<b>同步个人书架 / 收藏</b>或<b>解锁会员/受限内容</b>（和 kira / ciallo reader 一样）。
+          {/* 当前登录态：一眼看清是否生效、能否管理 */}
+          <div className={`acct-status ${accountInfo.loggedIn ? 'on' : ''}`}>
+            <div className="row" style={{ gap: 8 }}>
+              <span className="acct-dot" />
+              <b>{accountInfo.loggedIn ? '登录态已生效' : '当前未登录'}</b>
+              <span className="muted" style={{ fontSize: 12 }}>· {active?.name || '未选择来源'}</span>
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+              {accountInfo.loggedIn
+                ? `已保存 ${accountInfo.cookieCount} 项 Cookie${accountInfo.credentialCount ? `、${accountInfo.credentialCount} 项账号凭据` : ''}。该源的后续请求会自动携带。`
+                : '不登录也能正常浏览、搜索、看免费内容，无需任何账号。'}
+            </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.7, opacity: 0.85 }}>
+              说明：源站登录只影响<b>该站会员/受限章节</b>的可见性，<b>不会</b>把源站账号里的收藏/书架同步到本 App（本 App 的书架存在你的本站账号或本地）。所以登录后看到的列表和免费时一样是正常的。
+            </div>
+            {accountInfo.loggedIn && (
+              <button className="btn sm danger" style={{ marginTop: 10 }} onClick={async () => {
+                if (!activeId) return;
+                try {
+                  await sourcesApi.logoutSource(activeId);
+                  setAccountInfo((x) => ({ ...x, loggedIn: false, cookieCount: 0, credentialCount: 0 }));
+                  setAccountCookie('');
+                  refreshLoginStatus();
+                  toast('已清除该源登录态');
+                } catch (err) { errorToast(err, '清除失败'); }
+              }}>一键清除登录态</button>
+            )}
           </div>
           {!sessionUser && (
             <div className="muted" style={{ fontSize: 12, marginBottom: 10, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8 }}>
-              💡 浏览和打开官网无需登录；但若要用「账号密码登录」或「保存 Cookie」把登录态同步到书架，需先登录本站账号（右上角「登录 / 注册」）。
+              💡 站点的「账号密码登录」和「保存 Cookie」需要本站账号（右上角「登录 / 注册」）；仅浏览和打开官网无需登录。
             </div>
           )}
 
@@ -844,6 +934,9 @@ export default function SourcesPage() {
                     if (!r.ok) throw new Error(r.error || '登录失败');
                     toast(r.message || '登录成功');
                     setAccountPwd('');
+                    const st = await sourcesApi.getCookies(activeId);
+                    setAccountInfo((x) => ({ ...x, loggedIn: !!st.loggedIn, cookieCount: st.cookieCount || 0, credentialCount: st.credentialCount || 0 }));
+                    refreshLoginStatus();
                   } catch (err) { errorToast(err, '登录失败'); }
                 }}>登录</button>
               </div>
@@ -868,6 +961,13 @@ export default function SourcesPage() {
                 try {
                   const r = await sourcesApi.saveCookies(activeId, accountCookie.trim());
                   toast(r.cleared ? '已清除该站点登录态' : `已保存登录态（${r.count || 0} 项）`);
+                  setAccountInfo((x) => ({
+                    ...x,
+                    loggedIn: r.cleared ? false : !!(r.login?.loggedIn ?? true),
+                    cookieCount: r.cleared ? 0 : (r.login?.cookieCount ?? (r.count || 0)),
+                    credentialCount: r.cleared ? 0 : (r.login?.credentialCount ?? 0),
+                  }));
+                  refreshLoginStatus();
                   setShowAccount(false);
                 } catch (err) { errorToast(err, '保存失败'); }
               }}>保存 Cookie</button>

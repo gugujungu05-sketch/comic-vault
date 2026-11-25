@@ -27,6 +27,7 @@ import {
   loadJsSources, allJsSources, getJsSource,
   jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode,
   jsDiscoverTabs, jsDiscoverLoad, jsSetSourceCookies, jsAccountLogin, jsRegisterWebsite,
+  jsSourceLoginStatus, jsClearSourceLogin,
 } from './js-sources.js';
 
 const now = () => Date.now();
@@ -566,7 +567,10 @@ export function registerSources(app) {
       const src = getJsSource(req.params.id);
       canPasswordLogin = !!(src && src.account && typeof src.account.login === 'function');
     } catch { /* 忽略 */ }
-    res.json({ ok: true, source: js.name, accountHint: js.accountHint || '', website, canPasswordLogin });
+    // 当前登录态（只含布尔/计数，不含 Cookie/token 值），供前端显示是否已生效
+    let login = { loggedIn: false, cookieCount: 0, credentialCount: 0 };
+    try { login = jsSourceLoginStatus(req.params.id); } catch { /* 忽略 */ }
+    res.json({ ok: true, source: js.name, accountHint: js.accountHint || '', website, canPasswordLogin, ...login });
   });
 
   // 源账号密码登录（可选）：直接调用源脚本的 account.login
@@ -581,9 +585,25 @@ export function registerSources(app) {
     const js = jsOf(req.params.id);
     if (!js) return res.status(404).json({ error: '书源不存在' });
     try {
-      const r = jsSetSourceCookies(req.params.id, req.body?.cookies || '', req.body?.domain || '');
-      res.json(r);
+      const raw = String(req.body?.cookies || '').trim();
+      if (!raw) {
+        // 留空 = 一键清除：连 token 凭据一起清，避免账号密码登录态残留
+        const r = jsClearSourceLogin(req.params.id);
+        return res.json({ ok: true, cleared: true, ...r });
+      }
+      const r = jsSetSourceCookies(req.params.id, raw, req.body?.domain || '');
+      res.json({ ...r, login: jsSourceLoginStatus(req.params.id) });
     } catch (e) { res.status(400).json({ error: e?.message || '保存 Cookie 失败' }); }
+  });
+
+  // 专门的一键退出：清空该源 Cookie + token 凭据（与保存空 Cookie 等价，语义更清晰）
+  router.post('/:id/logout', requireUser, (req, res) => {
+    const js = jsOf(req.params.id);
+    if (!js) return res.status(404).json({ error: '书源不存在' });
+    try {
+      const r = jsClearSourceLogin(req.params.id);
+      res.json({ ok: true, ...r, login: jsSourceLoginStatus(req.params.id) });
+    } catch (e) { res.status(400).json({ error: e?.message || '清除登录态失败' }); }
   });
 
   // 发现 / 浏览：进入书源不搜索也能看到漫画 / 小说列表

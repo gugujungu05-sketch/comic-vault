@@ -525,6 +525,39 @@ export function jsSetSourceCookies(sourceKey, cookieString, domain) {
   return { ok: true, count: cookies.length, domain: dm };
 }
 
+/** 查询某源的登录态：cookie 罐条数 + dataMap 里的 token/凭据键。
+ *  只返回布尔/计数，绝不返回 Cookie 或 token 的值，供前端「站点账号」显示是否已生效。 */
+export function jsSourceLoginStatus(sourceKey) {
+  const key = String(sourceKey || '').replace(/^js:/, '');
+  if (!key) return { loggedIn: false, cookieCount: 0, credentialCount: 0 };
+  const cookieCount = (cookieMap[key] || []).length;
+  const data = dataMap[key] || {};
+  // 常见凭据键：token / token_* / cookie / phpsessid / authorization / username 等，避免把普通设置误算登录
+  const credentialKeys = Object.keys(data).filter((k) => /token|cookie|session|auth|password|passwd|username|user/i.test(k) && data[k]);
+  return {
+    loggedIn: cookieCount > 0 || credentialKeys.length > 0,
+    cookieCount,
+    credentialCount: credentialKeys.length,
+  };
+}
+
+/** 清除某源的全部登录态：cookie 罐 + dataMap 里的凭据键。
+ *  与「保存空 Cookie」兼容：旧逻辑只清 cookie，这里连 token 一起清，做到真正的一键退出。 */
+export function jsClearSourceLogin(sourceKey) {
+  const key = String(sourceKey || '').replace(/^js:/, '');
+  if (!key) return { ok: false, error: '缺少来源标识' };
+  const hadCookie = !!(cookieMap[key] && cookieMap[key].length);
+  delete cookieMap[key];
+  const data = dataMap[key] || {};
+  let cleared = 0;
+  for (const k of Object.keys(data)) {
+    if (/token|cookie|session|auth|password|passwd|username|user/i.test(k)) { delete data[k]; cleared += 1; }
+  }
+  saveSoon(COOKIE_FILE, cookieMap);
+  saveSoon(DATA_FILE, dataMap);
+  return { ok: true, clearedCredentials: cleared, hadCookie };
+}
+
 /** 源账号密码登录：调用源脚本 account.login（如拷贝/热辣/vomic），凭据由源自行 saveData 持久化。
  *  返回 { ok, message }。用户可选用，非强制——登录只为同步书架/解锁受限内容。 */
 export async function jsAccountLogin(sourceKey, account, password) {

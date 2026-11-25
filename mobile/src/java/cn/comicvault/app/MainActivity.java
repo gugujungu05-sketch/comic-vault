@@ -74,7 +74,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1001;
     /** 独立客户端「多选导入」使用的原生文件选择器 */
     private static final int REQ_PICK_IMPORT = 1002;
-    private static final String APP_VERSION = "3.4.0.35.0";
+    private static final String APP_VERSION = "3.4.0.36.0";
     private static final String LOCAL_APP_URL = "file:///android_asset/app/index.html";
     private static final String DRIVE_ZIP_URL = "https://www.workbuddy.cn/space/d/owdGBbPU0yzY2UrQGvierZ";
     private static final String KEY_UPDATE_HINT = "last_update_hint";

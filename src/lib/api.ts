@@ -976,13 +976,18 @@ export const sources = {
   remove: (id: string) => request<{ ok: boolean }>(`/api/sources/${id}`, { method: 'DELETE' }),
 
   /** 书源站点账号：保存/清除登录 Cookie（拷贝/热辣/vomic 等需登录的源） */
-  getCookies: (id: string) => request<{ ok: boolean; source: string; accountHint?: string; website?: string; canPasswordLogin?: boolean }>(
-    `/api/sources/${id}/cookies`,
-  ),
+  getCookies: (id: string) => request<{
+    ok: boolean; source: string; accountHint?: string; website?: string; canPasswordLogin?: boolean;
+    loggedIn?: boolean; cookieCount?: number; credentialCount?: number;
+  }>(`/api/sources/${id}/cookies`),
   saveCookies: (id: string, cookies: string) =>
-    request<{ ok: boolean; count?: number; cleared?: boolean }>(`/api/sources/${id}/cookies`, {
+    request<{ ok: boolean; count?: number; cleared?: boolean; login?: { loggedIn: boolean; cookieCount: number; credentialCount: number } }>(`/api/sources/${id}/cookies`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookies }),
     }),
+  logoutSource: (id: string) =>
+    request<{ ok: boolean; clearedCredentials?: number; hadCookie?: boolean; login?: { loggedIn: boolean; cookieCount: number; credentialCount: number } }>(
+      `/api/sources/${id}/logout`, { method: 'POST' },
+    ),
   /** 源账号密码登录（可选，用于同步书架/解锁受限内容） */
   accountLogin: (id: string, account: string, password: string) =>
     request<{ ok: boolean; message?: string; error?: string }>(`/api/sources/${id}/account-login`, {
