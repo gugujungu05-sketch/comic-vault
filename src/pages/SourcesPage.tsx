@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { ReaderView } from '../components/ReaderView';
+import CoverImage from '../components/CoverImage';
 import { useErrorToast, useToast } from '../components/Toasts';
 import { useSession } from '../lib/session';
 import { online as onlineApi, sources as sourcesApi, mediaUrl } from '../lib/api';
@@ -685,11 +686,7 @@ export default function SourcesPage() {
               {shownShelf.map((it) => (
                 <div key={it.id} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openShelfItem(it)}>
                   <div className="cover">
-                    {it.coverProxy ? (
-                      <img src={it.coverProxy} alt={it.title} loading="lazy" />
-                    ) : (
-                      <div className="cover-empty"><Icon name="book" size={26} /></div>
-                    )}
+                    <CoverImage src={it.coverProxy} title={it.title} />
                     <span className="wide-tag" style={{ position: 'absolute', top: 6, left: 6 }}>
                       {it.kind === 'novel' ? '小说' : '漫画'}
                     </span>
@@ -853,9 +850,7 @@ export default function SourcesPage() {
               {shownResults.map((r, i) => (
                 <div key={i} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openComic(r)}>
                   <div className="cover">
-                    {r.cover ? <img src={coverUrl(r.sourceId || activeId, r.cover)} alt={r.title} loading="lazy" /> : (
-                      <div className="cover-empty"><Icon name="book" size={30} /></div>
-                    )}
+                    <CoverImage src={r.cover ? coverUrl(r.sourceId || activeId, r.cover) : ''} title={r.title} />
                   </div>
                   <div className="card-body">
                     <div className="card-title">{r.title}</div>
@@ -871,7 +866,7 @@ export default function SourcesPage() {
             <div className="panel" style={{ marginTop: 4 }}>
               <div className="row" style={{ alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
                 {detail.cover && (
-                  <img src={coverUrl(detailSourceId, detail.cover)} alt="" style={{ width: 120, borderRadius: 10, flex: 'none' }} />
+                  <CoverImage src={coverUrl(detailSourceId, detail.cover)} title={detail.title} style={{ width: 120, borderRadius: 10, flex: 'none' }} />
                 )}
                 <div style={{ flex: 1, minWidth: 220 }}>
                   <h2 style={{ margin: '0 0 8px' }}>{detail.title}</h2>
@@ -1087,9 +1082,7 @@ export default function SourcesPage() {
                     openComic(it);
                   }}>
                   <div className="cover">
-                    {(it.coverProxy || it.cover)
-                      ? <img src={it.coverProxy || coverUrl(it.sourceId, it.cover)} alt={it.title} loading="lazy" />
-                      : <div className="cover-empty"><Icon name="book" size={28} /></div>}
+                    <CoverImage src={it.coverProxy || (it.cover ? coverUrl(it.sourceId, it.cover) : '')} title={it.title} />
                     <span className="wide-tag" style={{ position: 'absolute', top: 6, left: 6 }}>
                       {it.media === 'novel' ? '小说' : '漫画'}
                     </span>

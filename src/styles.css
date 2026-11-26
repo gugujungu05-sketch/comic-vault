@@ -453,6 +453,15 @@ textarea {
   color: var(--muted);
   background: linear-gradient(140deg, var(--surface-2), var(--bg-soft));
 }
+/* 封面加载失败时的占位：渐变底 + 书名首字，替代破图小图标 */
+.cover-fallback .cover-fallback-char {
+  font-size: clamp(24px, 22cqw, 46px);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  line-height: 1;
+  user-select: none;
+}
 
 /* 小说独立「书籍」封面：书脊 + 竖排书名 + 作者，区别于漫画逐页封面 */
 .is-novel .cover { background: linear-gradient(150deg, #2b3a4a, #16202b 70%); }

@@ -300,6 +300,11 @@ export function registerOnline(app, helpers) {
   const IMG_CACHE = new Map();
   const IMG_CACHE_TTL = 24 * 60 * 60 * 1000;
   const IMG_CACHE_MAX = 600;
+  // 拉取失败的 URL 短时间记忆，避免书架多张不可达封面（如被网络封锁的 pstatic 域名）反复重试拖慢页面
+  const IMG_FAIL = new Map();
+  const IMG_FAIL_TTL = 10 * 60 * 1000;
+  // 这些 CDN 域名在部分部署网络下被封锁/污染，直连必然超时：缩短超时并跳过无谓重试
+  const SLOW_CDN = /pstatic\.net/i;
 
   // 图片代理：带源站防盗链头转发，阅读器/封面直接用
   router.get('/img', async (req, res) => {
@@ -314,9 +319,12 @@ export function registerOnline(app, helpers) {
       res.setHeader('X-Img-Cache', 'HIT');
       return res.send(hit.buf);
     }
+    const fail = IMG_FAIL.get(ck);
+    if (fail && Date.now() - fail < IMG_FAIL_TTL) return res.status(502).end('recent upstream failure');
     try {
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 30000);
+      const timeout = SLOW_CDN.test(url) ? 7000 : 30000;
+      const timer = setTimeout(() => ac.abort(), timeout);
       const ih = jsImageHeaders(source, url) || {};
       if (!ih.Referer && !ih.referer) ih.Referer = `${source.baseUrl || 'https://' + new URL(url).host}/`;
       const r = await fetch(url, {
@@ -325,7 +333,10 @@ export function registerOnline(app, helpers) {
         redirect: 'follow',
       });
       clearTimeout(timer);
-      if (!r.ok) return res.status(r.status === 404 ? 404 : 502).end('upstream error');
+      if (!r.ok) {
+        if (r.status !== 404) IMG_FAIL.set(ck, Date.now());
+        return res.status(r.status === 404 ? 404 : 502).end('upstream error');
+      }
       let ct = r.headers.get('content-type') || 'image/jpeg';
       // 部分源站返回 application/octet-stream，浏览器 <img> 不认：按 URL 扩展名纠正
       if (!ct.startsWith('image/')) {
@@ -349,10 +360,12 @@ export function registerOnline(app, helpers) {
         }
         IMG_CACHE.set(ck, { t: Date.now(), buf, ct });
       }
+      IMG_FAIL.delete(ck);
       res.setHeader('Content-Type', ct);
       res.setHeader('Cache-Control', 'public, max-age=86400');
       res.send(buf);
     } catch {
+      IMG_FAIL.set(ck, Date.now());
       res.status(502).end('proxy error');
     }
   });
