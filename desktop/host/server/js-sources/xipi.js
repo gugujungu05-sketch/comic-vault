@@ -8,7 +8,7 @@
 class Xipi extends ComicSource {
     name = "嬉皮漫画";
     key = "xipi";
-    version = "1.1.0";
+    version = "1.1.1";
     minAppVersion = "1.6.0";
     url = "https://m.hipmh.com";
     baseUrl = "https://m.hipmh.com";
@@ -173,17 +173,29 @@ class Xipi extends ComicSource {
                 rows.push(...batch.items);
             }
         }
-        if (!rows.length || (Number.isInteger(first.total) && rows.length !== first.total)) throw new Error("嬉皮漫画章节目录不完整");
-        const manga = Number(this.decode64(mid).substring(2)), seen = new Set();
-        for (const row of rows) {
-            if (!row.hid || !row.title || seen.has(row.hid) || this.chapterIdentity(row.hid).manga !== manga)
-                throw new Error("嬉皮漫画章节目录存在重复或错误归属");
-            seen.add(row.hid);
+        // 源站 total 有时会把锁定/隐藏章节计入，实际分页条目会比 total 少 1~2 条。
+        // 只在差距过大（缺超过 10% 或 20 章）时才判定分页真的不完整，避免整本书点不开。
+        if (!rows.length) throw new Error("嬉皮漫画章节目录为空");
+        if (Number.isInteger(first.total) && first.total > rows.length) {
+            const missing = first.total - rows.length;
+            if (missing > 20 && missing > first.total * 0.1) throw new Error("嬉皮漫画章节目录不完整");
         }
+        const manga = Number(this.decode64(mid).substring(2)), seen = new Set();
+        const clean = [];
+        for (const row of rows) {
+            if (!row.hid || !row.title) continue;
+            if (seen.has(row.hid)) continue; // 分页边界常重复同一章，去重即可
+            let identity;
+            try { identity = this.chapterIdentity(row.hid); } catch { continue; } // 单章编号异常，跳过而非整本失败
+            if (identity.manga !== manga) continue; // 归属错误的孤立章节，跳过
+            seen.add(row.hid);
+            clean.push(row);
+        }
+        if (!clean.length) throw new Error("嬉皮漫画章节目录不完整");
         // chapter_number is the site's entry ordinal, including extras; never display it as an episode number.
-        rows.reverse();
-        this.catalogs[mid] = {at: Date.now(), rows};
-        return rows;
+        clean.reverse();
+        this.catalogs[mid] = {at: Date.now(), rows: clean};
+        return clean;
     }
 
     metadata(mid, data) {
