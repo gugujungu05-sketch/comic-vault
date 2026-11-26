@@ -103,6 +103,21 @@ class MangaDex extends ComicSource {
                 return { comics, maxPage };
             },
         },
+        {
+            // 韩漫/条漫：Full Color + Long Strip 是韩漫的强特征标签，覆盖英译/中译韩漫
+            title: "韩漫精选 · 全彩条漫",
+            type: "multiPageComicList",
+            load: async (page) => {
+                const offset = Math.max(0, (Number(page) - 1) * 20);
+                const j = await this.api("/manga?limit=20&offset=" + offset + "&includes[]=cover_art"
+                    + "&includedTags[]=f5ba408b-0e7a-484d-8d49-4e9125ac96de"   // Full Color
+                    + "&includedTags[]=3e2b8dae-350e-4ab8-a8ce-016e844b9f0d"   // Long Strip
+                    + "&order[followedCount]=desc&contentRating[]=safe&contentRating[]=suggestive");
+                const comics = (j.data || []).map((m) => this.card(m)).filter(Boolean);
+                const maxPage = Math.max(1, Math.ceil((j.total || 0) / 20));
+                return { comics, maxPage };
+            },
+        },
     ];
 
     search = {
