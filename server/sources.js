@@ -27,6 +27,7 @@ import {
   loadJsSources, allJsSources, getJsSource,
   jsSearch, jsComicDetail, jsChapterImages, jsImageHeaders, jsImageDecode,
   jsDiscoverTabs, jsDiscoverLoad, jsLotteryGenreEntries, jsLotteryLoad,
+  jsCollectTags, normalizeTag, isTagBlocked, jsTagsIndexApply,
   jsSetSourceCookies, jsAccountLogin, jsRegisterWebsite,
   jsSourceLoginStatus, jsClearSourceLogin,
 } from './js-sources.js';
@@ -67,6 +68,69 @@ const LOTTERY_GENRES = [
 ];
 const LOTTERY_POOL_TTL = 30 * 60 * 1000;
 const lotteryPoolCache = new Map(); // key = `${media}|${genreIds.sort().join(',')}` → { at, items }
+
+/* 标签整合缓存：抓取某源/所有源的标签要访问大量分类页，结果稳定，缓存较久。
+   key = 源 id 或 '__all__'；值 = { at, tags:[{tag,count,sources?}] } */
+const TAG_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 小时
+const tagCache = new Map();
+const TAG_FETCH_TIMEOUT = 25000; // 单源标签整合最长等待，慢源不拖垮全局
+
+/** 解析 blocked 查询参数（逗号分隔的标签）→ 归一化后的 Set */
+function blockedSetOf(query) {
+  const set = new Set();
+  for (const t of String(query?.blocked || '').split(',')) {
+    const n = normalizeTag(t);
+    if (n) set.add(n);
+  }
+  return set;
+}
+
+/** 整合所有源所有书的标签题材（抽奖机屏蔽设置用）。
+ *  先复用各源缓存，缺失的源并发抓取；任一源失败/超时不影响其它源。 */
+async function collectAllTags(force = false) {
+  const key = '__all__';
+  const hit = tagCache.get(key);
+  if (!force && hit && now() - hit.at < TAG_CACHE_TTL) return { ...hit, cached: true };
+  const sources = allJsSources();
+  const perSource = await Promise.all(sources.map(async (meta) => {
+    let tags = [];
+    const sHit = tagCache.get(meta.id);
+    if (!force && sHit && now() - sHit.at < TAG_CACHE_TTL) {
+      tags = sHit.tags;
+    } else {
+      const js = getJsSource(meta.id);
+      if (!js) return [];
+      try {
+        tags = await Promise.race([
+          jsCollectTags(js),
+          new Promise((r) => setTimeout(() => r([]), TAG_FETCH_TIMEOUT)),
+        ]);
+        if (tags.length) tagCache.set(meta.id, { at: now(), tags });
+      } catch { return []; }
+    }
+    return tags.map((t) => ({ ...t, source: meta.id, sourceName: meta.name }));
+  }));
+  // 合并同名词条：词频累加，记录来源
+  const merged = new Map();
+  for (const group of perSource) {
+    for (const t of group) {
+      const k = normalizeTag(t.tag);
+      if (!k) continue;
+      const prev = merged.get(k);
+      if (prev) {
+        prev.count += t.count;
+        if (t.sourceName && !prev.sources.includes(t.sourceName)) prev.sources.push(t.sourceName);
+      } else {
+        merged.set(k, { tag: t.tag, count: t.count, sources: t.sourceName ? [t.sourceName] : [] });
+      }
+    }
+  }
+  const tags = [...merged.values()].sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+  const data = { at: now(), tags };
+  // 空结果不缓存：首次整合可能因部分源超时而颗粒无收，缓存空会让 6 小时内都拿不到标签
+  if (tags.length) tagCache.set(key, data);
+  return { ...data, cached: false };
+}
 
 /** 中文书名归一化：简繁常见字折叠 + 去标点空格，用于跨源去重 */
 const T2S_MAP = {
@@ -580,6 +644,40 @@ export function registerSources(app) {
     res.json({ genres: LOTTERY_GENRES.map((g) => ({ id: g.id, label: g.label })) });
   });
 
+  // 标签整合：所有源所有书的标签题材（抽奖机屏蔽设置用）
+  // query: refresh=1 强制重新抓取
+  router.get('/tags/all', async (req, res) => {
+    try {
+      const r = await collectAllTags(String(req.query.refresh || '') === '1');
+      res.json({ tags: r.tags, cached: r.cached, sourceCount: allJsSources().length });
+    } catch (err) { sourceError(res, err); }
+  });
+
+  // 标签整合：某个源所有书的标签（每个源的屏蔽设置用）
+  // query: refresh=1 强制重新抓取
+  router.get('/:id/tags', async (req, res) => {
+    const js = jsOf(req.params.id);
+    if (!js) return res.status(404).json({ error: '书源不存在' });
+    const force = String(req.query.refresh || '') === '1';
+    const hit = tagCache.get(req.params.id);
+    if (!force && hit && now() - hit.at < TAG_CACHE_TTL) {
+      return res.json({ tags: hit.tags, source: req.params.id, cached: true });
+    }
+    try {
+      const tags = await Promise.race([
+        jsCollectTags(js),
+        new Promise((r) => setTimeout(() => r(null), TAG_FETCH_TIMEOUT)),
+      ]);
+      if (!tags || !tags.length) {
+        // 抓取失败/超时：若有旧缓存则降级返回，否则给空清单
+        if (hit) return res.json({ tags: hit.tags, source: req.params.id, cached: true, stale: true });
+        return res.json({ tags: [], source: req.params.id, cached: false });
+      }
+      tagCache.set(req.params.id, { at: now(), tags });
+      res.json({ tags, source: req.params.id, cached: false });
+    } catch (err) { sourceError(res, err); }
+  });
+
   // 抽奖机：从所有来源按题材抽取书籍，跨源按书名去重，返回多本推荐。
   // query: media=comic|novel|all, genres=hot,action(逗号分隔), count=12, refresh=1
   router.get('/lottery', async (req, res) => {
@@ -642,8 +740,12 @@ export function registerSources(app) {
       if (pool.items.length) lotteryPoolCache.set(poolKey, pool);
     }
 
+    // 屏蔽标签：命中任一带屏蔽标签的书直接剔除（对整池过滤，保证抽到的都不含屏蔽标签）
+    const blocked = blockedSetOf(req.query);
+    let candidates = blocked.size ? pool.items.filter((it) => !isTagBlocked(it.tags, blocked)) : pool.items.slice();
+
     // 每次抽奖做一次 Fisher-Yates 洗牌，从书池里取 count 本；请求数大于池子则允许重复源但书不重复
-    const shuffled = pool.items.slice();
+    const shuffled = candidates;
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
@@ -654,7 +756,7 @@ export function registerSources(app) {
         ? `/api/online/img?sid=${encodeURIComponent(String(it.sourceId).replace(/^js:/, ''))}&u=${encodeURIComponent(it.cover)}`
         : '',
     }));
-    res.json({ items, poolSize: pool.items.length, media, genres: genreIds, cached: poolWasCached });
+    res.json({ items, poolSize: candidates.length, media, genres: genreIds, cached: poolWasCached });
   });
 
   // 新增 / 更新自定义书源
@@ -744,19 +846,29 @@ export function registerSources(app) {
     const js = jsOf(req.params.id);
     if (!js) return res.status(404).json({ error: '书源不存在' });
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const blocked = blockedSetOf(req.query);
     try {
       const tabs = jsDiscoverTabs(js);
       if (!tabs.length) return res.json({ tabs: [], items: [], maxPage: 1 });
       const tabIndex = Math.min(Math.max(0, parseInt(req.query.tab, 10) || 0), tabs.length - 1);
       const ck = `${js.key}:${tabIndex}:${page}`;
       const hit = discoverCache.get(ck);
+      // 发现页部分源不给 tags：用标签整合时记录的书名→标签索引回填，屏蔽才能生效
+      const enrich = (items) => jsTagsIndexApply(js.key, items || []);
+      const applyBlock = (data) => ({
+        ...data,
+        items: (() => {
+          const full = enrich(data.items);
+          return blocked.size ? full.filter((it) => !isTagBlocked(it.tags, blocked)) : full;
+        })(),
+      });
       if (hit && now() - hit.at < DISCOVER_TTL) {
-        return res.json({ ...hit.data, tabs, tab: tabIndex, cached: true });
+        return res.json({ ...applyBlock(hit.data), tabs, tab: tabIndex, cached: true });
       }
       const r = await jsDiscoverLoad(js, tabIndex, page);
       const data = { items: r.items, maxPage: r.maxPage };
       if (r.items && r.items.length) discoverCache.set(ck, { at: now(), data });
-      return res.json({ ...data, tabs, tab: tabIndex });
+      return res.json({ ...applyBlock(data), tabs, tab: tabIndex });
     } catch (err) {
       return sourceError(res, err);
     }
@@ -768,17 +880,27 @@ export function registerSources(app) {
   router.get('/:id/search', async (req, res) => {
     const kw = String(req.query.kw || '').trim();
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const blocked = blockedSetOf(req.query);
     if (!kw) return res.status(400).json({ error: '请输入搜索关键词' });
     const sck = `${req.params.id}:${kw}:${page}`;
     const sh = searchCache.get(sck);
-    if (sh && now() - sh.t < SEARCH_TTL) return res.json({ ...sh.data, cached: true });
+    const jsInst = jsOf(req.params.id);
+    const enrich = (items) => jsInst ? jsTagsIndexApply(jsInst.key, items || []) : (items || []);
+    const applyBlock = (data) => ({
+      ...data,
+      items: (() => {
+        const full = enrich(data.items);
+        return blocked.size ? full.filter((it) => !isTagBlocked(it.tags, blocked)) : full;
+      })(),
+    });
+    if (sh && now() - sh.t < SEARCH_TTL) return res.json({ ...applyBlock(sh.data), cached: true });
     try {
-      const js = jsOf(req.params.id);
+      const js = jsInst;
       if (js) {
         const items = await jsSearch(js, kw, page);
         const data = { items };
         if (items.length) { searchCache.set(sck, { t: now(), data }); if (searchCache.size > 300) searchCache.delete(searchCache.keys().next().value); }
-        return res.json(data);
+        return res.json(applyBlock(data));
       }
       const source = allSources().find((s) => s.id === req.params.id);
       if (!source) return res.status(404).json({ error: '书源不存在' });

@@ -2719,3 +2719,32 @@ html, body, #root { overscroll-behavior-x: none; }
   .lottery-card { opacity: 1; animation: none; }
   .lottery-dice { animation: none; }
 }
+
+/* 标签屏蔽设置：整合标签网格 + 抽奖机内联屏蔽区 */
+.block-tag-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.block-tag-grid .chip { font-size: 12px; padding: 5px 11px; }
+.block-tag-grid .chip.active {
+  background: var(--danger, #e5484d);
+  color: #fff;
+  border-color: var(--danger, #e5484d);
+  text-decoration: line-through;
+  opacity: 0.9;
+}
+.block-inline {
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(127, 127, 127, 0.05);
+}
+.lottery-tag.blocked {
+  color: var(--danger, #e5484d);
+  background: rgba(229, 72, 77, 0.14);
+  text-decoration: line-through;
+}

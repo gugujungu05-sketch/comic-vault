@@ -8,12 +8,14 @@ import { useSession } from '../lib/session';
 import { online as onlineApi, sources as sourcesApi, mediaUrl } from '../lib/api';
 import { importTaskStore } from '../lib/importTask';
 import { onlineShelfLocal } from '../lib/onlineShelfLocal';
+import { blockedTags, LOTTERY_SCOPE, allScope, normalizeTag } from '../lib/blockedTags';
 import type {
   OnlineShelfItem,
   SourceChapterItem,
   SourceComicDetail,
   SourceInfo,
   SourceSearchItem,
+  SourceTagStat,
   LotteryItem,
   LotteryGenre,
 } from '../lib/api';
@@ -84,6 +86,14 @@ export default function SourcesPage() {
   const [lotteryPoolSize, setLotteryPoolSize] = useState(0);
   const [lotteryRolling, setLotteryRolling] = useState(false);
   const [lotteryMsg, setLotteryMsg] = useState('');
+  /* 标签屏蔽：每个源 / 抽奖机各自维护一份被屏蔽标签清单 */
+  const [blockScope, setBlockScope] = useState('');          // 当前屏蔽设置针对的 scope（源 id / __lottery__ / __all_*__）
+  const [blockScopeName, setBlockScopeName] = useState('');  // 展示用名称
+  const [showBlock, setShowBlock] = useState(false);
+  const [blockTags, setBlockTags] = useState<SourceTagStat[]>([]);
+  const [blockLoading, setBlockLoading] = useState(false);
+  const [blockSelected, setBlockSelected] = useState<string[]>([]); // 选中的标签原文（提交时归一化）
+  const [blockRev, setBlockRev] = useState(0); // 屏蔽变更版本号，驱动已加载结果重新过滤
   /* 浏览器返回键：把「详情(1)/阅读器(2)」当作历史层压入 history.state，
      popstate 时按目标层卸载对应 UI，而不是让浏览器退回主页。 */
   const viewLayerRef = useRef(0);
@@ -135,6 +145,54 @@ export default function SourcesPage() {
     }));
     setLoginStatus(Object.fromEntries(pairs));
   }
+
+  /** 某个 scope 生效的屏蔽标签（归一化 key）。聚合视图会合并该分类下所有源的屏蔽。 */
+  function effectiveBlocked(scope: string): string[] {
+    if (scope.startsWith('__all_')) {
+      const t = tab === 'novel' ? 'novel' : 'comic';
+      return blockedTags.merge(allScope(t), ...list.filter((s) => (s.mediaType || 'comic') === t).map((s) => s.id));
+    }
+    return blockedTags.get(scope);
+  }
+
+  /** 打开屏蔽设置：加载 scope 的标签整合清单 + 已选中的标签 */
+  async function openBlockSettings(scope: string, name: string) {
+    setBlockScope(scope);
+    setBlockScopeName(name);
+    setBlockSelected(blockedTags.get(scope));
+    setShowBlock(true);
+    setBlockTags([]);
+    setBlockLoading(true);
+    try {
+      // 抽奖机 / 聚合视图用全局标签整合；单源用该源的标签（scope 保留 js: 前缀，与后端路由一致）
+      const isGlobal = scope === LOTTERY_SCOPE || scope.startsWith('__all_');
+      const r = isGlobal ? await sourcesApi.allTags() : await sourcesApi.sourceTags(scope);
+      setBlockTags(r.tags || []);
+    } catch (err) {
+      errorToast(err, '标签整合失败');
+    } finally {
+      setBlockLoading(false);
+    }
+  }
+
+  /** 保存屏蔽设置并让已加载的结果立即重新过滤 */
+  function saveBlockSettings() {
+    blockedTags.set(blockScope, blockSelected);
+    setBlockRev((v) => v + 1);
+    setShowBlock(false);
+    toast(blockSelected.length ? `已屏蔽 ${blockSelected.length} 个标签` : '已清空屏蔽设置');
+  }
+
+  /** 当前浏览视图（单源 / 聚合）生效的屏蔽清单 */
+  const viewBlocked = useMemo(() => {
+    const scope = isAll ? allScope(tab) : activeId;
+    return scope ? effectiveBlocked(scope) : [];
+    // blockRev/list 变化都要重算：list 决定聚合时要合并哪些源
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAll, tab, activeId, blockRev, list]);
+
+  /** 结果前端再过一道屏蔽：聚合模式结果在本地合并、抽奖书池在服务端过滤，这里统一兜底 */
+  const shownResults = useMemo(() => results.filter((it) => !blockedTags.isBlocked(it.tags, viewBlocked)), [results, viewBlocked]);
 
   /* ---- 历史层管理：详情=1，阅读器=2，列表=0 ---- */
   const setLayer = (n: number) => { viewLayerRef.current = n; };
@@ -207,7 +265,9 @@ export default function SourcesPage() {
           p,
           new Promise<null>((r) => setTimeout(() => r(null), 8000)),
         ]);
-        const rs = await Promise.all(tabSources.map((s) => withTimeout(sourcesApi.discover(s.id, tab, page).catch(() => null))));
+        const rs = await Promise.all(tabSources.map((s) => withTimeout(
+          sourcesApi.discover(s.id, tab, page, blockedTags.get(s.id)).catch(() => null),
+        )));
         const seen = new Set<string>();
         const merged: SourceSearchItem[] = [];
         for (let i = 0; i < rs.length; i++) {
@@ -226,7 +286,7 @@ export default function SourcesPage() {
         setDiscoverPage(page);
         setSearched(false);
       } else {
-        const r = await sourcesApi.discover(sid, tab, page);
+        const r = await sourcesApi.discover(sid, tab, page, blockedTags.get(sid));
         setDiscoverTabs(r.tabs || []);
         setResults(r.items || []);
         setDiscoverMaxPage(r.maxPage || 1);
@@ -253,10 +313,15 @@ export default function SourcesPage() {
     setLotteryMsg('');
     try {
       const genres = lotteryGenre === 'all' ? ['all'] : [lotteryGenre];
-      const r = await sourcesApi.lottery({ media: lotteryMedia, genres, count: lotteryCount, refresh });
+      const r = await sourcesApi.lottery({
+        media: lotteryMedia, genres, count: lotteryCount, refresh,
+        blocked: blockedTags.get(LOTTERY_SCOPE),
+      });
       // 至少滚一帧动画，避免命中缓存时瞬间跳出、没有抽奖手感
       await new Promise((res) => setTimeout(res, 620));
-      setLotteryItems(r.items || []);
+      // 前端再过一道屏蔽（与服务端规则一致，双保险）
+      const lottoBlocked = blockedTags.get(LOTTERY_SCOPE);
+      setLotteryItems((r.items || []).filter((it) => !blockedTags.isBlocked(it.tags, lottoBlocked)));
       setLotteryPoolSize(r.poolSize || 0);
       if (!r.items?.length) setLotteryMsg('这个题材暂时没抽到书，换个题材或点「换一批」试试');
     } catch (err) {
@@ -277,7 +342,9 @@ export default function SourcesPage() {
     resetToList();
     setResults([]);
     try {
-      const rs = await Promise.all(targets.map((s) => sourcesApi.search(s.id, kw.trim()).catch(() => ({ items: [] as SourceSearchItem[] }))));
+      const rs = await Promise.all(targets.map((s) =>
+        sourcesApi.search(s.id, kw.trim(), 1, blockedTags.get(s.id)).catch(() => ({ items: [] as SourceSearchItem[] })),
+      ));
       const seen = new Set<string>();
       const merged: SourceSearchItem[] = [];
       for (let i = 0; i < rs.length; i++) {
@@ -758,7 +825,16 @@ export default function SourcesPage() {
           {!searched && !detail && (
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               <h2 style={{ margin: 0, fontSize: 15, marginTop: 4 }}>发现 · {isAll ? `全部${tab === 'comic' ? '漫画' : '小说'}` : (active?.name || '')}</h2>
-              {!searched && discoverMaxPage > 1 && (
+              <div className="row" style={{ gap: 6 }}>
+                <button
+                  className={`btn sm ${viewBlocked.length ? 'primary' : ''}`}
+                  onClick={() => openBlockSettings(isAll ? allScope(tab) : activeId, isAll ? `全部${tab === 'comic' ? '漫画' : '小说'}` : (active?.name || '当前源'))}
+                  title="整合本源所有标签，选择要屏蔽的题材，带这些标签的书将不再出现"
+                >
+                  <Icon name="eye" size={14} /> 屏蔽标签
+                  {viewBlocked.length > 0 && <span className="chip-count">{viewBlocked.length}</span>}
+                </button>
+                {!searched && discoverMaxPage > 1 && (
                 <div className="row" style={{ gap: 6 }}>
                   <button className="btn sm" disabled={discovering || discoverPage <= 1}
                     onClick={() => loadDiscover(activeId, discoverTab, discoverPage - 1)}>← 上一页</button>
@@ -766,14 +842,15 @@ export default function SourcesPage() {
                   <button className="btn sm" disabled={discovering || discoverPage >= discoverMaxPage}
                     onClick={() => loadDiscover(activeId, discoverTab, discoverPage + 1)}>下一页 →</button>
                 </div>
-              )}
+                )}
+              </div>
             </div>
           )}
 
           {/* 搜索/发现结果 */}
-          {!!results.length && !detail && (
+          {!!shownResults.length && !detail && (
             <div className="comic-grid">
-              {results.map((r, i) => (
+              {shownResults.map((r, i) => (
                 <div key={i} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openComic(r)}>
                   <div className="cover">
                     {r.cover ? <img src={coverUrl(r.sourceId || activeId, r.cover)} alt={r.title} loading="lazy" /> : (
@@ -890,10 +967,14 @@ export default function SourcesPage() {
             </div>
           )}
 
-          {!results.length && !detail && !searching && !discovering && (
+          {!shownResults.length && !detail && !searching && !discovering && (
             <div className="empty">
-              <h3>{searched ? '没有找到结果' : '这个来源暂时没有可浏览的内容'}</h3>
-              <p>{searched ? '换个关键词或书源试试。' : '可以在上方搜索框输入名称，或换一个来源。'}</p>
+              <h3>{viewBlocked.length && results.length ? '结果都被屏蔽了' : (searched ? '没有找到结果' : '这个来源暂时没有可浏览的内容')}</h3>
+              <p>
+                {viewBlocked.length && results.length
+                  ? `当前有 ${viewBlocked.length} 个标签被屏蔽，点上方「屏蔽标签」可查看或调整。`
+                  : (searched ? '换个关键词或书源试试。' : '可以在上方搜索框输入名称，或换一个来源。')}
+              </p>
             </div>
           )}
           {discovering && !results.length && (
@@ -962,6 +1043,29 @@ export default function SourcesPage() {
             {lotteryPoolSize > 0 && <span className="muted" style={{ fontSize: 11 }}>候选池 {lotteryPoolSize} 本</span>}
           </div>
 
+          {/* 抽奖机屏蔽标签：整合所有源所有书的标签题材，多选后带这些标签的书不会被抽到 */}
+          <div className="block-inline" style={{ marginBottom: 14 }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <span className="muted" style={{ fontSize: 12 }}>
+                屏蔽标签 <span className="muted" style={{ fontSize: 11 }}>· 带这些题材的书不会被抽到</span>
+              </span>
+              <div className="row" style={{ gap: 6 }}>
+                {blockedTags.get(LOTTERY_SCOPE).length > 0 && (
+                  <button className="btn sm ghost" onClick={() => { blockedTags.set(LOTTERY_SCOPE, []); setLotteryItems([]); setBlockRev((v) => v + 1); toast('已清空抽奖机屏蔽标签'); }}>清空</button>
+                )}
+                <button className="btn sm" onClick={() => openBlockSettings(LOTTERY_SCOPE, '抽奖机（所有源）')}>
+                  <Icon name="eye" size={14} /> 设置屏蔽
+                  {blockedTags.get(LOTTERY_SCOPE).length > 0 && <span className="chip-count">{blockedTags.get(LOTTERY_SCOPE).length}</span>}
+                </button>
+              </div>
+            </div>
+            {!!blockedTags.get(LOTTERY_SCOPE).length && (
+              <div className="lottery-tags" style={{ marginTop: 8 }}>
+                {blockedTags.get(LOTTERY_SCOPE).map((t) => <span key={t} className="lottery-tag blocked">{t}</span>)}
+              </div>
+            )}
+          </div>
+
           {/* 抽奖动画占位 */}
           {lotteryRolling && (
             <div className="lottery-rolling">
@@ -1001,6 +1105,61 @@ export default function SourcesPage() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {/* 标签屏蔽设置：整合当前 scope 所有书的标签题材，多选屏蔽 */}
+      {showBlock && (
+        <Modal
+          title={`屏蔽标签 · ${blockScopeName}`}
+          icon={<Icon name="eye" />}
+          onClose={() => setShowBlock(false)}
+          width={620}
+          footer={
+            <div className="row" style={{ gap: 8, justifyContent: 'flex-end', width: '100%' }}>
+              <button className="btn" onClick={() => setBlockSelected([])} disabled={!blockSelected.length}>清空选择</button>
+              <button className="btn primary" onClick={saveBlockSettings}>
+                完成{blockSelected.length ? `（屏蔽 ${blockSelected.length} 个）` : ''}
+              </button>
+            </div>
+          }
+        >
+          <p className="muted" style={{ margin: '0 0 12px', fontSize: 13, lineHeight: 1.7 }}>
+            这里整合了<b>{blockScopeName}</b>所有书的标签题材。选中标签后，<b>带该标签的书都不会再出现</b>（发现、搜索、抽奖均已过滤），可多选，点「完成」生效。
+          </p>
+          <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+            <button className="btn sm" onClick={() => openBlockSettings(blockScope, blockScopeName)} title="重新抓取该范围的最新标签">
+              <Icon name="refresh" size={14} /> 重新整合
+            </button>
+            <span className="muted" style={{ fontSize: 11 }}>
+              共 {blockTags.length} 个标签{blockTags.length ? ` · 按出现频率排序` : ''}
+            </span>
+          </div>
+          {blockLoading ? (
+            <div className="empty"><p>正在整合标签题材，请稍候…</p></div>
+          ) : blockTags.length ? (
+            <div className="block-tag-grid">
+              {blockTags.map((t) => {
+                const on = blockSelected.some((x) => normalizeTag(x) === normalizeTag(t.tag));
+                return (
+                  <button
+                    key={t.tag}
+                    className={`chip ${on ? 'active' : ''}`}
+                    onClick={() => setBlockSelected((prev) =>
+                      on ? prev.filter((x) => normalizeTag(x) !== normalizeTag(t.tag)) : [...prev, t.tag],
+                    )}
+                    title={t.sources?.length ? `出现于：${t.sources.slice(0, 6).join('、')}` : undefined}
+                  >
+                    {t.tag} <span className="chip-count">×{t.count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty">
+              <p>这个范围暂时没有整合到标签。部分书源不提供题材标签，可稍后点「重新整合」重试。</p>
             </div>
           )}
         </Modal>

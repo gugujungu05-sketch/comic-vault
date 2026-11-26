@@ -39,6 +39,9 @@ function mangaFireVrf() {
 const SRC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'js-sources');
 const COOKIE_FILE = path.join(DATA_DIR, 'js-source-cookies.json');
 const DATA_FILE = path.join(DATA_DIR, 'js-source-data.json');
+/* 书名→标签索引：标签整合时顺带记录，发现/搜索结果缺 tags 时据此回填，
+   让「带该标签的书不出现」对不返回 tags 的列表也生效。按源隔离，持久化。 */
+const TAG_INDEX_FILE = path.join(DATA_DIR, 'js-source-tag-index.json');
 const UA_DEFAULT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 const FETCH_TIMEOUT = 30000;
@@ -57,7 +60,47 @@ function writeJsonMap(file, map) {
 }
 let cookieMap = readJsonMap(COOKIE_FILE);
 let dataMap = readJsonMap(DATA_FILE);
+let tagIndexMap = readJsonMap(TAG_INDEX_FILE); // { [sourceKey]: { [normalizedTitle]: tags[] } }
 const saveSoon = (file, map) => writeJsonMap(file, map); // 写入量小，直接同步落盘
+
+/** 简单书名归一化：去空白/标点、小写（与前端/后端屏蔽归一化一致） */
+function normBookKey(t) {
+  return String(t || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+}
+
+/** 给某个源记录「书名→标签」，供发现/搜索结果缺 tags 时回填 */
+function recordTagIndex(sourceKey, items) {
+  const bucket = tagIndexMap[sourceKey] || (tagIndexMap[sourceKey] = {});
+  let changed = false;
+  for (const it of items) {
+    const k = normBookKey(it.title);
+    if (!k) continue;
+    const tags = flattenTagsSafe(it.tags);
+    if (tags.length && JSON.stringify(bucket[k]) !== JSON.stringify(tags)) {
+      bucket[k] = tags;
+      changed = true;
+    }
+  }
+  if (changed) saveSoon(TAG_INDEX_FILE, tagIndexMap);
+}
+
+/** flattenTags 的安全别名（此函数定义在前文 normalizeTag 区，但 hoist 用函数声明） */
+function flattenTagsSafe(tags) {
+  if (Array.isArray(tags)) return tags.map(String);
+  if (tags && typeof tags === 'object') return Object.values(tags).flat().map(String);
+  return [];
+}
+
+/** 用已记录的索引给列表项回填 tags（仅当该项自身没有 tags 时） */
+export function jsTagsIndexApply(sourceKey, items) {
+  const bucket = tagIndexMap[sourceKey];
+  if (!bucket) return items;
+  return items.map((it) => {
+    if (it.tags && it.tags.length) return it;
+    const indexed = bucket[normBookKey(it.title)];
+    return indexed && indexed.length ? { ...it, tags: indexed } : it;
+  });
+}
 
 function domainOf(url) {
   try { return new URL(url).hostname; } catch { return ''; }
@@ -390,6 +433,8 @@ export async function jsSearch(source, keyword, page = 1) {
     cover: c.cover || '',
     author: c.author || '',
     latestChapter: c.latestChapter || null,
+    tags: Array.isArray(c.tags) ? c.tags.map(String)
+      : (c.tags && typeof c.tags === 'object' ? Object.values(c.tags).flat().map(String) : []),
   }));
 }
 
@@ -558,6 +603,73 @@ export async function jsLotteryLoad(source, entry, page = 1) {
   const out = await cc.load(entry.part, entry.param, [], Math.max(1, Number(page) || 1));
   const comics = Array.isArray(out) ? out : (out && Array.isArray(out.comics) ? out.comics : []);
   return toComicItems(comics);
+}
+
+/** 标签归一化：去掉空白/标点/符号并转小写，用于跨源合并与屏蔽匹配 */
+export function normalizeTag(t) {
+  return String(t || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+}
+
+/** 把书上的 tags（数组或 {分组:[...]} 对象）摊平成字符串数组 */
+export function flattenTags(tags) {
+  if (Array.isArray(tags)) return tags.map(String);
+  if (tags && typeof tags === 'object') return Object.values(tags).flat().map(String);
+  return [];
+}
+
+/** 一本书是否命中屏蔽标签：任一标签归一化后等于/包含屏蔽项即视为命中。
+ *  blocked 为 normalizeTag 后的集合。 */
+export function isTagBlocked(tags, blocked) {
+  if (!blocked || !blocked.size) return false;
+  return flattenTags(tags).some((t) => {
+    const n = normalizeTag(t);
+    if (!n) return false;
+    for (const b of blocked) if (b && (n === b || n.includes(b))) return true;
+    return false;
+  });
+}
+
+/** 聚合某个源「所有书」的标签题材：分类题材名 + 各分类入口/发现页第一页的书籍 tags。
+ *  返回 [{ tag, count }]（tag 保留原文用于展示），按词频降序。慢，由调用方做缓存与超时。 */
+export async function jsCollectTags(source) {
+  const counter = new Map();
+  const add = (t) => {
+    const s = String(t || '').trim();
+    if (!s || s.length > 24) return;
+    if (!normalizeTag(s)) return;
+    counter.set(s, (counter.get(s) || 0) + 1);
+  };
+  const sourceKey = source.key;
+
+  // 1) 分类题材入口名（最稳定的题材标签来源，成本低）
+  let entries = [];
+  try { entries = await jsLotteryGenreEntries(source); } catch { /* 单个源失败不影响其它 */ }
+  for (const e of entries) if (e.name && e.name !== '全部') add(e.name);
+
+  // 2) 各分类入口第一页书籍 tags（限量并发，避免站点压力过大）；同时记录书名→标签
+  const picked = entries.filter((e) => e.name !== '全部' && e.param).slice(0, 12);
+  await Promise.all(picked.map(async (e) => {
+    try {
+      const items = await jsLotteryLoad(source, e, 1);
+      recordTagIndex(sourceKey, items);
+      for (const it of items) for (const t of (it.tags || [])) add(t);
+    } catch { /* 忽略单个分类失败 */ }
+  }));
+
+  // 3) 发现页各 tab 第一页书籍 tags；同时记录书名→标签
+  let tabs = [];
+  try { tabs = jsDiscoverTabs(source); } catch { /* 忽略 */ }
+  await Promise.all(tabs.slice(0, 8).map(async (tab) => {
+    try {
+      const r = await jsDiscoverLoad(source, tab.index, 1);
+      recordTagIndex(sourceKey, r.items || []);
+      for (const it of (r.items || [])) for (const t of (it.tags || [])) add(t);
+    } catch { /* 忽略单个 tab 失败 */ }
+  }));
+
+  return [...counter.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
 /** 为某个 JS 源设置站点登录 Cookie（书源账号登录入口用）。

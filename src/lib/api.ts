@@ -875,9 +875,18 @@ export interface SourceSearchItem {
   cover: string;
   author?: string;
   latestChapter?: string | null;
+  /** 书籍标签题材，用于屏蔽过滤 */
+  tags?: string[];
   /** 前端「全部漫画 / 合并搜索」聚合时注入，标识结果来自哪个书源 */
   sourceId?: string;
   sourceName?: string;
+}
+
+/** 标签题材统计项：tag=原文（展示用），count=出现次数，sources=出现的源名 */
+export interface SourceTagStat {
+  tag: string;
+  count: number;
+  sources?: string[];
 }
 export interface SourceChapterItem {
   title: string;
@@ -976,12 +985,13 @@ export const sources = {
   lotteryGenres: () => request<{ genres: LotteryGenre[] }>('/api/sources/lottery/genres'),
 
   /** 抽奖机：按类型/题材从所有源抽取书籍（自动跨源按书名去重） */
-  lottery: (body: { media?: 'comic' | 'novel' | 'all'; genres?: string[]; count?: number; refresh?: boolean }) => {
+  lottery: (body: { media?: 'comic' | 'novel' | 'all'; genres?: string[]; count?: number; refresh?: boolean; blocked?: string[] }) => {
     const q = new URLSearchParams();
     if (body.media) q.set('media', body.media);
     if (body.genres?.length) q.set('genres', body.genres.join(','));
     if (body.count) q.set('count', String(body.count));
     if (body.refresh) q.set('refresh', '1');
+    if (body.blocked?.length) q.set('blocked', body.blocked.join(','));
     return request<{
       items: LotteryItem[];
       poolSize: number;
@@ -990,6 +1000,18 @@ export const sources = {
       cached: boolean;
     }>(`/api/sources/lottery?${q.toString()}`);
   },
+
+  /** 标签整合：所有源所有书的标签题材（抽奖机屏蔽设置用） */
+  allTags: (refresh = false) =>
+    request<{ tags: SourceTagStat[]; cached: boolean; sourceCount: number }>(
+      `/api/sources/tags/all${refresh ? '?refresh=1' : ''}`,
+    ),
+
+  /** 标签整合：某个源所有书的标签（单源屏蔽设置用） */
+  sourceTags: (id: string, refresh = false) =>
+    request<{ tags: SourceTagStat[]; source: string; cached: boolean; stale?: boolean }>(
+      `/api/sources/${id}/tags${refresh ? '?refresh=1' : ''}`,
+    ),
 
   save: (body: {
     id?: string;
@@ -1023,15 +1045,21 @@ export const sources = {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, password }),
     }),
 
-  search: (id: string, kw: string, page = 1) =>
-    request<{ items: SourceSearchItem[]; url: string }>(
-      `/api/sources/${id}/search?kw=${encodeURIComponent(kw)}&page=${page}`,
-    ),
+  search: (id: string, kw: string, page = 1, blocked?: string[]) => {
+    const q = new URLSearchParams({ kw, page: String(page) });
+    if (blocked?.length) q.set('blocked', blocked.join(','));
+    return request<{ items: SourceSearchItem[]; url: string }>(
+      `/api/sources/${id}/search?${q.toString()}`,
+    );
+  },
 
-  discover: (id: string, tab = 0, page = 1) =>
-    request<{ tabs: { index: number; title: string; type: string }[]; items: SourceSearchItem[]; maxPage: number; tab: number }>(
-      `/api/sources/${id}/discover?tab=${tab}&page=${page}`,
-    ),
+  discover: (id: string, tab = 0, page = 1, blocked?: string[]) => {
+    const q = new URLSearchParams({ tab: String(tab), page: String(page) });
+    if (blocked?.length) q.set('blocked', blocked.join(','));
+    return request<{ tabs: { index: number; title: string; type: string }[]; items: SourceSearchItem[]; maxPage: number; tab: number }>(
+      `/api/sources/${id}/discover?${q.toString()}`,
+    );
+  },
 
   comic: (id: string, url: string) =>
     request<SourceComicDetail>(`/api/sources/${id}/comic`, {
