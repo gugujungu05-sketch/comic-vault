@@ -102,17 +102,41 @@ class MangaFire extends ComicSource {
             const d = await this.api("detail", hid);
             const info = d.data || {};
             if (!info.title) throw new Error("作品不存在或已下架");
-            // 章节列表（按话数，英文，desc）
+            // 章节列表（按话数，英文）：取全部页，不再只取最新 20 话。
+            // VRF 与查询参数绑定，宿主桥接会一次导航循环点完所有分页并缓存每页 VRF，
+            // 因此逐页请求可复用缓存、不会重复启动浏览器。
             let chapters = {};
+            const allItems = [];
             try {
-                const ch = await this.api("chapters", hid, 1);
-                // VRF 与查询参数绑定，浏览器只能捕获详情页默认发起的第 1 页请求；
-                // 因此这里只取第 1 页（最新 20 话），保证稳定可靠、详情不卡死。
-                const items = ch.items || [];
-                // 按话数升序输出（框架会识别数字排序）
-                items.sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
-                for (const c of items) {
-                    const label = "第 " + (c.number || c.id) + " 话" + (c.name ? " " + c.name : "");
+                const MAX_PAGES = 60; // 上限 60 页 / 1200 话，防止超长作品拖垮详情
+                // 先取第 1 页：宿主桥接会一次导航缓存该书所有分页的 VRF，
+                // 之后各页凭证命中磁盘缓存、无需再启动浏览器。
+                const first = await this.api("chapters", hid, 1);
+                let items = first.items || [];
+                for (const c of items) allItems.push(c);
+                const meta0 = first.meta || {};
+                const lastPage = Math.min(MAX_PAGES, Number(meta0.lastPage) || 1);
+                // 其余页并发拉取（限流 6），VRF 已缓存，纯 HTTP 很快
+                const rest = [];
+                for (let p = 2; p <= lastPage; p++) rest.push(p);
+                let idx = 0;
+                const workers = Array.from({ length: Math.min(6, rest.length || 1) }, async () => {
+                    while (idx < rest.length) {
+                        const p = rest[idx++];
+                        try {
+                            const ch = await this.api("chapters", hid, p);
+                            for (const c of (ch.items || [])) allItems.push(c);
+                        } catch (e) { /* 单页失败不影响其它页 */ }
+                    }
+                });
+                await Promise.all(workers);
+                // 按话数升序输出（框架会识别数字排序）；同一话多版本（正篇/Side Story）按 id 区分保留
+                allItems.sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
+                for (const c of allItems) {
+                    // number 才是话数；个别章节没有 number，此时用 name，不把长 id 当话数显示
+                    const num = Number(c.number) || 0;
+                    const head = (num > 0 && num < 100000) ? ("第 " + num + " 话") : (c.name ? String(c.name) : "章节");
+                    const label = head + (c.name && num > 0 ? " " + c.name : "");
                     chapters[String(c.id)] = label;
                 }
             } catch { /* 章节失败仍有详情 */ }

@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const PY = path.join(__dirname, 'mangafire-vrf.py');
 const CACHE_FILE = path.join(process.env.CV_DATA_DIR || path.join(__dirname, '..', 'data'), 'mangafire-vrf-cache.json');
 const CACHE_TTL = 7 * 24 * 3600 * 1000;
-const REQ_TIMEOUT = 70000;
+const REQ_TIMEOUT = 180000;
 const IDLE_EXIT = 5 * 60 * 1000;
 
 let child = null;
@@ -121,7 +121,20 @@ async function generate(action, value, page) {
   // 串行化：Python 侧是单浏览器
   const run = queue.then(() => callPython(action, value, page));
   queue = run.catch(() => {});
-  const url = await run;
+  const result = await run;
+  // chapters action 一次返回所有分页 VRF（{__all__:{page:url}}），全部写入缓存，
+  // 避免逐页重复启动浏览器导航（一本 20+ 页的书逐页生成要几分钟）。
+  if (result && typeof result === 'object' && result.__all__) {
+    const now = Date.now();
+    for (const [p, u] of Object.entries(result.__all__)) {
+      c[cacheKey('chapters', value, Number(p))] = { t: now, url: u };
+    }
+    saveCache();
+    const hitAll = c[key];
+    if (hitAll) return hitAll.url;
+    throw new Error('MangaFire 未捕获到第 ' + page + ' 页凭证');
+  }
+  const url = result;
   c[key] = { t: Date.now(), url };
   saveCache();
   return url;

@@ -96,11 +96,89 @@ async def gen_detail(hid):
     return pick(urls, lambda u: bool(pat.search(u)))
 
 
+# 每本书所有分页的 chapters VRF 内存缓存：{hid: {page: full_url}}
+# 一次导航循环点完所有分页即可缓存全部页，避免逐页重新导航（11 页书逐页导航要 2 分钟）。
+CHAPTER_VRF = {}
+
+
+def _page_of(url):
+    import re
+    m = re.search(r'[?&]page=(\d+)', str(url))
+    return int(m.group(1)) if m else None
+
+
 async def gen_chapters(hid, page):
-    await PAGE.goto('https://mangafire.to/title/' + str(hid), wait_until='domcontentloaded', timeout=60000)
+    hid = str(hid)
+    cache = CHAPTER_VRF.get(hid)
+    if cache and page in cache:
+        return cache[page]
+
+    # 首次：导航详情页，等待 page=1 请求，然后循环点「下一页」捕获所有分页 VRF。
+    await PAGE.goto('https://mangafire.to/title/' + hid, wait_until='domcontentloaded', timeout=60000)
     await PAGE.wait_for_timeout(4500)
+
     urls = await captured()
-    return pick(urls, lambda u: '/api/titles/' + str(hid) + '/chapters?' in u)
+    store = {}
+    for u in urls:
+        if '/api/titles/' + hid + '/chapters?' in u and 'vrf=' in u:
+            p = _page_of(u)
+            if p:
+                store[p] = u
+
+    async def harvest():
+        """把当前已捕获的 chapters 请求按页号存入 store"""
+        for u in await captured():
+            if '/api/titles/' + hid + '/chapters?' in u and 'vrf=' in u:
+                p = _page_of(u)
+                if p:
+                    store[p] = u
+
+    # 站点分页控件有个坑：一路点 Next 到第 21 页后 Next 按钮会消失，
+    # 但 API 实际还有更多页（meta.lastPage 可能到 23+）。
+    # 因此改为：先点「Last page」跳到最后一页，再一路点「Previous page」回到第 1 页，
+    # 这样每一页的 API 请求都会被捕获，覆盖所有分页。
+    clicked_last = await PAGE.evaluate("""() => {
+      var b = document.querySelector('button.npager__nav[aria-label="Last page"]');
+      if (!b || b.disabled) return false;
+      b.click(); return true;
+    }""")
+    if clicked_last:
+        await PAGE.wait_for_timeout(1600)
+        await harvest()
+        # 从最后一页往回点 Previous，直到第 1 页（按钮禁用）
+        for _ in range(1, 70):
+            has_prev = await PAGE.evaluate("""() => {
+              var b = document.querySelector('button.npager__nav[aria-label="Previous page"]');
+              if (!b || b.disabled) return false;
+              b.click(); return true;
+            }""")
+            if not has_prev:
+                break
+            await PAGE.wait_for_timeout(1200)
+            await harvest()
+    # 反向遍历（Last→Previous）通常已覆盖全部页；回到第 1 页后，
+    # 对开头几页显式点数字按钮，补上被 Previous 跳过的页（如 page=2）。
+    await PAGE.evaluate("""() => {
+      var b = document.querySelector('button.npager__nav[aria-label="First page"]');
+      if (b && !b.disabled) b.click();
+    }""")
+    await PAGE.wait_for_timeout(1200)
+    await harvest()
+    for n in range(2, 6):
+        if n in store:
+            continue
+        clicked = await PAGE.evaluate("""(n) => {
+          var b = Array.from(document.querySelectorAll('button.npager__num')).find(function(e){ return e.textContent.trim() === String(n); });
+          if (b && !b.disabled) { b.click(); return true; }
+          return false;
+        }""", n)
+        if clicked:
+            await PAGE.wait_for_timeout(1000)
+            await harvest()
+
+    CHAPTER_VRF[hid] = store
+    # 一次返回所有页，让 Node 侧一次性缓存全部；避免逐页重复导航浏览器。
+    return {"__all__": {str(k): v for k, v in store.items()}}
 
 
 async def gen_images(hid, slug, chapter_id):
