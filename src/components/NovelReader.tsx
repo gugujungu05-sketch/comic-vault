@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../lib/api';
+import { api, mediaUrl } from '../lib/api';
 import type { Comic } from '../types';
 
 /**
@@ -232,7 +232,9 @@ export function NovelReader({
 
   function BodyBlocks({ text: raw }: { text: string }) {
     return <>{textBlocks(raw).map((b, i) => b.t === 'img'
-      ? <img key={i} className="novel-illus" src={b.v} alt="插图" loading="lazy"
+      ? <img key={i} className="novel-illus" src={mediaUrl(b.v)} alt="插图" loading="lazy"
+          crossOrigin="anonymous"
+          onError={(e) => { e.currentTarget.style.display = 'none'; }}
           onClick={(e) => { e.stopPropagation(); const el = e.currentTarget; if (el.style.cursor !== 'zoom-out') { el.style.cursor = 'zoom-out'; el.style.maxWidth = '100%'; } }} />
       : <p key={i}>{b.v}</p>)}</>;
   }

@@ -44,6 +44,22 @@ class MangaFire extends ComicSource {
         return d;
     }
 
+    /** 轻量题材：只取详情 API 的题材字段，不抓章节（章节需 VRF+浏览器，太慢）。
+     *  供题材聚合抽样使用，避免为了标签去遍历全部分页章节。 */
+    async tagHints(book) {
+        const hid = this.bookIdOf(book);
+        if (!hid) return [];
+        const d = await this.api("detail", hid);
+        const info = d.data || {};
+        const out = [];
+        const names = (arr) => (Array.isArray(arr) ? arr : []).map((g) => g && (g.title || g.name)).filter(Boolean);
+        out.push(...names(info.genres), ...names(info.themes), ...names(info.demographics));
+        if (info.type) out.push(String(info.type).toUpperCase());
+        if (info.status) out.push(String(info.status));
+        if (info.contentRating) out.push(String(info.contentRating));
+        return [...new Set(out.map(String))];
+    }
+
     /** 标题卡片 -> Comic */
     card(x) {
         if (!x) return null;

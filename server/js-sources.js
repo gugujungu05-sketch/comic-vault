@@ -629,7 +629,32 @@ export function isTagBlocked(tags, blocked) {
   });
 }
 
+/** 只取一本书详情的 tags（不解析章节，避免慢/失败影响题材聚合）。
+ *  兼容数组与 { 分组: [标签] } 两种结构。 */
+async function jsDetailTagsOnly(source, bookId) {
+  // 轻量钩子：某些源（如 MangaFire）loadInfo 会连带抓全部章节（慢/依赖 VRF），
+  // 提供 tagHints 只取详情题材，避免为了题材去抓章节。
+  if (typeof source.tagHints === 'function') {
+    try {
+      const fast = await source.tagHints(bookId);
+      if (Array.isArray(fast)) return fast.map(String).filter(Boolean);
+    } catch { /* 落到 loadInfo 兜底 */ }
+  }
+  if (!source.comic || typeof source.comic.loadInfo !== 'function') return [];
+  try {
+    const info = await source.comic.loadInfo(bookId);
+    const raw = info && info.tags;
+    if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+    if (raw && typeof raw === 'object') {
+      return Object.values(raw).flat().map(String).filter(Boolean);
+    }
+  } catch { /* 单本详情失败不影响题材聚合 */ }
+  return [];
+}
+
 /** 聚合某个源「所有书」的标签题材：分类题材名 + 各分类入口/发现页第一页的书籍 tags。
+ *  题材主要来自分类入口与列表；但不少源（拷贝系/轻小说/MangaFire/漫蛙等）列表卡片
+ *  不带题材、题材只在详情页，此时抽样若干本书的详情补全，并写入书名→标签索引供列表回填。
  *  返回 [{ tag, count }]（tag 保留原文用于展示），按词频降序。慢，由调用方做缓存与超时。 */
 export async function jsCollectTags(source) {
   const counter = new Map();
@@ -656,16 +681,43 @@ export async function jsCollectTags(source) {
     } catch { /* 忽略单个分类失败 */ }
   }));
 
-  // 3) 发现页各 tab 第一页书籍 tags；同时记录书名→标签
+  // 3) 发现页各 tab 第一页书籍 tags；同时记录书名→标签与候选书籍（供详情补标签）
   let tabs = [];
   try { tabs = jsDiscoverTabs(source); } catch { /* 忽略 */ }
+  const candidates = []; // { title, link }，去重后用于详情抽样
+  const seenBook = new Set();
   await Promise.all(tabs.slice(0, 8).map(async (tab) => {
     try {
       const r = await jsDiscoverLoad(source, tab.index, 1);
       recordTagIndex(sourceKey, r.items || []);
-      for (const it of (r.items || [])) for (const t of (it.tags || [])) add(t);
+      for (const it of (r.items || [])) {
+        for (const t of (it.tags || [])) add(t);
+        const link = String(it.link || '');
+        if (link && !seenBook.has(link)) {
+          seenBook.add(link);
+          candidates.push({ title: it.title, link });
+        }
+      }
     } catch { /* 忽略单个 tab 失败 */ }
   }));
+
+  // 4) 详情抽样补标签：列表卡片不带题材的源，从详情提取真实题材。
+  //    仅在已收集标签偏少（< 3）时触发，限量 12 本、并发 4，避免对站点压力过大。
+  if (counter.size < 3 && candidates.length) {
+    const sample = candidates.slice(0, 12);
+    let idx = 0;
+    const workers = Array.from({ length: Math.min(4, sample.length) }, async () => {
+      while (idx < sample.length) {
+        const b = sample[idx++];
+        const tags = await jsDetailTagsOnly(source, b.link);
+        if (!tags.length) continue;
+        // 记录书名→标签，供发现/搜索/抽奖列表回填
+        recordTagIndex(sourceKey, [{ title: b.title, tags }]);
+        for (const t of tags) add(t);
+      }
+    });
+    await Promise.all(workers);
+  }
 
   return [...counter.entries()]
     .map(([tag, count]) => ({ tag, count }))
