@@ -65,13 +65,19 @@ const PROVIDER_DEFAULTS = {
 function cfg() {
   const db = loadDb();
   const t = (db.settings && db.settings.translate) || {};
-  const provider = PROVIDER_DEFAULTS[t.provider] ? t.provider : 'gemini';
+  let provider = PROVIDER_DEFAULTS[t.provider] ? t.provider : 'gemini';
   const def = PROVIDER_DEFAULTS[provider];
+  let model = String(t.model || def.model || '');
+  // 自动修复：老的 glm-4v-flash 定位文字框极差（全挤角落），实测几乎"翻译没用"，
+  // 自动升级到免费的 glm-4.1v-thinking-flash（定位准、质量高）。避免用户停留在坏模型。
+  if (/bigmodel\.cn/i.test(String(t.baseUrl || '')) && /^glm-4v-flash$/i.test(model)) {
+    model = 'glm-4.1v-thinking-flash';
+  }
   return {
     provider,
+    model,
     apiKey: String(t.apiKey || ''),
     baseUrl: String(t.baseUrl || def.baseUrl || '').replace(/\/+$/, ''),
-    model: String(t.model || def.model || ''),
     targetLang: String(t.targetLang || '简体中文'),
     prompt: String(t.prompt || DEFAULT_PROMPT),
     fontFamily: String(t.fontFamily || '"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif'),
@@ -224,10 +230,17 @@ async function callOpenAICompatible(conf, buf) {
   };
   const headers = { 'Content-Type': 'application/json' };
   if (conf.apiKey) headers.Authorization = `Bearer ${conf.apiKey}`;
-  // 各家对 max_tokens 上限不同：智谱 glm-4v-flash 等只接受 1-1024，
-  // 写死 4096 会直接 400「max_tokens参数非法」。按服务商选安全值，并在 400 时自动降档重试。
+  // 各家对 max_tokens 上限不同：
+  //   - 智谱 glm-4v-flash 老模型只接受 1-1024，写 4096 会 400「max_tokens参数非法」；
+  //   - glm-4.1v-thinking-flash / glm-4v-plus 支持更大值，但 thinking 模型要输出思考链，
+  //     给太小（1024）会导致译文 JSON 被截断、文字框不全 → 翻译"看起来没用"。
+  // 这里按模型名给安全上限，并在 400 报 max_tokens 非法时自动降到 1024 重试。
   const base = String(conf.baseUrl || '');
-  if (/bigmodel\.cn/i.test(base)) body.max_tokens = 1024;
+  const model = String(conf.model || '');
+  if (/bigmodel\.cn/i.test(base)) {
+    // 老 flash 严格 1024；thinking/plus/air 等新型号给足空间
+    body.max_tokens = /glm-4v-flash$/i.test(model) ? 1024 : 4096;
+  }
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 120000);
   try {
@@ -466,16 +479,46 @@ function cacheKey(buf, conf) {
   return `${hash}-${meta}`;
 }
 
+/** 判断模型给出的文字框是否"铺开"在整个画面（而非全挤一角 = 定位失败）。 */
+function regionSpreadOk(regions, width, height) {
+  if (regions.length < 2) return false;
+  const cxs = regions.map((r) => (r.x1 + r.x2) / 2 / width);
+  const cys = regions.map((r) => (r.y1 + r.y2) / 2 / height);
+  const spanX = Math.max(...cxs) - Math.min(...cxs);
+  const spanY = Math.max(...cys) - Math.min(...cys);
+  // 至少在一个方向上覆盖画面 35% 以上，才算正常铺开
+  return spanX >= 0.35 || spanY >= 0.35;
+}
+
 async function translateBuffer(buf, conf) {
   const cv = await getCanvas();
   if (!cv) throw new Error('当前运行环境未安装图像处理模块，无法翻译（桌面/安卓内置服务暂不支持，请用网页版）');
   const { loadImage, createCanvas } = cv;
   const img = await loadImage(buf);
   const width = img.width, height = img.height;
-  const raw = conf.provider === 'gemini'
-    ? await callGemini(conf, buf)
-    : await callOpenAICompatible(conf, buf);
-  const regions = parseRegions(raw, width, height);
+  const callModel = () => conf.provider === 'gemini'
+    ? callGemini(conf, buf)
+    : callOpenAICompatible(conf, buf);
+  let raw = await callModel();
+  let regions = parseRegions(raw, width, height);
+  // 定位质量校验：弱模型（如 glm-4v-flash）常把所有文字框挤在画面一角，
+  // 结果译文全叠在一个位置，看起来"翻译没用"。检测这种失败并重试一次：
+  // ① 框数过少（<2）② 所有框的中心都落在同一象限/极窄区域。
+  if (regions.length && !regionSpreadOk(regions, width, height)) {
+    const retryPrompt = conf.prompt
+      + '\n\nIMPORTANT RETRY: Your previous boxes were all clustered in one corner. '
+      + 'Re-examine the WHOLE image from top-left to bottom-right. '
+      + 'Speech bubbles and text are spread across the entire page. '
+      + 'Return boxes with coordinates spanning their ACTUAL positions across the full 0-1000 range.';
+    const retryConf = { ...conf, prompt: retryPrompt };
+    try {
+      const raw2 = conf.provider === 'gemini'
+        ? await callGemini(retryConf, buf)
+        : await callOpenAICompatible(retryConf, buf);
+      const regions2 = parseRegions(raw2, width, height);
+      if (regions2.length >= regions.length && regionSpreadOk(regions2, width, height)) regions = regions2;
+    } catch { /* 重试失败则用首次结果，不阻断翻译 */ }
+  }
   if (!regions.length) throw new Error('没有识别到可翻译的文字');
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');

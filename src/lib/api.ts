@@ -859,6 +859,14 @@ export const social = {
 };
 
 /* ------------------------------ 在线书源（通用规则化抓取 + JS 脚本源） ------------------------------ */
+export interface SourceHealth {
+  ok: boolean;
+  ms?: number;
+  items?: number;
+  stale?: boolean;
+  err?: string;
+  at?: number;
+}
 export interface SourceInfo {
   id: string;
   name: string;
@@ -868,6 +876,8 @@ export interface SourceInfo {
   kind?: 'js' | 'rules';
   mediaType?: 'comic' | 'novel';
   version?: string;
+  /** 后台自动探测的健康状态（每 20 分钟复检） */
+  health?: SourceHealth | null;
 }
 export interface SourceSearchItem {
   title: string;
@@ -980,6 +990,12 @@ export interface LotteryGenre { id: string; label: string }
 
 export const sources = {
   list: () => request<{ sources: SourceInfo[] }>('/api/sources'),
+
+  /** 所有源的健康状态（后台自动探测） */
+  healthAll: () => request<{ health: Record<string, SourceHealth> }>('/api/sources/health/all'),
+
+  /** 手动触发重新探测所有源（自动修复：失效源恢复后即时回血） */
+  recheckHealth: () => request<{ ok: boolean }>('/api/sources/health/recheck', { method: 'POST' }),
 
   /** 抽奖机题材清单 */
   lotteryGenres: () => request<{ genres: LotteryGenre[] }>('/api/sources/lottery/genres'),

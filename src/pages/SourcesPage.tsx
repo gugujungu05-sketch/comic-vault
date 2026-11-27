@@ -260,32 +260,39 @@ export default function SourcesPage() {
     try {
       if (sid === ALL_SOURCES) {
         // 聚合发现：并发拉所有同类书源，按标题去重。
-        // 单个源加 8 秒超时（Promise.race），慢源/失效源不拖垮整屏——以前要等最慢的源。
+        // 渐进式渲染——每个源返回就立即追加到列表，快的源先显示，慢源不阻塞整屏；
+        // 单个源 12s 超时，失效源直接跳过。这样首屏不再等最慢的源（此前 8s 超时会丢慢源）。
         type Disco = Awaited<ReturnType<typeof sourcesApi.discover>>;
+        const sources = tabSources;
+        const seen = new Set<string>();
+        const tabsSeen: NonNullable<Disco['tabs']> = [];
+        setResults([]);
+        setDiscoverTabs([]);
+        setDiscoverMaxPage(1);
+        setDiscoverTab(tab);
+        setDiscoverPage(page);
+        setSearched(false);
         const withTimeout = (p: Promise<Disco | null>) => Promise.race([
           p,
-          new Promise<null>((r) => setTimeout(() => r(null), 8000)),
+          new Promise<null>((r) => setTimeout(() => r(null), 12000)),
         ]);
-        const rs = await Promise.all(tabSources.map((s) => withTimeout(
-          sourcesApi.discover(s.id, tab, page, blockedTags.get(s.id)).catch(() => null),
-        )));
-        const seen = new Set<string>();
-        const merged: SourceSearchItem[] = [];
-        for (let i = 0; i < rs.length; i++) {
-          const r = rs[i]; if (!r) continue;
+        await Promise.all(sources.map(async (s) => {
+          const r = await withTimeout(
+            sourcesApi.discover(s.id, tab, page, blockedTags.get(s.id)).catch(() => null),
+          );
+          if (!r) return;
+          // 按源批量去重后一次性追加，减少 setState 次数
+          const add: SourceSearchItem[] = [];
           for (const it of r.items || []) {
             const key = it.title.trim();
             if (seen.has(key)) continue;
             seen.add(key);
-            merged.push({ ...it, sourceId: tabSources[i].id, sourceName: tabSources[i].name });
+            add.push({ ...it, sourceId: s.id, sourceName: s.name });
           }
-        }
-        setDiscoverTabs(rs.find((r) => r?.tabs?.length)?.tabs || []);
-        setResults(merged);
-        setDiscoverMaxPage(Math.max(1, ...rs.map((r) => r?.maxPage || 1)));
-        setDiscoverTab(tab);
-        setDiscoverPage(page);
-        setSearched(false);
+          if (add.length) setResults((prev) => [...prev, ...add]);
+          if (r.tabs?.length && !tabsSeen.length) { tabsSeen.push(...r.tabs); setDiscoverTabs(r.tabs); }
+          if ((r.maxPage || 1) > 1) setDiscoverMaxPage((m) => Math.max(m, r.maxPage || 1));
+        }));
       } else {
         const r = await sourcesApi.discover(sid, tab, page, blockedTags.get(sid));
         setDiscoverTabs(r.tabs || []);
@@ -764,15 +771,39 @@ export default function SourcesPage() {
             >
               <Icon name="grid" size={14} /> 全部{tab === 'comic' ? '漫画' : '小说'}（{tabSources.length} 源）
             </button>
-            {tabSources.map((s) => (
-              <button
-                key={s.id}
-                className={`btn sm ${s.id === activeId ? 'primary' : ''}`}
-                onClick={() => { setActiveId(s.id); resetToList(); setKw(''); loadDiscover(s.id, 0, 1); }}
-              >
-                <Icon name="globe" size={14} /> {s.name}
-              </button>
-            ))}
+            {tabSources.map((s) => {
+              const h = s.health;
+              const bad = h && !h.ok && !h.stale;
+              const healthTitle = h
+                ? `${h.ok ? '正常' : (h.stale ? '曾异常（有缓存可降级）' : '异常')}${h.ms ? ` · ${(h.ms / 1000).toFixed(1)}s` : ''}${h.items ? ` · ${h.items} 本` : ''}${h.err ? ` · ${h.err}` : ''}`
+                : '尚未探测';
+              return (
+                <button
+                  key={s.id}
+                  className={`btn sm ${s.id === activeId ? 'primary' : ''}`}
+                  onClick={() => { setActiveId(s.id); resetToList(); setKw(''); loadDiscover(s.id, 0, 1); }}
+                  title={`${s.name} · ${healthTitle}`}
+                  style={bad ? { borderColor: 'var(--danger, #e5484d)' } : undefined}
+                >
+                  <Icon name="globe" size={14} /> {s.name}
+                  {bad && <span title="源异常，点此可尝试重新检测" style={{ color: 'var(--danger, #e5484d)', marginLeft: 4 }}>●</span>}
+                </button>
+              );
+            })}
+            <button
+              className="btn sm ghost"
+              title="重新探测所有源的健康状态（失效源恢复后即时回血）"
+              onClick={async () => {
+                try {
+                  await sourcesApi.recheckHealth();
+                  toast('正在重新检测所有源…');
+                  // 稍后刷新列表以拿到最新健康状态
+                  setTimeout(() => load(), 4000);
+                } catch { toast('重新检测失败', 'err'); }
+              }}
+            >
+              <Icon name="refresh" size={14} /> 重新检测
+            </button>
             {!tabSources.length && (
               loadError ? (
                 <span className="muted" style={{ color: 'var(--danger, #e5484d)' }}>

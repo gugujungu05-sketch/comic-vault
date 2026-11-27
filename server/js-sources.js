@@ -174,68 +174,78 @@ async function httpRequest(method, url, headers = {}, body = undefined, sourceKe
     const hit = HTTP_CACHE.get(ckey);
     if (hit && Date.now() - hit.t < HTTP_CACHE_TTL) return { ...hit.v };
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new Error('请求超时')), FETCH_TIMEOUT);
-  try {
-    const cookie = cookiesFor(sourceKey, url)
-      .map((c) => `${c.name}=${c.value}`)
-      .join('; ');
-    const head = { 'User-Agent': UA_DEFAULT, ...headers };
-    if (cookie && !Object.keys(head).some((k) => k.toLowerCase() === 'cookie')) head.Cookie = cookie;
-    let payload;
-    if (body !== undefined && body !== null) {
-      if (typeof body === 'string') payload = body;
-      else if (Buffer.isBuffer(body)) payload = body;
-      else {
-        const ct = Object.keys(head).find((k) => k.toLowerCase() === 'content-type') || '';
-        payload = /json/i.test(ct) ? JSON.stringify(body) : new URLSearchParams(body).toString();
-        if (!ct) head['Content-Type'] = 'application/x-www-form-urlencoded';
-      }
+  // 请求头/正文提前准备一次，重试时复用。
+  const cookie = cookiesFor(sourceKey, url)
+    .map((c) => `${c.name}=${c.value}`)
+    .join('; ');
+  const head = { 'User-Agent': UA_DEFAULT, ...headers };
+  if (cookie && !Object.keys(head).some((k) => k.toLowerCase() === 'cookie')) head.Cookie = cookie;
+  let payload;
+  if (body !== undefined && body !== null) {
+    if (typeof body === 'string') payload = body;
+    else if (Buffer.isBuffer(body)) payload = body;
+    else {
+      const ct = Object.keys(head).find((k) => k.toLowerCase() === 'content-type') || '';
+      payload = /json/i.test(ct) ? JSON.stringify(body) : new URLSearchParams(body).toString();
+      if (!ct) head['Content-Type'] = 'application/x-www-form-urlencoded';
     }
-    const res = await fetch(url, {
-      method,
-      headers: head,
-      body: payload,
-      redirect: 'follow',
-      signal: ctrl.signal,
-    });
-    const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
-    for (const raw of setCookies) {
-      const [pair] = raw.split(';');
-      const eq = pair.indexOf('=');
-      if (eq <= 0) continue;
-      const name = pair.slice(0, eq).trim();
-      const value = pair.slice(eq + 1).trim();
-      const dmatch = raw.match(/domain=([^;]+)/i);
-      const list = cookieMap[sourceKey] || (cookieMap[sourceKey] = []);
-      const item = { name, value, domain: dmatch ? dmatch[1].trim() : domainOf(url) };
-      const i = list.findIndex((c) => c.name === name && (c.domain || domainOf(url)).replace(/^\./, '') === item.domain.replace(/^\./, ''));
-      if (i >= 0) list[i] = item; else list.push(item);
-    }
-    if (setCookies.length) saveSoon(COOKIE_FILE, cookieMap);
-    const buf = await res.arrayBuffer();
-    const bytes = Buffer.from(buf);
-    // bytes 供需要按指定编码解码的源使用（如拷贝轻小说 GBK 正文 txt）；
-    // body 仍是 utf8 字符串，保持对所有现有源的行为不变。
-    const out = { status: res.status, body: bytes.toString('utf8'), bytes: new Uint8Array(bytes), url: res.url || url };
-    if (cacheable && res.status >= 200 && res.status < 400) {
-      HTTP_CACHE.set(ckey, { t: Date.now(), v: { ...out } });
-      if (HTTP_CACHE.size > 300) {
-        const now = Date.now();
-        for (const [k, x] of HTTP_CACHE) if (now - x.t > HTTP_CACHE_TTL) HTTP_CACHE.delete(k);
-      }
-    }
-    return out;
-  } catch (err) {
-    /* 网络失败时若有过期缓存，降级返回旧内容，避免因单点抖动导致整页卡死 */
-    if (cacheable) {
-      const stale = HTTP_CACHE.get(ckey);
-      if (stale) return { ...stale.v };
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
   }
+  /* 自愈：瞬时网络错误（连接重置/DNS抖动/连接中断）自动重试一次；
+     请求超时不重试，避免等待翻倍。站点偶发抖动占失效场景的大头。 */
+  const attempts = 2;
+  let lastErr;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error('请求超时')), FETCH_TIMEOUT);
+    try {
+      const res = await fetch(url, { method, headers: head, body: payload, redirect: 'follow', signal: ctrl.signal });
+      const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+      for (const raw of setCookies) {
+        const [pair] = raw.split(';');
+        const eq = pair.indexOf('=');
+        if (eq <= 0) continue;
+        const name = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).trim();
+        const dmatch = raw.match(/domain=([^;]+)/i);
+        const list = cookieMap[sourceKey] || (cookieMap[sourceKey] = []);
+        const item = { name, value, domain: dmatch ? dmatch[1].trim() : domainOf(url) };
+        const i = list.findIndex((c) => c.name === name && (c.domain || domainOf(url)).replace(/^\./, '') === item.domain.replace(/^\./, ''));
+        if (i >= 0) list[i] = item; else list.push(item);
+      }
+      if (setCookies.length) saveSoon(COOKIE_FILE, cookieMap);
+      const buf = await res.arrayBuffer();
+      const bytes = Buffer.from(buf);
+      // bytes 供需要按指定编码解码的源使用（如拷贝轻小说 GBK 正文 txt）；
+      // body 仍是 utf8 字符串，保持对所有现有源的行为不变。
+      const out = { status: res.status, body: bytes.toString('utf8'), bytes: new Uint8Array(bytes), url: res.url || url };
+      if (cacheable && res.status >= 200 && res.status < 400) {
+        HTTP_CACHE.set(ckey, { t: Date.now(), v: { ...out } });
+        if (HTTP_CACHE.size > 300) {
+          const t = Date.now();
+          for (const [k, x] of HTTP_CACHE) if (t - x.t > HTTP_CACHE_TTL) HTTP_CACHE.delete(k);
+        }
+      }
+      return out;
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err);
+      // 只对真正的网络层错误重试；超时（我们主动 abort）不重试。
+      const transient = /fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket hang|terminated|network/i.test(msg);
+      if (attempt + 1 < attempts && transient) {
+        await new Promise((r) => setTimeout(r, 400 + Math.random() * 400));
+        continue;
+      }
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  /* 网络失败时若有过期缓存，降级返回旧内容，避免因单点抖动导致整页卡死 */
+  if (cacheable) {
+    const stale = HTTP_CACHE.get(ckey);
+    if (stale) return { ...stale.v };
+  }
+  throw lastErr;
 }
 
 /* ------------------------------ Convert：Ciallo 宿主提供的同步编解码工具 ------------------------------ */

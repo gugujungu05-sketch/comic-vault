@@ -32,7 +32,7 @@ const EPUB_OK = /\.epub$/i;
 const PDF_OK = /\.pdf$/i;
 import { parseComicInfo, comicFieldsFromInfo } from './comicinfo.js';
 import { attachUser, requireUser, comicGuard, assetGuard, registerSocial } from './social.js';
-import { registerSources } from './sources.js';
+import { registerSources, warmupDiscover } from './sources.js';
 import { registerOnline } from './online.js';
 import { registerTranslation } from './translate.js';
 import { registerUpdates } from './updates.js';
@@ -2674,6 +2674,8 @@ app.listen(PORT, '0.0.0.0', () => {
   setImmediate(() => {
     ensureSamples().catch((err) => console.error('[discovery] 示例生成失败:', err.message));
   });
+  // 后台预热在线源发现页：让用户首次打开在线来源聚合视图即秒开
+  setImmediate(() => warmupDiscover());
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

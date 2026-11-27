@@ -48,7 +48,7 @@ export function SettingsPage() {
   // 翻译服务快速预设：选服务后自动填 provider/baseUrl/model，用户只需粘 Key
   const TR_PRESETS: Record<string, { provider: TranslateConfig['provider']; baseUrl: string; model: string; label: string; hint: string }> = {
     gemini: { provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', label: 'Google Gemini（免费额度最香，识图最准 · 需能访问谷歌）', hint: '谷歌账号登录 aistudio.google.com → Get API Key → 复制粘贴到下面。免费版每天 1500 次。国内网络需给软件挂代理。' },
-    glm4v: { provider: 'custom', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4v-flash', label: '智谱 GLM-4V-Flash（国内直连 · 免费）', hint: '注册 open.bigmodel.cn → 控制台复制 API Key。免费视觉模型，国内直连无需代理。' },
+    glm4v: { provider: 'custom', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.1v-thinking-flash', label: '智谱 GLM-4.1V-Thinking（国内直连 · 免费 · 识图准）', hint: '注册 open.bigmodel.cn → 控制台复制 API Key。免费视觉模型，定位文字框准、翻译质量高，国内直连无需代理。' },
     siliconflow: { provider: 'custom', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-VL-32B-Instruct', label: '硅基流动 Qwen-VL（国内直连 · 有免费额度）', hint: '注册 siliconflow.cn → 复制 API Key。国内直连，新用户有免费额度。' },
     openai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', label: 'OpenAI GPT-4o（付费 · 需能访问）', hint: 'platform.openai.com 创建 API Key。识图翻译准确，按量付费。' },
   };
