@@ -27,9 +27,20 @@ type MediaTab = 'comic' | 'novel';
 /** 「全部漫画 / 全部小说」虚拟聚合源 */
 const ALL_SOURCES = '__all__';
 
-/** 在线来源封面统一走服务端代理：绕过跨域 / 防盗链 / 浏览器无法直连源站域名的问题 */
+/**
+ * pstatic.net（Naver/WEBTOON 图片 CDN）在服务器端部署网络被 DNS 污染/封锁，
+ * 服务端代理必 502；但用户浏览器通常可直连（韩国 CDN 在多数地区可达）。
+ * 这类图片改走浏览器直连原图，<img> 跨域可正常显示；失败由 CoverImage 降级占位。
+ */
+function isBrowserDirectImage(url: string): boolean {
+  return /^https?:\/\/[a-z0-9.-]*pstatic\.net\//i.test(url);
+}
+
+/** 在线来源封面：走服务端代理（绕过跨域/防盗链）；pstatic.net 走浏览器直连 */
 function coverUrl(sid: string | undefined, url: string | undefined): string {
   if (!url) return '';
+  // pstatic.net 服务端不可达，交给浏览器直连原图（mediaUrl 对绝对 URL 原样返回）
+  if (isBrowserDirectImage(url)) return mediaUrl(url);
   if (!sid) return mediaUrl(url);
   return mediaUrl(`/api/online/img?sid=${encodeURIComponent(sid.replace(/^js:/, ''))}&u=${encodeURIComponent(url)}`);
 }

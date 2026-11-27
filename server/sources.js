@@ -1018,8 +1018,11 @@ export function registerSources(app) {
       if (!bookId || !chapterPath) return res.status(400).json({ error: '缺少书籍或章节标识' });
       try {
         const { images } = await jsChapterImages(js, bookId, chapterPath);
+        // pstatic.net 图片在服务器端部署网络被封锁，代理必失败；改让浏览器直连原图
         return res.json({
-          images: images.map((u) => `/api/online/img?sid=${encodeURIComponent(js.key)}&u=${encodeURIComponent(u)}`),
+          images: images.map((u) => /^https?:\/\/[a-z0-9.-]*pstatic\.net\//i.test(u)
+            ? u
+            : `/api/online/img?sid=${encodeURIComponent(js.key)}&u=${encodeURIComponent(u)}`),
           count: images.length,
         });
       } catch (err) {

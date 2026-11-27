@@ -33,6 +33,8 @@ class Webtoons extends ComicSource {
 
     /** 缓存每本书真实的 list 页 URL（含 genre/slug），loadInfo 时写入，loadEp 复用 */
     _listUrls = {};
+    /** 缓存列表页抓到的封面，供新版详情页 og:image 缺失时兜底 */
+    _covers = {};
     async listUrlOf(comicId, hint) {
         if (this._listUrls[comicId]) return this._listUrls[comicId];
         if (hint && /\/list\?/i.test(hint)) {
@@ -67,6 +69,7 @@ class Webtoons extends ComicSource {
                 seen.add(id);
                 // 记住真实 list URL（含 genre/slug），供详情/章节复用
                 this._listUrls[id] = href.replace(/&amp;/g, "&");
+                if (cover) this._covers[id] = cover;
                 out.push(new Comic({ id, title, cover, author, tags: ["韩漫", "WEBTOON"] }));
             }
         } finally { doc.dispose(); }
@@ -117,6 +120,15 @@ class Webtoons extends ComicSource {
                 const d = doc.querySelector(".summary");
                 if (d && d.text) desc = String(d.text).trim();
             } finally { doc.dispose(); }
+            // 新版 WEBTOON 详情页已去掉 .thumb/.info_area 等 class，封面在 og:image
+            // （如 https://swebtoon-phinf.pstatic.net/.../711068_Thumb_Poster.jpg?type=crop540_540）
+            if (!cover) {
+                const og = html.match(/<meta[^>]+(?:property|name)="og:image"[^>]+content="([^"]+)"/i)
+                    || html.match(/<meta[^>]+content="([^"]+)"[^>]+(?:property|name)="og:image"/i);
+                if (og && og[1]) cover = String(og[1]).replace(/&amp;/g, "&");
+            }
+            // 兜底：用 discover 阶段缓存的封面（cardsFrom 已记录）
+            if (!cover && this._covers && this._covers[id]) cover = this._covers[id];
             // 章节列表：href 里含 episode_no= 的 viewer 链接
             const chapters = {};
             // viewer 链接：&episode_no= 或 &amp;episode_no= 都兼容
