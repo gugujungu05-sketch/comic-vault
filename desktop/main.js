@@ -15,7 +15,7 @@ const { spawn } = require('node:child_process');
 const http = require('node:http');
 const https = require('node:https');
 
-const VERSION = '3.4.0.45.0';
+const VERSION = '3.4.0.46.0';
 /** 只有旧版临时隧道地址才需要强制回退本机，固定云端地址不能被误清 */
 const OLD_TUNNEL_RE = /trycloudflare\.com|ngrok|loca\.lt|cloudflare-tunnel/i;
 /** 项目自己的公开入口：软件里所有「打开网站 / 分享链接」都用它，不再出现 workbuddy 网盘地址 */

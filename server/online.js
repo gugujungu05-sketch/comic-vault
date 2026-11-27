@@ -305,6 +305,17 @@ export function registerOnline(app, helpers) {
   const IMG_FAIL_TTL = 10 * 60 * 1000;
   // 这些 CDN 域名在部分部署网络下被封锁/污染，直连必然超时：缩短超时并跳过无谓重试
   const SLOW_CDN = /pstatic\.net/i;
+  // NAVER / WEBTOON 的图片 CDN（pstatic.net）在国内被 DNS 污染（解析到 face:b00c 段），
+  // 服务端直连必超时。两处绕行：
+  //   ① webtoon-phinf 子域对无 Referer 的中转请求返回 403 防盗链；swebtoon-phinf
+  //      （带 s）无此限制且图片字节一致，先替换域名。
+  //   ② 经公共图片代理 wsrv.nl 中转，绕开本机 DNS 污染（服务端可正常访问 wsrv.nl）。
+  const PSTATIC = /^https?:\/\/[a-z0-9.-]*pstatic\.net\//i;
+  function relayImageUrl(url) {
+    if (!PSTATIC.test(url)) return { url, relayed: false };
+    const fixed = url.replace('webtoon-phinf.pstatic.net', 'swebtoon-phinf.pstatic.net');
+    return { url: 'https://wsrv.nl/?url=' + encodeURIComponent(fixed), relayed: true };
+  }
 
   // 图片代理：带源站防盗链头转发，阅读器/封面直接用
   router.get('/img', async (req, res) => {
@@ -323,11 +334,16 @@ export function registerOnline(app, helpers) {
     if (fail && Date.now() - fail < IMG_FAIL_TTL) return res.status(502).end('recent upstream failure');
     try {
       const ac = new AbortController();
-      const timeout = SLOW_CDN.test(url) ? 7000 : 30000;
+      const relay = relayImageUrl(url);
+      // 走 wsrv 中转时，Referer 应指向 wsrv 本身而非被污染的 pstatic 源站；
+      // 中转实测 1s 内返回，给它略宽松的超时即可。
+      const timeout = relay.relayed ? 20000 : (SLOW_CDN.test(url) ? 7000 : 30000);
       const timer = setTimeout(() => ac.abort(), timeout);
       const ih = jsImageHeaders(source, url) || {};
-      if (!ih.Referer && !ih.referer) ih.Referer = `${source.baseUrl || 'https://' + new URL(url).host}/`;
-      const r = await fetch(url, {
+      if (!ih.Referer && !ih.referer) ih.Referer = relay.relayed
+        ? 'https://wsrv.nl/'
+        : `${source.baseUrl || 'https://' + new URL(url).host}/`;
+      const r = await fetch(relay.url, {
         headers: { 'User-Agent': UA_DEFAULT, ...ih },
         signal: ac.signal,
         redirect: 'follow',

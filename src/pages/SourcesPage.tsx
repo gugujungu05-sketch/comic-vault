@@ -28,19 +28,12 @@ type MediaTab = 'comic' | 'novel';
 const ALL_SOURCES = '__all__';
 
 /**
- * pstatic.net（Naver/WEBTOON 图片 CDN）在服务器端部署网络被 DNS 污染/封锁，
- * 服务端代理必 502；但用户浏览器通常可直连（韩国 CDN 在多数地区可达）。
- * 这类图片改走浏览器直连原图，<img> 跨域可正常显示；失败由 CoverImage 降级占位。
+ * 在线来源封面统一走服务端图片代理：服务端会对 pstatic.net（NAVER/WEBTOON CDN）
+ * 自动做 webtoon-phinf→swebtoon-phinf 域名替换 + wsrv.nl 中转，绕开 DNS 污染与防盗链。
+ * 之前让浏览器直连 pstatic 原图，在国内网络必失败，故改为一律走代理。
  */
-function isBrowserDirectImage(url: string): boolean {
-  return /^https?:\/\/[a-z0-9.-]*pstatic\.net\//i.test(url);
-}
-
-/** 在线来源封面：走服务端代理（绕过跨域/防盗链）；pstatic.net 走浏览器直连 */
 function coverUrl(sid: string | undefined, url: string | undefined): string {
   if (!url) return '';
-  // pstatic.net 服务端不可达，交给浏览器直连原图（mediaUrl 对绝对 URL 原样返回）
-  if (isBrowserDirectImage(url)) return mediaUrl(url);
   if (!sid) return mediaUrl(url);
   return mediaUrl(`/api/online/img?sid=${encodeURIComponent(sid.replace(/^js:/, ''))}&u=${encodeURIComponent(url)}`);
 }
