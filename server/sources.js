@@ -47,12 +47,14 @@ try { sourceHealth = JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf8')); } catch {
 let healthTimer = null;
 function saveHealth() { try { fs.writeFileSync(HEALTH_FILE, JSON.stringify(sourceHealth, null, 2)); } catch { /* 忽略 */ } }
 
-/** 导入实时进度：key = userId，值 = { chapterIndex, chapterTotal, imageDone, imageTotal, title, ts }。
- *  前端轮询 /api/sources/import/progress 显示，避免「卡住不动」的体感。 */
+/** 导入实时进度：key = userId:taskId，值 = { chapterIndex, chapterTotal, imageDone, imageTotal, title, ts }。
+ *  按 taskId 隔离：多个导入任务同时进行时各自进度互不覆盖。
+ *  前端轮询 /api/sources/import/progress?taskId=xxx 显示，避免「卡住不动」的体感。 */
 const importProgress = new Map();
-export function getImportProgress(userId) { return importProgress.get(String(userId)) || null; }
-function setImportProgress(userId, v) { importProgress.set(String(userId), { ...v, ts: now() }); }
-function clearImportProgress(userId) { importProgress.delete(String(userId)); }
+const progressKey = (userId, taskId) => String(userId) + ':' + String(taskId || '_default');
+export function getImportProgress(userId, taskId) { return importProgress.get(progressKey(userId, taskId)) || null; }
+function setImportProgress(userId, taskId, v) { importProgress.set(progressKey(userId, taskId), { ...v, ts: now() }); }
+function clearImportProgress(userId, taskId) { importProgress.delete(progressKey(userId, taskId)); }
 
 /* ------------------------------------------------------------------ *
  *  抽奖机：跨所有来源按「类型 / 题材标签」抽取书籍推荐。
@@ -1056,7 +1058,8 @@ export function registerSources(app) {
 
   // 导入实时进度（前端轮询）
   router.get('/import/progress', requireUser, (req, res) => {
-    res.json(getImportProgress(req.user.id) || { idle: true });
+    const taskId = String(req.query.taskId || '');
+    res.json(getImportProgress(req.user.id, taskId) || { idle: true });
   });
 
   // 导入一话到书库：body { comicId?, sourceId, sourceName, title, cover, author?, chapterTitle, chapterUrl }
@@ -1092,7 +1095,8 @@ export function registerSources(app) {
           return false;
         }) || null;
       }
-      setImportProgress(req.user.id, {
+      const taskId = String(b.taskId || '');
+      setImportProgress(req.user.id, taskId, {
         chapterTitle: b.chapterTitle || '正在导入', imageDone: 0, imageTotal: 0, phase: 'fetch',
       });
       try {
@@ -1117,7 +1121,7 @@ export function registerSources(app) {
           title: b.title, cover: b.cover, comicUrl: b.comicUrl,
           author: b.author, description: b.description,
           bookId, chapterPath, chapterTitle: b.chapterTitle,
-        }, (pg) => setImportProgress(req.user.id, {
+        }, (pg) => setImportProgress(req.user.id, taskId, {
           chapterTitle: b.chapterTitle || '正在导入',
           imageDone: pg.imageDone, imageTotal: pg.imageTotal, phase: 'download',
         }));

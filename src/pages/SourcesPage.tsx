@@ -507,24 +507,25 @@ export default function SourcesPage() {
     const picked = chapters.filter((_, i) => detail.checked.has(i));
     if (!picked.length) return toast('请先勾选要导入的章节');
     setImporting({ done: 0, total: picked.length, failed: 0 });
-    importTaskStore.start(`正在导入 ${detail.title} · 0/${picked.length} 话`, {
+    const taskId = importTaskStore.start(`正在导入 ${detail.title} · 0/${picked.length} 话`, {
       sourceId: detailSourceId, sourceName: detailSourceName, title: detail.title,
       cover: detail.cover, comicUrl: detail.bookId || detail.url,
       bookId: detail.bookId || detail.url, kind: detail.kind || 'comic',
       picked: picked.map((c) => ({ title: c.title, url: c.url })),
     });
+    importTaskStore.progress(taskId, { total: picked.length });
     // 轮询后端图片级进度：显示「第 N 话 · 第 x/y 张」，不再长时间卡在 0/N
-    // 进度同时写入全局任务栏，返回/切到任何页面都继续可见。
+    // 进度同时写入全局任务栏，返回/切到任何页面都继续可见。按 taskId 隔离，多任务互不串。
     let progAlive = true;
     let curChapter = 1;
     (async () => {
       while (progAlive) {
         try {
-          const pg = await sourcesApi.importProgress();
+          const pg = await sourcesApi.importProgress(taskId);
           if (!pg.idle && pg.imageTotal) {
             const label = `第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`;
             setImportProgressLabel(label);
-            importTaskStore.progress({ label, done: curChapter - 1, total: picked.length });
+            importTaskStore.progress(taskId, { label, done: curChapter - 1, total: picked.length });
           }
         } catch { /* 忽略轮询错误 */ }
         await new Promise((r) => setTimeout(r, 400));
@@ -534,14 +535,15 @@ export default function SourcesPage() {
     let failed = 0;
     let done = 0;
     for (const ch of picked) {
-      // 暂停：任务栏点「暂停」后，导入循环在每话开始前等待，点「继续」再往下走。
-      while (importTaskStore.isPaused()) {
+      // 暂停：任务栏点「暂停」后，导入循环在每话开始前等待，点「继续」再往下走（只影响本任务）。
+      while (importTaskStore.isPaused(taskId)) {
         await new Promise((r) => setTimeout(r, 300));
       }
       curChapter = done + 1;
       try {
         const r = await sourcesApi.importChapter({
           comicId: comicId || undefined,
+          taskId,
           sourceId: detailSourceId,
           sourceName: detailSourceName,
           title: detail.title,
@@ -561,30 +563,30 @@ export default function SourcesPage() {
         if (failed === 1) errorToast(err, '导入失败');
       }
       setImporting({ done, total: picked.length, failed });
-      importTaskStore.progress({ done, total: picked.length, failed, label: `正在导入 ${detail.title} · ${done}/${picked.length} 话` });
+      importTaskStore.progress(taskId, { done, total: picked.length, failed, label: `正在导入 ${detail.title} · ${done}/${picked.length} 话` });
     }
     progAlive = false;
     setImportProgressLabel('');
     setImporting(null);
     if (done) {
-      importTaskStore.finish(done, picked.length, failed, comicId);
+      importTaskStore.finish(taskId, done, picked.length, failed, comicId);
       toast(`导入完成：成功 ${done} 话${failed ? `，失败 ${failed} 话` : ''}`);
     } else {
-      importTaskStore.clear();
+      importTaskStore.clear(taskId);
     }
   }
 
   async function importNovelBook() {
     if (!detailSourceId || !detail?.bookId) return;
     setNovelImporting(true);
-    importTaskStore.start(`正在整本导入《${detail.title}》…`);
+    const taskId = importTaskStore.start(`正在整本导入《${detail.title}》…`);
     try {
       const r = await onlineApi.importBook(detailSourceId, detail.bookId);
       toast(`已加入书库：《${detail.title}》共 ${r.comic.chapterCount} 章，可在书库里编辑`);
-      importTaskStore.finish(r.comic.chapterCount || 1, r.comic.chapterCount || 1, 0, r.comic.id);
+      importTaskStore.finish(taskId, r.comic.chapterCount || 1, r.comic.chapterCount || 1, 0, r.comic.id);
       onImportedNavigate(r.comic.id);
     } catch (err) {
-      importTaskStore.clear();
+      importTaskStore.clear(taskId);
       errorToast(err, '整本导入失败');
     } finally {
       setNovelImporting(false);

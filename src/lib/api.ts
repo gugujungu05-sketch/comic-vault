@@ -1084,6 +1084,7 @@ export const sources = {
 
   importChapter: (body: {
     comicId?: string;
+    taskId?: string;
     sourceId: string;
     sourceName: string;
     title?: string;
@@ -1096,10 +1097,10 @@ export const sources = {
     request<SourceImportResult>('/api/sources/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     }),
-  importProgress: () => request<{
+  importProgress: (taskId?: string) => request<{
     idle?: boolean; chapterTitle?: string; imageDone?: number; imageTotal?: number;
     done?: number; total?: number; phase?: string;
-  }>('/api/sources/import/progress'),
+  }>(`/api/sources/import/progress${taskId ? '?taskId=' + encodeURIComponent(taskId) : ''}`),
 };
 
 /** AI 翻译（生肉漫画 → 中文）：多模态模型看图翻译 + 服务端底图修补/原位渲染 */
