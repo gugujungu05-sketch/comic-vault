@@ -694,7 +694,7 @@ export async function jsCollectTags(source) {
   // 3) 发现页各 tab 第一页书籍 tags；同时记录书名→标签与候选书籍（供详情补标签）
   let tabs = [];
   try { tabs = jsDiscoverTabs(source); } catch { /* 忽略 */ }
-  const candidates = []; // { title, link }，去重后用于详情抽样
+  const candidates = []; // { title, link, hasTags }，去重后用于详情抽样
   const seenBook = new Set();
   await Promise.all(tabs.slice(0, 8).map(async (tab) => {
     try {
@@ -705,18 +705,28 @@ export async function jsCollectTags(source) {
         const link = String(it.link || '');
         if (link && !seenBook.has(link)) {
           seenBook.add(link);
-          candidates.push({ title: it.title, link });
+          candidates.push({ title: it.title, link, hasTags: (it.tags || []).length > 0 });
         }
       }
     } catch { /* 忽略单个 tab 失败 */ }
   }));
 
-  // 4) 详情抽样补标签：列表卡片不带题材的源，从详情提取真实题材。
-  //    仅在已收集标签偏少（< 3）时触发，限量 12 本、并发 4，避免对站点压力过大。
-  if (counter.size < 3 && candidates.length) {
-    const sample = candidates.slice(0, 12);
+  // 4) 详情抽样补标签：很多源（拷贝系/轻小说/漫蛙等）列表卡片不带题材、题材只在详情页。
+  //    用「候选书自带标签覆盖率」判断：若大部分书列表里没有标签，说明题材藏在详情，
+  //    需下钻抓全（覆盖尽量多的书，让全站标签词表完整、列表回填生效）。
+  //    - 提供 tagHints 轻量钩子的源抓得多且快（如 MangaFire）；
+  //    - 覆盖率已高的源只少量补漏，避免对站点压力过大。
+  //    单源整体仍受调用方 TAG_FETCH_TIMEOUT 保护，慢源不会拖垮全局。
+  if (candidates.length) {
+    const withTags = candidates.filter((b) => b.hasTags).length;
+    const coverage = withTags / candidates.length;
+    const fastHints = typeof source.tagHints === 'function';
+    const needDeep = coverage < 0.5; // 多数书列表无标签 → 题材在详情
+    const sampleLimit = fastHints ? 80 : (needDeep ? 48 : 12);
+    const concurrency = fastHints ? 8 : 6;
+    const sample = candidates.slice(0, sampleLimit);
     let idx = 0;
-    const workers = Array.from({ length: Math.min(4, sample.length) }, async () => {
+    const workers = Array.from({ length: Math.min(concurrency, sample.length) }, async () => {
       while (idx < sample.length) {
         const b = sample[idx++];
         const tags = await jsDetailTagsOnly(source, b.link);
