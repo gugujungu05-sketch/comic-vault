@@ -49,7 +49,7 @@ class MangaOwl extends ComicSource {
             const titleMap = {};
             for (const a of doc.querySelectorAll('a[href]')) {
                 const href = String(a.attributes.href || "");
-                const m = href.match(/\/(?:read-1|manga)\/([a-z0-9]+)\/?$/i);
+                const m = href.match(/\/(?:read-1|manga)\/([a-z0-9-]+)\/?$/i);
                 if (!m) continue;
                 const text = this.decode(a.text || "").trim();
                 const inTitle = /post-title|font-title|^h[1-4]$/i.test(
@@ -63,7 +63,7 @@ class MangaOwl extends ComicSource {
             const out = [], seen = new Set();
             for (const a of doc.querySelectorAll('a[href]')) {
                 const href = String(a.attributes.href || "");
-                const m = href.match(/\/(?:read-1|manga)\/([a-z0-9]+)\/?$/i);
+                const m = href.match(/\/(?:read-1|manga)\/([a-z0-9-]+)\/?$/i);
                 if (!m) continue;
                 const id = m[1];
                 if (seen.has(id)) continue;
@@ -94,15 +94,47 @@ class MangaOwl extends ComicSource {
         return { comics, maxPage: page };
     }};
 
+    /** 通用列表页：WP-Manga 的 /manga-list/ 与 /manga-genre-1/{genre}/ 都每页 12 本。
+     *  base 可能带 query（如 ?m_orderby=latest）：翻页时 path 必须插在域名后的路径段、
+     *  query 保留在末尾，即 /manga-list/page/2/?m_orderby=latest（不能拼到 query 后面）。 */
+    async listPage(base, page) {
+        let url = base;
+        if (page > 1) {
+            const qi = base.indexOf("?");
+            const pathPart = qi >= 0 ? base.slice(0, qi) : base;
+            const queryPart = qi >= 0 ? base.slice(qi) : "";
+            url = pathPart.replace(/\/$/, "") + "/page/" + page + "/" + queryPart;
+        }
+        const html = await this.get(url);
+        return this.parseCards(html);
+    }
+
     explore = [
-        { title: "MangaOwl · 热门漫画", type: "multiPageComicList", load: async (page) => {
-            const url = page > 1 ? this.baseUrl + "/page/" + page + "/" : this.baseUrl + "/";
-            let html;
-            try { html = await this.get(url); }
-            catch (e) { html = await this.get(this.baseUrl + "/"); }
-            const comics = this.parseCards(html);
+        { title: "全部漫画 · 最新", type: "multiPageComicList", load: async (page) => {
+            const comics = await this.listPage(this.baseUrl + "/manga-list/?m_orderby=latest", page);
             return { comics, maxPage: comics.length ? page + 1 : page };
-        }}
+        }},
+        { title: "热门榜 · 浏览量", type: "multiPageComicList", load: async (page) => {
+            const comics = await this.listPage(this.baseUrl + "/manga-list/?m_orderby=views", page);
+            return { comics, maxPage: comics.length ? page + 1 : page };
+        }},
+        { title: "评分榜", type: "multiPageComicList", load: async (page) => {
+            const comics = await this.listPage(this.baseUrl + "/manga-list/?m_orderby=rating", page);
+            return { comics, maxPage: comics.length ? page + 1 : page };
+        }},
+        ...[
+            ["action", "动作"], ["romance", "恋爱"], ["fantasy", "奇幻"], ["adventure", "冒险"],
+            ["comedy", "搞笑"], ["drama", "剧情"], ["yaoi", "耽美"], ["ecchi", "福利"],
+            ["historical", "历史"], ["horor", "恐怖"], ["josei", "女性向"], ["cooking", "美食"],
+            ["doujinshi", "同人"], ["harem", "后宫"], ["manga", "漫画"], ["anime", "动画"],
+        ].map(([slug, label]) => ({
+            title: "题材 · " + label,
+            type: "multiPageComicList",
+            load: async (page) => {
+                const comics = await this.listPage(this.baseUrl + "/manga-genre-1/" + slug + "/", page);
+                return { comics, maxPage: comics.length ? page + 1 : page };
+            },
+        })),
     ];
 
     comic = {

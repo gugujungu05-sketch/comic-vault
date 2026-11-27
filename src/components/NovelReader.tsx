@@ -31,6 +31,33 @@ function textBlocks(text: string): Block[] {
   return out;
 }
 
+/** 正文插图：加载失败时用可见占位代替直接消失（源站防盗链 / 图片损坏时不再「插画不见了」）。
+ *  绝不加 crossOrigin：同源 /api/files 图片无需 CORS，加了反而触发浏览器 CORS 校验导致加载失败。 */
+function NovelIllustration({ src, title }: { src: string; title: string }) {
+  const [failed, setFailed] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
+  useEffect(() => { setFailed(false); setZoomed(false); }, [src]);
+  if (failed || !src) {
+    return (
+      <div className="novel-illus-fallback" title={`${title} · 插图`}>
+        <span>插画加载失败</span>
+        <a href={mediaUrl(src)} target="_blank" rel="noopener">点此打开原图</a>
+      </div>
+    );
+  }
+  return (
+    <img
+      className="novel-illus"
+      src={mediaUrl(src)}
+      alt={`${title} · 插图`}
+      loading="lazy"
+      style={zoomed ? { cursor: 'zoom-out', maxWidth: '100%' } : undefined}
+      onError={() => setFailed(true)}
+      onClick={(e) => { e.stopPropagation(); setZoomed((v) => !v); }}
+    />
+  );
+}
+
 const DEFAULT_PREFS: Prefs = { fontSize: 19, lineHeight: 1.9, theme: 'dark', continuous: false };
 const THEMES: Record<Theme, { bg: string; fg: string; sub: string; bar: string; label: string }> = {
   dark: { bg: '#15181e', fg: '#d9dee8', sub: '#8b93a5', bar: '#1c212a', label: '夜间' },
@@ -232,10 +259,7 @@ export function NovelReader({
 
   function BodyBlocks({ text: raw }: { text: string }) {
     return <>{textBlocks(raw).map((b, i) => b.t === 'img'
-      ? <img key={i} className="novel-illus" src={mediaUrl(b.v)} alt="插图" loading="lazy"
-          crossOrigin="anonymous"
-          onError={(e) => { e.currentTarget.style.display = 'none'; }}
-          onClick={(e) => { e.stopPropagation(); const el = e.currentTarget; if (el.style.cursor !== 'zoom-out') { el.style.cursor = 'zoom-out'; el.style.maxWidth = '100%'; } }} />
+      ? <NovelIllustration key={i} src={b.v} title={comic.title} />
       : <p key={i}>{b.v}</p>)}</>;
   }
 

@@ -35,18 +35,18 @@ class FlameComics extends ComicSource {
     cardsFrom(html) {
         const out = [];
         const seen = new Set();
-        const re = /href="\/series\/(\d+)"[\s\S]{0,600}?<img[^>]+(?:src|data-src)="([^"]+)"[^>]*alt="([^"]*)"/gi;
+        // 卡片：<a href="/series/ID">...<img alt="标题" ... src="/_next/image?url=...">
+        // img 属性顺序不固定（alt 常在 src 前），先截取卡片片段再分别抓属性，避免旧正则漏抓。
+        const cardRe = /href="\/series\/(\d+)"[\s\S]{0,800}?<img\b([^>]*?)\/?>/gi;
         let m;
-        while ((m = re.exec(html))) {
+        while ((m = cardRe.exec(html))) {
             const id = m[1];
             if (seen.has(id)) continue;
-            seen.add(id);
-            let title = this.decode(m[3]);
-            // 去掉 " cover" 后缀
-            title = title.replace(/\s+cover$/i, "").trim();
-            if (!title) title = "Series " + id;
-            let cover = String(m[2]).replace(/&amp;/g, "&");
-            // Next.js 的 /_next/image?url=... 解码出原始 CDN 地址
+            const attrs = m[2] || "";
+            const altM = /\balt="([^"]*)"/i.exec(attrs);
+            const srcM = /\b(?:src|data-src)="([^"]+)"/i.exec(attrs);
+            let title = this.decode(altM ? altM[1] : "").replace(/\s+cover$/i, "").trim() || "Series " + id;
+            let cover = srcM ? String(srcM[1]).replace(/&amp;/g, "&") : "";
             if (/\/_next\/image\?url=/i.test(cover)) {
                 try {
                     const u = new URL(cover, this.baseUrl);
@@ -54,6 +54,8 @@ class FlameComics extends ComicSource {
                     if (real) cover = real;
                 } catch { /* 保留原样 */ }
             }
+            if (!cover) continue;
+            seen.add(id);
             out.push(new Comic({ id, title, cover, tags: [] }));
         }
         return out;
@@ -74,10 +76,22 @@ class FlameComics extends ComicSource {
     }};
 
     explore = [
-        { title: "Flame · 最新热门", type: "multiPageComicList", load: async (page) => {
-            const url = page > 1 ? this.baseUrl + "/browse?page=" + page : this.baseUrl + "/";
-            return { comics: this.cardsFrom(await this.get(url)), maxPage: page + 1 };
+        { title: "全部漫画", type: "multiPageComicList", load: async (page) => {
+            const comics = this.cardsFrom(await this.get(this.baseUrl + "/browse"));
+            return { comics, maxPage: 1 };
         }},
+        ...[
+            ["action", "动作"], ["adventure", "冒险"], ["fantasy", "奇幻"], ["horror", "恐怖"],
+            ["martial%20arts", "武侠"], ["monster", "怪物"], ["murim", "武林"], ["regression", "重生"],
+            ["shounen", "少年"], ["supernatural", "超自然"], ["survival", "生存"],
+        ].map(([slug, label]) => ({
+            title: "题材 · " + label,
+            type: "multiPageComicList",
+            load: async (page) => {
+                const comics = this.cardsFrom(await this.get(this.baseUrl + "/genre/" + slug));
+                return { comics, maxPage: 1 };
+            },
+        })),
     ];
 
     comic = {

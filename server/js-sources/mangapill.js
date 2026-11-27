@@ -41,22 +41,25 @@ class MangaPill extends ComicSource {
     cardsFrom(html) {
         const out = [];
         const seen = new Set();
-        // <a href="/manga/{id}/{slug}" ...><figure><img data-src="..." alt="Title ..."/>
-        const re = /href="(\/manga\/(\d+)\/[^"]+)"[\s\S]{0,400}?<img[^>]+(?:data-src|src)="([^"]+)"[^>]*alt="([^"]*)"/gi;
+        // 卡片：<div class="rounded"><a href="/manga/{id}/{slug}"><div>标题</div></a>
+        //       ...<img data-src="https://cdn.../i/{id}.jpeg" alt="标题 Chapter N"></div>
+        // img 是 a 的兄弟节点，不再要求紧跟；用 href 起头在窗口内抓 img 的 data-src/alt（顺序无关）。
+        const re = /href="(\/manga\/(\d+)\/[^"]*)"[\s\S]{0,600}?<img\b([^>]*?)\/?>/gi;
         let m;
         while ((m = re.exec(html))) {
             const id = m[2];
             if (seen.has(id)) continue;
+            const attrs = m[3] || "";
+            const srcM = /\b(?:data-src|src)="([^"]+)"/i.exec(attrs);
+            const altM = /\balt="([^"]*)"/i.exec(attrs);
+            const cover = srcM ? String(srcM[1]).replace(/&amp;/g, "&") : "";
+            if (!cover) continue;
+            let title = this.decode(altM ? altM[1] : "").trim();
+            // alt 常为 "Title Chapter N"，去掉章节后缀
+            title = title.replace(/\s+Chapter\s+[\d.\-a-z]+.*$/i, "").trim();
+            if (!title) title = m[1].split("/").pop().replace(/-/g, " ").replace(/\s+/g, " ").trim();
             seen.add(id);
-            let title = this.decode(m[4] || "").trim();
-            // alt 常为 "Title Title"，去掉重复的一半
-            const parts = title.split(/\s{2,}|\s+/);
-            const half = Math.floor(parts.length / 2);
-            if (half > 0 && parts.slice(0, half).join(" ").toLowerCase() === parts.slice(half).join(" ").toLowerCase()) {
-                title = parts.slice(0, half).join(" ");
-            }
-            if (!title) title = m[1].split("/").pop().replace(/-/g, " ");
-            out.push(new Comic({ id, title, cover: String(m[3]).replace(/&amp;/g, "&"), tags: [] }));
+            out.push(new Comic({ id, title, cover, tags: [] }));
         }
         return out;
     }
