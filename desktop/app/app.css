@@ -502,8 +502,33 @@ body.mobile .field-row { grid-template-columns: 1fr; }
 .uni-rel a { flex:0 0 84px; text-decoration:none; color:var(--text); }
 .uni-rel img { width:84px; height:120px; object-fit:cover; border-radius:8px; display:block; }
 .uni-rel span { font-size:10px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; margin-top:4px; }
+/* 全品类检索增强：多榜单 / 多语言 / 正版 */
+.uni-section { margin-bottom:20px; }
+.uni-section h2 { font-size:15px; margin:0 0 12px; }
+.uni-section h2 .sm { font-size:11px; font-weight:400; }
+.uni-row { display:grid; grid-auto-flow:column; grid-auto-columns:150px; gap:14px; overflow-x:auto; padding-bottom:8px; }
+.uni-row .uni-card { min-width:0; }
+.uni-licensed { position:absolute; top:6px; left:6px; width:18px; height:18px; border-radius:50%; background:var(--ok,#3fb950); color:#fff; font-size:11px; font-weight:800; display:grid; place-items:center; }
+.uni-subtitle { font-size:11px; color:var(--muted); margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.uni-alias { line-height:1.5; }
+.badge.licensed { color:var(--ok,#3fb950); border-color:var(--ok,#3fb950); }
+.uni-prod { background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin:12px 0; display:flex; flex-direction:column; gap:6px; }
+.uni-prod > div { display:flex; gap:10px; font-size:12px; line-height:1.5; }
+.uni-prod b { flex:0 0 68px; color:var(--muted); }
+.uni-prod span { color:var(--text); }
+.uni-names { margin:12px 0; font-size:12px; }
+.uni-names summary { cursor:pointer; color:var(--accent); font-weight:600; }
+.uni-names > div { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; max-height:120px; overflow:auto; }
+.uni-name-chip { font-size:11px; padding:3px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); }
+.uni-link.official { color:var(--accent); border-color:var(--accent); }
+.uni-link.social { color:var(--muted); }
+.uni-eps { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:6px; max-height:190px; overflow:auto; }
+.uni-ep { display:inline-flex; gap:6px; font-size:11px; text-decoration:none; color:var(--text); background:var(--surface-2); border:1px solid var(--border); border-radius:7px; padding:5px 8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.uni-ep:hover { border-color:var(--accent); color:var(--accent); }
+.uni-ep b { color:var(--accent); }
 @media (max-width: 640px) {
   .uni-detail-body { flex-direction:column; }
   .uni-detail-cover { flex:none; align-self:center; }
   .uni-grid { grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:12px; }
+  .uni-row { grid-auto-columns:128px; }
 }

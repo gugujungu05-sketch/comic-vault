@@ -260,33 +260,53 @@ export interface TranslateResult {
   cached: boolean;
 }
 
-/** 全站书籍检索结果（AniList 归一化） */
+/** 全品类聚合检索结果（多语言 + 正版信息） */
 export interface UniversalMedia {
   id: string;
   source: string;
   sourceUrl: string;
   title: string;
+  /** 多语言标题集合，供「优先显示语言」切换 */
+  titles?: { native: string; romaji: string; english: string; chinese: string };
   nativeTitle: string;
   englishTitle: string;
+  chineseTitle?: string;
   synonyms: string[];
   cover: string;
   banner: string;
   color: string;
   description: string;
-  kind: string;          // manga / anime
+  kind: string;          // manga / anime / game / music
+  category?: string;     // manga / novel / anime / movie / game / music
   format: string;        // TV / MOVIE / MANGA / NOVEL / ONA ...
   status: string;
   year: number | null;
   score: number | null;  // 0-10
+  meanScore?: number | null;
   popularity: number;
+  favourites?: number;
   episodes: number | null;
   chapters: number | null;
   volumes: number | null;
+  duration?: number | null;
+  country?: string;
+  origin?: string;       // 原作来源：MANGA / LIGHT_NOVEL ...
+  licensed?: boolean;    // 是否有正版授权
+  studios?: { name: string; siteUrl: string }[];
+  rankings?: { rank: number; context: string; year: number | null }[];
   tags: string[];
-  links: { site: string; url: string; type: 'watch' | 'info' }[];
-  relations?: { relation: string; id: string; title: string; cover: string; kind: string; sourceUrl: string }[];
-  characters?: { name: string; image: string; sourceUrl: string }[];
+  links: { site: string; rawSite?: string; url: string; type: 'watch' | 'official' | 'social' | 'info'; language?: string; color?: string }[];
+  streamingEpisodes?: { site: string; title: string; url: string; thumbnail: string }[];
+  relations?: { relation: string; id: string; title: string; cover: string; format?: string; kind: string; sourceUrl: string }[];
+  characters?: { name: string; nativeName?: string; image: string; sourceUrl: string }[];
   staff?: { name: string; image: string; sourceUrl: string }[];
+}
+
+/** 检索首页多榜单分区 */
+export interface UniTrendSection {
+  key: string;
+  label: string;
+  results: UniversalMedia[];
 }
 
 export interface Settings {

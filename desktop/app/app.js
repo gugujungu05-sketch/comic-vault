@@ -38,6 +38,8 @@
     // 全站书籍检索
     uniQ: '', uniType: 'all', uniResults: [], uniPage: 1, uniMore: false, uniTotal: 0,
     uniDetail: null, uniSearched: false,
+    uniLang: localStorage.getItem('cv_unisearch_lang') || 'auto',
+    uniSections: [],
     // 全局导入任务：{active, done, total, failed, label, comicId, finished}
     importTask: { active: false, done: 0, total: 0, failed: 0, label: '', comicId: '', finished: false },
   };
@@ -289,7 +291,7 @@
   /* ------------------------------ 视图框架 ------------------------------ */
   const VIEW_META = {
     library: ['我的书架', '本地客户端 · 与网站共用同一份数据'],
-    search: ['全站检索', '搜漫画/轻小说/动画/影视 · 信息与观看网址，比番组计划更全'],
+    search: ['全品类检索', '漫画/轻小说/动画/影视/游戏/音乐 · 多语言译名 + 正版发布与观看信息'],
     sources: ['在线来源', '配置书源，从漫画站把漫画搬进书库'],
     updates: ['追更', '订阅在更新的漫画，自动检查并下载新章节'],
     community: ['公共书库', '所有人共享的漫画，服务端实时同步'],
@@ -314,8 +316,14 @@
         <button class="btn" data-action="pick-folder">＋ 导入文件夹</button>
         <button class="btn primary" data-action="new-comic">新建漫画</button>`;
     } else if (state.view === 'search') {
-      acts.innerHTML = `<input class="input search" id="uniSearchInput" placeholder="书名 / 动画名 / 日文名 / 别名" value="${esc(state.uniQ)}" />
+      const langOpts = [['auto','智能'],['chinese','中文'],['native','原名'],['romaji','罗马音'],['english','英文']];
+      acts.innerHTML = `<input class="input search" id="uniSearchInput" placeholder="中文名 / 日文名 / 英文名 / 别名 / 罗马音" value="${esc(state.uniQ)}" />
+        <select class="select" id="uniLangSel" title="优先显示语言" style="max-width:96px">${langOpts.map(([k,l]) => `<option value="${k}" ${state.uniLang === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <button class="btn primary" data-action="uni-search">搜索</button>`;
+      $('#uniLangSel').addEventListener('change', (e) => {
+        state.uniLang = e.target.value; localStorage.setItem('cv_unisearch_lang', state.uniLang); renderUniSearch();
+        if (state.uniDetail) renderUniDetail();
+      });
     } else if (state.view === 'sources') {
       acts.innerHTML = `<button class="btn" data-action="src-manage">书源管理</button>`;
     } else if (state.view === 'updates') {
@@ -485,32 +493,73 @@
     } catch (err) { toast(err.message, true); }
     finally { busy(false); }
   }
+  async function uniLoadTrending(cat) {
+    try {
+      const r = await api('GET', '/api/unisearch/trending', { query: { type: cat === 'manga' ? 'manga' : cat === 'novel' ? 'novel' : 'anime' }, noCache: true });
+      state.uniSections = r.sections || (r.results?.length ? [{ key: 'trending', label: '热门', results: r.results }] : []);
+    } catch { state.uniSections = []; }
+  }
   function uniKindLabel(m) {
-    const map = { TV: 'TV 动画', MOVIE: '剧场版', ONA: '网络动画', OVA: 'OVA', MANGA: '漫画', NOVEL: '轻小说', ONE_SHOT: '短篇', SPECIAL: '特别篇' };
-    return map[m.format] || (m.kind === 'manga' ? '漫画' : '动画');
+    const map = { TV: 'TV 动画', MOVIE: '剧场版', ONA: '网络动画', OVA: 'OVA', TV_SHORT: '短篇动画', SPECIAL: '特别篇', MANGA: '漫画', NOVEL: '轻小说', ONE_SHOT: '短篇', MUSIC: '音乐', GAME: '游戏' };
+    return map[m.format] || (m.category === 'novel' ? '轻小说' : m.category === 'game' ? '游戏' : m.category === 'music' ? '音乐' : m.kind === 'manga' ? '漫画' : '动画');
+  }
+  /* 依据语言偏好取主显示名 */
+  function uniTitle(m) {
+    const t = m.titles || { native: m.nativeTitle || '', romaji: '', english: m.englishTitle || '', chinese: m.chineseTitle || '' };
+    const pick = (keys) => { for (const k of keys) if (t[k] && String(t[k]).trim()) return t[k]; return ''; };
+    const p = state.uniLang;
+    let v = p === 'chinese' ? pick(['chinese','native','romaji','english'])
+      : p === 'native' ? pick(['native','chinese','romaji','english'])
+      : p === 'romaji' ? pick(['romaji','english','native','chinese'])
+      : p === 'english' ? pick(['english','romaji','native','chinese'])
+      : pick(['chinese','native','romaji','english']);
+    return v || m.title;
+  }
+  function uniSub(m, main) {
+    const t = m.titles || { native: m.nativeTitle || '', romaji: '', english: m.englishTitle || '', chinese: m.chineseTitle || '' };
+    return [...new Set([t.chinese, t.native, t.romaji, t.english].filter((s) => s && s !== main))].slice(0, 2).join(' · ');
+  }
+  function uniOriginLabel(o) {
+    const map = { MANGA: '漫画改编', LIGHT_NOVEL: '轻小说改编', NOVEL: '小说改编', ORIGINAL: '原创', VISUAL_NOVEL: '视觉小说改编', VIDEO_GAME: '游戏改编' };
+    return map[o] || o;
+  }
+  function uniCardHtml(m) {
+    const main = uniTitle(m);
+    const watch = (m.links || []).filter((l) => l.type === 'watch');
+    const fmt = [m.chapters ? `${m.chapters} 话` : '', m.volumes ? `${m.volumes} 卷` : '', m.episodes ? `${m.episodes} 集` : ''].filter(Boolean).join('·');
+    return `<div class="uni-card" data-action="uni-detail" data-id="${esc(m.id)}">
+      <div class="uni-cover">${m.cover ? `<img src="${esc(m.cover)}" loading="lazy" />` : '<div class="uni-ph">📖</div>'}
+        ${m.licensed ? '<span class="uni-licensed" title="正版授权">✓</span>' : ''}
+        <span class="uni-kind">${esc(uniKindLabel(m))}</span>
+        ${m.score != null ? `<span class="uni-score">★ ${Number(m.score).toFixed(1)}</span>` : ''}</div>
+      <div class="uni-title" title="${esc(main)}">${esc(main)}</div>
+      <div class="uni-subtitle" title="${esc(uniSub(m, main))}">${esc(uniSub(m, main))}</div>
+      <div class="uni-sub">${m.year || '—'}${fmt ? ` · ${fmt}` : ''}${watch.length ? ` · <span style="color:var(--ok,#3fb950)">${watch.length} 个观看源</span>` : ''}</div>
+    </div>`;
   }
   function renderUniSearch() {
     const c = $('#content');
-    const tabs = [['all', '全部'], ['manga', '漫画 / 轻小说'], ['anime', '动画 / 影视']];
+    /* 首次进入检索页：异步加载多榜单（不阻塞渲染） */
+    if (!state.uniSearched && !state.uniSections.length && !state.uniTrendLoading) {
+      state.uniTrendLoading = true;
+      uniLoadTrending(state.uniType).then(() => { state.uniTrendLoading = false; if (state.view === 'search' && !state.uniSearched) renderUniSearch(); });
+    }
+    const tabs = [['all','全部'],['manga','漫画'],['novel','轻小说'],['anime','动画'],['movie','影视'],['game','游戏'],['music','音乐']];
     let html = `<div class="uni-wrap">
       <div class="uni-tabs">${tabs.map(([k, l]) => `<button class="tab ${state.uniType === k ? 'active' : ''}" data-action="uni-tab" data-type="${k}">${l}</button>`).join('')}</div>`;
     if (!state.uniSearched) {
-      html += `<p class="muted">输入书名 / 动画名 / 日文名 / 别名，一次搜遍漫画、轻小说、动画与影视，查看详细信息与「哪里能看」。</p>`;
+      if (state.uniSections.length) {
+        html += state.uniSections.map((s) => `<section class="uni-section"><h2>${esc(s.label)} <span class="muted sm">· 聚合公开元数据库</span></h2>
+          <div class="uni-row">${(s.results || []).map(uniCardHtml).join('')}</div></section>`).join('');
+      } else {
+        html += `<p class="muted">输入中文名 / 日文名 / 英文名 / 别名 / 罗马音，跨漫画、轻小说、动画、影视、游戏、音乐检索，查看多语言译名与正版发布信息。</p>`;
+      }
     } else {
-      html += `<div class="uni-head"><b>搜索结果</b><span class="muted">${state.uniTotal ? `共 ${state.uniTotal} 条 · 显示 ${state.uniResults.length} 条` : ''}</span></div>`;
+      html += `<div class="uni-head"><b>搜索结果 · ${esc((tabs.find((t) => t[0] === state.uniType) || [,''])[1])}</b><span class="muted">${state.uniTotal ? `共 ${state.uniTotal} 条 · 显示 ${state.uniResults.length} 条` : ''}</span></div>`;
       if (state.uniResults.length) {
-        html += `<div class="uni-grid">${state.uniResults.map((m) => {
-          const watch = (m.links || []).filter((l) => l.type === 'watch');
-          return `<div class="uni-card" data-action="uni-detail" data-id="${esc(m.id)}">
-            <div class="uni-cover">${m.cover ? `<img src="${esc(m.cover)}" loading="lazy" />` : '<div class="uni-ph">📖</div>'}
-              <span class="uni-kind">${esc(uniKindLabel(m))}</span>
-              ${m.score != null ? `<span class="uni-score">★ ${Number(m.score).toFixed(1)}</span>` : ''}</div>
-            <div class="uni-title" title="${esc(m.title)}">${esc(m.title)}</div>
-            <div class="uni-sub">${m.year || '—'}${m.chapters ? ` · ${m.chapters} 话` : m.episodes ? ` · ${m.episodes} 集` : ''}${watch.length ? ` · <span style="color:var(--ok,#3fb950)">${watch.length} 个观看源</span>` : ''}</div>
-          </div>`;
-        }).join('')}</div>`;
+        html += `<div class="uni-grid">${state.uniResults.map(uniCardHtml).join('')}</div>`;
         if (state.uniMore) html += `<div style="text-align:center;margin:16px"><button class="btn" data-action="uni-more">加载更多</button></div>`;
-      } else html += `<p class="muted">没有找到匹配结果，换个关键词（支持中文名 / 日文名 / 英文名）。</p>`;
+      } else html += `<p class="muted">没有找到匹配结果，换个关键词或切换品类（支持中文 / 日文 / 英文 / 罗马音）。</p>`;
     }
     html += `</div>`;
     c.innerHTML = html;
@@ -518,23 +567,38 @@
   function renderUniDetail() {
     const d = state.uniDetail; if (!d) return;
     const watch = (d.links || []).filter((l) => l.type === 'watch');
+    const official = (d.links || []).filter((l) => l.type === 'official');
+    const social = (d.links || []).filter((l) => l.type === 'social');
     const rel = d.relations || [];
     const chars = d.characters || [];
+    const eps = d.streamingEpisodes || [];
+    const main = uniTitle(d);
+    const fmt = [d.chapters ? `${d.chapters} 话` : '', d.volumes ? `${d.volumes} 卷` : '', d.episodes ? `${d.episodes} 集` : ''].filter(Boolean).join(' · ');
     const statusMap = { FINISHED: '已完结', ONGOING: '连载中', RELEASING: '连载中', NOT_YET_RELEASED: '未播出', CANCELLED: '已取消', HIATUS: '休刊中' };
+    const prod = (d.studios?.length || d.origin || d.rankings?.length) ? `<div class="uni-prod">
+      ${d.studios?.length ? `<div><b>制作 / 出版</b><span>${esc(d.studios.map((s) => s.name).join('、'))}</span></div>` : ''}
+      ${d.origin ? `<div><b>原作来源</b><span>${esc(uniOriginLabel(d.origin))}</span></div>` : ''}
+      ${d.rankings?.length ? `<div><b>榜单排名</b><span>${esc(d.rankings.slice(0, 3).map((r) => `第 ${r.rank} 名 · ${r.context}`).join('；'))}</span></div>` : ''}
+    </div>` : '';
     openModal(`<div class="uni-detail-modal">
       <button class="modal-close" data-action="close-modal" aria-label="关闭">×</button>
       ${d.banner ? `<div class="uni-banner" style="background-image:url('${esc(d.banner)}')"></div>` : ''}
       <div class="uni-detail-body">
         <div class="uni-detail-cover">${d.cover ? `<img src="${esc(d.cover)}" />` : '<div class="uni-ph">📖</div>'}</div>
         <div class="uni-detail-info">
-          <h2>${esc(d.title)}</h2>
-          ${d.nativeTitle || d.englishTitle ? `<p class="muted">${esc(d.nativeTitle || '')}${d.englishTitle ? ' · ' + esc(d.englishTitle) : ''}</p>` : ''}
-          <div class="uni-meta"><span class="badge">${esc(uniKindLabel(d))}</span>${d.year ? `<span class="badge">${d.year}</span>` : ''}${d.status ? `<span class="badge">${esc(statusMap[d.status] || d.status)}</span>` : ''}${d.score != null ? `<span class="badge">★ ${Number(d.score).toFixed(1)}</span>` : ''}${d.chapters ? `<span class="badge">${d.chapters} 话</span>` : ''}${d.episodes ? `<span class="badge">${d.episodes} 集</span>` : ''}</div>
-          ${d.tags && d.tags.length ? `<div class="uni-tags">${d.tags.slice(0, 14).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+          <h2>${esc(main)}</h2>
+          ${uniSub(d, main) ? `<p class="muted uni-alias">${esc(uniSub(d, main))}</p>` : ''}
+          <div class="uni-meta"><span class="badge">${esc(uniKindLabel(d))}</span>${d.year ? `<span class="badge">${d.year}</span>` : ''}${d.status ? `<span class="badge">${esc(statusMap[d.status] || d.status)}</span>` : ''}${d.score != null ? `<span class="badge">★ ${Number(d.score).toFixed(1)}</span>` : ''}${fmt ? `<span class="badge">${esc(fmt)}</span>` : ''}${d.country ? `<span class="badge">${esc(d.country)}</span>` : ''}${d.licensed ? '<span class="badge licensed">✓ 正版授权</span>' : ''}</div>
+          ${prod}
           ${d.description ? `<p class="uni-desc">${esc(d.description)}</p>` : ''}
-          ${watch.length ? `<div class="uni-links"><h3>▶ 哪里能看</h3><div>${watch.map((l) => `<a class="uni-link" href="${esc(l.url)}" target="_blank" rel="noreferrer">🔗 ${esc(l.site)}</a>`).join('')}</div></div>` : ''}
+          ${d.tags && d.tags.length ? `<div class="uni-tags">${d.tags.slice(0, 16).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+          ${d.synonyms?.length ? `<details class="uni-names"><summary>多语言译名（${d.synonyms.length}）</summary><div>${d.synonyms.map((n) => `<span class="uni-name-chip">${esc(n)}</span>`).join('')}</div></details>` : ''}
+          ${watch.length ? `<div class="uni-links"><h3>▶ 哪里能看 · 正版观看平台（${watch.length}）</h3><div>${watch.map((l) => `<a class="uni-link" href="${esc(l.url)}" target="_blank" rel="noreferrer">🔗 ${esc(l.site)}${l.language ? ` · ${esc(l.language)}` : ''}</a>`).join('')}</div></div>` : ''}
+          ${official.length ? `<div class="uni-links"><h3>🌐 正版发布 · 官方网站</h3><div>${official.map((l) => `<a class="uni-link official" href="${esc(l.url)}" target="_blank" rel="noreferrer">🌐 ${esc(l.site)}</a>`).join('')}</div></div>` : ''}
+          ${eps.length ? `<div class="uni-links"><h3>▶ 分集观看（${eps.length} 集）</h3><div class="uni-eps">${eps.slice(0, 30).map((e, i) => `<a class="uni-ep" href="${esc(e.url)}" target="_blank" rel="noreferrer" title="${esc(e.site)} · ${esc(e.title)}"><b>${i + 1}</b>${esc(e.title)}</a>`).join('')}</div></div>` : ''}
+          ${social.length ? `<div class="uni-links"><h3>🔗 官方社交</h3><div>${social.map((l) => `<a class="uni-link social" href="${esc(l.url)}" target="_blank" rel="noreferrer">🔗 ${esc(l.site)}</a>`).join('')}</div></div>` : ''}
           <a class="btn sm ghost" href="${esc(d.sourceUrl)}" target="_blank" rel="noreferrer">🌐 在 ${esc(d.source)} 查看完整资料</a>
-          ${rel.length ? `<div class="uni-rel"><h3>相关作品</h3><div>${rel.slice(0, 8).map((r) => `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noreferrer" title="${esc(r.title)}">${r.cover ? `<img src="${esc(r.cover)}" />` : '📖'}<span>${esc(r.title)}</span></a>`).join('')}</div></div>` : ''}
+          ${rel.length ? `<div class="uni-rel"><h3>相关作品（${rel.length}）</h3><div>${rel.slice(0, 10).map((r) => `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noreferrer" title="${esc(r.title)}">${r.cover ? `<img src="${esc(r.cover)}" />` : '📖'}<span>${esc(r.title)}</span></a>`).join('')}</div></div>` : ''}
           ${chars.length ? `<div class="uni-rel"><h3>主要角色</h3><div>${chars.map((ch) => `<a href="${esc(ch.sourceUrl)}" target="_blank" rel="noreferrer" title="${esc(ch.name)}">${ch.image ? `<img src="${esc(ch.image)}" />` : '👤'}<span>${esc(ch.name)}</span></a>`).join('')}</div></div>` : ''}
         </div>
       </div>
@@ -2354,6 +2418,7 @@
       else if (a === 'uni-tab') {
         state.uniType = el.dataset.type; renderUniSearch();
         if (state.uniSearched && state.uniQ) uniDoSearch(state.uniQ, 1, false);
+        else { render(); await uniLoadTrending(state.uniType); renderUniSearch(); }
       }
       else if (a === 'uni-search') {
         const inp = $('#uniSearchInput'); const q = inp ? inp.value.trim() : state.uniQ;

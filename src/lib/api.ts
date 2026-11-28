@@ -1122,17 +1122,19 @@ export const translation = {
     }),
 };
 
-/* ------------------------------ 全站书籍检索（比番组计划更全） ------------------------------ */
+/* ------------------------------ 全品类聚合检索 ------------------------------ */
 export const unisearch = {
+  categories: () =>
+    request<{ categories: { key: string; label: string; hint: string }[]; source: string }>('/api/unisearch/categories'),
   search: (q: string, type: string = 'all', page: number = 1) =>
     request<{
       results: UniversalMedia[]; page: number; hasNextPage: boolean; total: number; query: string; source: string;
-      error?: string;
+      category?: string; error?: string;
     }>(`/api/unisearch/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&page=${page}`),
   detail: (id: string) =>
     request<UniversalMedia>(`/api/unisearch/detail?id=${encodeURIComponent(id)}`),
   trending: (type: string = 'anime') =>
-    request<{ results: UniversalMedia[]; source: string; error?: string }>(`/api/unisearch/trending?type=${encodeURIComponent(type)}`),
+    request<{ sections: { key: string; label: string; results: UniversalMedia[] }[]; results: UniversalMedia[]; source: string; error?: string }>(`/api/unisearch/trending?type=${encodeURIComponent(type)}`),
 };
 
 /* ------------------------------ 发现 / 排行 / 动态 / 公告 / 软件 ------------------------------ */
