@@ -529,6 +529,7 @@ body.mobile .field-row { grid-template-columns: 1fr; }
 /* 检索：中文展示 / 品类差异化 / 标签 */
 .uni-kind.cat-manga { background:#2f7d5b; }
 .uni-kind.cat-novel { background:#7a5bb8; }
+.uni-kind.cat-book { background:#2b7a92; }
 .uni-kind.cat-movie { background:#b8662f; }
 .uni-kind.cat-game { background:#2f6fb8; }
 .uni-kind.cat-music { background:#b83a7a; }

@@ -2931,6 +2931,7 @@ html, body, #root { overscroll-behavior-x: none; }
 /* ===== 全品类检索：中文展示 / 品类差异化 / 标签 ===== */
 .media-kind.cat-manga { background: #2f7d5b; }
 .media-kind.cat-novel { background: #7a5bb8; }
+.media-kind.cat-book { background: #2b7a92; }
 .media-kind.cat-movie { background: #b8662f; }
 .media-kind.cat-game { background: #2f6fb8; }
 .media-kind.cat-music { background: #b83a7a; }
@@ -2958,6 +2959,7 @@ html, body, #root { overscroll-behavior-x: none; }
 .desc-original p { margin: 6px 0 0; line-height: 1.6; max-height: 90px; overflow: auto; }
 .accent-badge.cat-manga { background: #2f7d5b; }
 .accent-badge.cat-novel { background: #7a5bb8; }
+.accent-badge.cat-book { background: #2b7a92; }
 .accent-badge.cat-movie { background: #b8662f; }
 .accent-badge.cat-game { background: #2f6fb8; }
 .accent-badge.cat-music { background: #b83a7a; }

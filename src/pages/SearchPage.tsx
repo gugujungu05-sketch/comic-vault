@@ -17,7 +17,7 @@ const LANG_KEY = 'cv_unisearch_lang';
 const DEFAULT_CATEGORIES = [
   { key: 'all', label: '全部', hint: '综合所有品类' },
   { key: 'manga', label: '漫画', hint: '日漫 / 港漫 / 条漫' },
-  { key: 'novel', label: '轻小说', hint: '轻小说 / Web 小说' },
+  { key: 'novel', label: '小说', hint: '轻小说 / 网络小说 / 实体小说 / 正版电子书' },
   { key: 'anime', label: '动画', hint: 'TV / 网络 / OVA' },
   { key: 'movie', label: '影视', hint: '剧场版 / 电影' },
   { key: 'game', label: '游戏', hint: '改编游戏 / 原作游戏' },
@@ -56,12 +56,24 @@ function subTitle(m: UniversalMedia, pref: LangPref, main: string): string {
   return [...new Set(candidates)].slice(0, 2).join(' · ');
 }
 
+/** 小说子品类中文名（轻小说 / 网络小说 / 实体小说 / 正版电子书） */
+function novelSubLabel(m: UniversalMedia): string {
+  switch (m.subCategory) {
+    case 'lightnovel': return '轻小说';
+    case 'chinese': return '中文小说';
+    case 'ebook': return '正版电子书';
+    case 'book': return '实体 / 网络小说';
+    default: return m.format === 'NOVEL' ? '轻小说' : '小说';
+  }
+}
+
 function kindLabel(m: UniversalMedia) {
   const map: Record<string, string> = {
     TV: 'TV 动画', MOVIE: '剧场版', ONA: '网络动画', OVA: 'OVA', TV_SHORT: '短篇动画',
     SPECIAL: '特别篇', MANGA: '漫画', NOVEL: '轻小说', ONE_SHOT: '短篇', MUSIC: '音乐', GAME: '游戏',
   };
-  return map[m.format] || (m.category === 'novel' ? '轻小说' : m.category === 'game' ? '游戏' : m.category === 'music' ? '音乐' : m.kind === 'manga' ? '漫画' : '动画');
+  if (m.category === 'novel') return novelSubLabel(m);
+  return map[m.format] || (m.category === 'game' ? '游戏' : m.category === 'music' ? '音乐' : m.kind === 'manga' ? '漫画' : '动画');
 }
 
 function formatLabel(m: UniversalMedia) {
@@ -77,7 +89,11 @@ function formatLabel(m: UniversalMedia) {
 function categoryBadge(m: UniversalMedia): { text: string; cls: string } {
   switch (m.category) {
     case 'manga': return { text: `漫画${m.chapters ? ` · ${m.chapters}话` : ''}`, cls: 'cat-manga' };
-    case 'novel': return { text: `轻小说${m.volumes ? ` · ${m.volumes}卷` : ''}`, cls: 'cat-novel' };
+    case 'novel': {
+      const sub = novelSubLabel(m);
+      const extra = m.volumes ? ` · ${m.volumes}卷` : m.author ? ` · ${m.author}` : '';
+      return { text: `${sub}${extra}`, cls: m.subCategory === 'lightnovel' ? 'cat-novel' : 'cat-book' };
+    }
     case 'movie': return { text: '剧场版', cls: 'cat-movie' };
     case 'game': return { text: '游戏', cls: 'cat-game' };
     case 'music': return { text: '音乐', cls: 'cat-music' };
@@ -89,7 +105,14 @@ function categoryBadge(m: UniversalMedia): { text: string; cls: string } {
 function categoryFacts(m: UniversalMedia): { k: string; v: string }[] {
   const f: { k: string; v: string }[] = [];
   if (m.studios?.length) f.push({ k: m.category === 'manga' || m.category === 'novel' ? '出版 / 作者' : '制作公司', v: m.studios.map((s) => s.name).join('、') });
-  if (m.category === 'manga' || m.category === 'novel') {
+  if (m.category === 'novel') {
+    if (m.author) f.push({ k: '作者', v: m.author });
+    if (m.publisher) f.push({ k: '出版社', v: m.publisher });
+    if (m.chapters) f.push({ k: '话数', v: `${m.chapters} 话` });
+    if (m.volumes) f.push({ k: '卷数', v: `${m.volumes} 卷` });
+    if (m.price) f.push({ k: '正版价格', v: m.price });
+    if (m.score != null) f.push({ k: '评分', v: `${score(m.score)} / 10` });
+  } else if (m.category === 'manga') {
     if (m.chapters) f.push({ k: '话数', v: `${m.chapters} 话` });
     if (m.volumes) f.push({ k: '卷数', v: `${m.volumes} 卷` });
   } else if (m.category === 'movie') {
@@ -227,7 +250,7 @@ export function SearchPage() {
       <div className="page-head">
         <div>
           <h1><Icon name="search" size={20} /> 全品类聚合检索</h1>
-          <p className="muted">跨漫画、轻小说、动画、影视、游戏、音乐检索 · 多语言译名 · 正版发布与观看信息</p>
+          <p className="muted">跨漫画、小说（轻小说 / 网文 / 实体书 / 正版电子书）、动画、影视、游戏、音乐检索 · 多语言译名 · 正版发布与观看信息</p>
         </div>
         <div className="lang-switch">
           <button className="btn sm ghost" onClick={() => setShowLang((v) => !v)}>
@@ -497,7 +520,7 @@ function MediaCard({ m, pref, onOpen }: { m: UniversalMedia; pref: LangPref; onO
         {m.licensed && <span className="media-licensed" title="正版授权">✓</span>}
       </div>
       <div className="media-title" title={main}>{main}</div>
-      <div className="media-subtitle" title={subTitle(m, pref, main)}>{subTitle(m, pref, main)}</div>
+      <div className="media-subtitle" title={subTitle(m, pref, main)}>{subTitle(m, pref, main) || (m.category === 'novel' && m.author ? `作者：${m.author}` : '')}</div>
       {!!tags.length && (
         <div className="media-tags">{tags.map((t, i) => <span className="media-tag" key={i}>{t}</span>)}</div>
       )}

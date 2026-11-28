@@ -300,7 +300,7 @@
   /* ------------------------------ 视图框架 ------------------------------ */
   const VIEW_META = {
     library: ['我的书架', '本地客户端 · 与网站共用同一份数据'],
-    search: ['全品类检索', '漫画/轻小说/动画/影视/游戏/音乐 · 多语言译名 + 正版发布与观看信息'],
+    search: ['全品类检索', '漫画/小说(轻小说·网文·实体书·电子书)/动画/影视/游戏/音乐 · 多语言译名 + 正版发布信息'],
     sources: ['在线来源', '配置书源，从漫画站把漫画搬进书库'],
     updates: ['追更', '订阅在更新的漫画，自动检查并下载新章节'],
     community: ['公共书库', '所有人共享的漫画，服务端实时同步'],
@@ -538,7 +538,8 @@
   }
   function uniKindLabel(m) {
     const map = { TV: 'TV 动画', MOVIE: '剧场版', ONA: '网络动画', OVA: 'OVA', TV_SHORT: '短篇动画', SPECIAL: '特别篇', MANGA: '漫画', NOVEL: '轻小说', ONE_SHOT: '短篇', MUSIC: '音乐', GAME: '游戏' };
-    return map[m.format] || (m.category === 'novel' ? '轻小说' : m.category === 'game' ? '游戏' : m.category === 'music' ? '音乐' : m.kind === 'manga' ? '漫画' : '动画');
+    if (m.category === 'novel') return uniNovelSub(m);
+    return map[m.format] || (m.category === 'game' ? '游戏' : m.category === 'music' ? '音乐' : m.kind === 'manga' ? '漫画' : '动画');
   }
   /* 依据语言偏好取主显示名 */
   function uniTitle(m) {
@@ -560,10 +561,23 @@
     const map = { MANGA: '漫画改编', LIGHT_NOVEL: '轻小说改编', NOVEL: '小说改编', ORIGINAL: '原创', VISUAL_NOVEL: '视觉小说改编', VIDEO_GAME: '游戏改编' };
     return map[o] || o;
   }
+  function uniNovelSub(m) {
+    switch (m.subCategory) {
+      case 'lightnovel': return '轻小说';
+      case 'chinese': return '中文小说';
+      case 'ebook': return '正版电子书';
+      case 'book': return '实体 / 网络小说';
+      default: return m.format === 'NOVEL' ? '轻小说' : '小说';
+    }
+  }
   function uniCatBadge(m) {
     switch (m.category) {
       case 'manga': return { text: `漫画${m.chapters ? ` · ${m.chapters}话` : ''}`, cls: 'cat-manga' };
-      case 'novel': return { text: `轻小说${m.volumes ? ` · ${m.volumes}卷` : ''}`, cls: 'cat-novel' };
+      case 'novel': {
+        const sub = uniNovelSub(m);
+        const extra = m.volumes ? ` · ${m.volumes}卷` : m.author ? ` · ${m.author}` : '';
+        return { text: `${sub}${extra}`, cls: m.subCategory === 'lightnovel' ? 'cat-novel' : 'cat-book' };
+      }
       case 'movie': return { text: '剧场版', cls: 'cat-movie' };
       case 'game': return { text: '游戏', cls: 'cat-game' };
       case 'music': return { text: '音乐', cls: 'cat-music' };
@@ -581,7 +595,7 @@
         <span class="uni-kind ${cat.cls}">${esc(cat.text)}</span>
         ${m.score != null ? `<span class="uni-score">★ ${Number(m.score).toFixed(1)}</span>` : ''}</div>
       <div class="uni-title" title="${esc(main)}">${esc(main)}</div>
-      <div class="uni-subtitle" title="${esc(uniSub(m, main))}">${esc(uniSub(m, main))}</div>
+      <div class="uni-subtitle" title="${esc(uniSub(m, main) || (m.category === 'novel' && m.author ? '作者：' + m.author : ''))}">${esc(uniSub(m, main) || (m.category === 'novel' && m.author ? '作者：' + m.author : ''))}</div>
       ${tags.length ? `<div class="uni-tags-mini">${tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
       <div class="uni-sub">${m.year || '—'}${m.countryZh && m.countryZh !== m.country ? ` · ${esc(m.countryZh)}` : ''}${watch.length ? ` · <span style="color:var(--ok,#3fb950)">${watch.length} 个观看源</span>` : ''}</div>
     </div>`;
@@ -593,7 +607,7 @@
       state.uniTrendLoading = true;
       uniLoadTrending(state.uniType).then(() => { state.uniTrendLoading = false; if (state.view === 'search' && !state.uniSearched) renderUniSearch(); });
     }
-    const tabs = [['all','全部'],['manga','漫画'],['novel','轻小说'],['anime','动画'],['movie','影视'],['game','游戏'],['music','音乐']];
+    const tabs = [['all','全部'],['manga','漫画'],['novel','小说'],['anime','动画'],['movie','影视'],['game','游戏'],['music','音乐']];
     let html = `<div class="uni-wrap">
       <div class="uni-tabs">${tabs.map(([k, l]) => `<button class="tab ${state.uniType === k ? 'active' : ''}" data-action="uni-tab" data-type="${k}">${l}</button>`).join('')}</div>`;
     if (!state.uniSearched) {
@@ -601,7 +615,7 @@
         html += state.uniSections.map((s) => `<section class="uni-section"><h2>${esc(s.label)} <span class="muted sm">· 聚合公开元数据库</span></h2>
           <div class="uni-row">${(s.results || []).map(uniCardHtml).join('')}</div></section>`).join('');
       } else {
-        html += `<p class="muted">输入中文名 / 日文名 / 英文名 / 别名 / 罗马音，跨漫画、轻小说、动画、影视、游戏、音乐检索，查看多语言译名与正版发布信息。</p>`;
+        html += `<p class="muted">输入中文名 / 日文名 / 英文名 / 别名 / 罗马音，跨漫画、小说（轻小说 / 网文 / 实体书 / 正版电子书）、动画、影视、游戏、音乐检索，查看多语言译名与正版发布信息。</p>`;
       }
     } else {
       html += `<div class="uni-head"><b>搜索结果 · ${esc((tabs.find((t) => t[0] === state.uniType) || [,''])[1])}</b><span class="muted">${state.uniTotal ? `共 ${state.uniTotal} 条 · 显示 ${state.uniResults.length} 条` : ''}</span></div>`;
@@ -626,7 +640,14 @@
     /* 按品类组装特色信息（漫画/小说/动画/影视各有不同字段） */
     const facts = [];
     if (d.studios?.length) facts.push([d.category === 'manga' || d.category === 'novel' ? '出版 / 作者' : '制作公司', d.studios.map((s) => s.name).join('、')]);
-    if (d.category === 'manga' || d.category === 'novel') {
+    if (d.category === 'novel') {
+      if (d.author) facts.push(['作者', d.author]);
+      if (d.publisher) facts.push(['出版社', d.publisher]);
+      if (d.chapters) facts.push(['话数', `${d.chapters} 话`]);
+      if (d.volumes) facts.push(['卷数', `${d.volumes} 卷`]);
+      if (d.price) facts.push(['正版价格', d.price]);
+      if (d.score != null) facts.push(['评分', `${Number(d.score).toFixed(1)} / 10`]);
+    } else if (d.category === 'manga') {
       if (d.chapters) facts.push(['话数', `${d.chapters} 话`]);
       if (d.volumes) facts.push(['卷数', `${d.volumes} 卷`]);
     } else if (d.category === 'movie') {

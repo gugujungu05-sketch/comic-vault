@@ -202,7 +202,7 @@ function loadDbSafe() {
 export const UNI_CATEGORIES = [
   { key: 'all', label: '全部', hint: '综合所有品类' },
   { key: 'manga', label: '漫画', hint: '日漫 / 港漫 / 条漫' },
-  { key: 'novel', label: '轻小说', hint: '轻小说 / Web 小说' },
+  { key: 'novel', label: '小说', hint: '轻小说 / 网络小说 / 实体小说 / 正版电子书' },
   { key: 'anime', label: '动画', hint: 'TV / 网络 / OVA' },
   { key: 'movie', label: '影视', hint: '剧场版 / 电影' },
   { key: 'game', label: '游戏', hint: '改编游戏 / 原作游戏' },
@@ -512,6 +512,186 @@ function normalizeItunes(x, category) {
   };
 }
 
+/* ============ 小说品类扩展：不再只有日系轻小说 ============
+   1) AniList NOVEL        —— 日本轻小说（original 来源）
+   2) Apple Books (iTunes）—— 正版电子书：中文小说《三体》、英文/日文小说，带中文简介与购买入口
+   3) 豆瓣读书             —— 中文实体小说 / 网络小说（书名/作者/年份/封面/详情） */
+
+/** Apple Books 电子书 → 统一结构（subCategory: ebook；中文书自动标 chinese） */
+function normalizeItunesEbook(x, country) {
+  if (!x) return null;
+  const cover = x.artworkUrl100 || x.artworkUrl60 || '';
+  const hiCover = cover.replace(/100x100bb/, '600x600bb').replace(/60x60bb/, '600x600bb');
+  const url = x.trackViewUrl || x.collectionViewUrl || '';
+  const title = x.trackName || x.trackCensoredName || x.collectionName || '';
+  const author = x.artistName || '';
+  const hasZh = /[\u4e00-\u9fff]/.test(title + (x.description || ''));
+  const desc = stripHtml(x.description || '');
+  const genres = [x.primaryGenreName, ...(x.genres || [])].filter(Boolean);
+  return {
+    id: `itunes-ebook:${x.trackId || x.collectionId || Math.random().toString(36).slice(2)}`,
+    source: 'Apple Books',
+    sourceUrl: url,
+    title,
+    titles: { native: title, romaji: '', english: hasZh ? '' : title, chinese: hasZh ? title : '' },
+    nativeTitle: hasZh ? title : '',
+    englishTitle: hasZh ? '' : title,
+    chineseTitle: hasZh ? title : '',
+    synonyms: [],
+    cover: hiCover, banner: '', color: '',
+    description: desc,
+    descriptionOriginal: undefined,
+    translated: false,                         // Apple Books 中文书自带中文简介，无需 GLM
+    kind: 'novel',
+    category: 'novel',
+    subCategory: hasZh ? 'chinese' : 'ebook',  // chinese=中文小说 / ebook=外文正版电子书
+    format: 'EBOOK',
+    formatZh: '正版电子书',
+    status: '', statusZh: '',
+    year: x.releaseDate ? new Date(x.releaseDate).getFullYear() : null,
+    score: x.averageUserRating != null ? Number(x.averageUserRating) : null,
+    meanScore: x.averageUserRating != null ? Number(x.averageUserRating) : null,
+    popularity: x.userRatingCount || 0,
+    favourites: x.userRatingCount || 0,
+    episodes: null, chapters: null, volumes: null, duration: null,
+    country: country || 'us', countryZh: COUNTRY_ZH[String(country || 'us').toUpperCase()] || country || '',
+    origin: 'EBOOK', originZh: '正版电子书',
+    licensed: true,
+    author,
+    studios: author ? [{ name: author, siteUrl: x.artistViewUrl || '' }] : [],
+    rankings: [],
+    tags: genres.slice(0, 12),
+    tagsOriginal: genres.slice(0, 12),
+    price: x.formattedPrice || '',
+    currency: x.currency || '',
+    links: url ? [{ site: 'Apple Books（正版购买）', rawSite: 'Apple Books', url, type: 'official', language: '', color: '#fa2d48' }] : [],
+    streamingEpisodes: [], relations: [],
+  };
+}
+
+/** 豆瓣读书搜索建议 → 统一结构（subCategory: book —— 中文实体小说/网文） */
+async function doubanBookSearch(q, limit = 10) {
+  const url = `https://book.douban.com/j/subject_suggest?q=${encodeURIComponent(q)}`;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 12000);
+  try {
+    const r = await fetch(url, {
+      headers: { 'User-Agent': UA_DEFAULT, 'Referer': 'https://book.douban.com/' },
+      signal: ac.signal,
+    });
+    if (!r.ok) throw new Error(`豆瓣 HTTP ${r.status}`);
+    const rows = await r.json();
+    return (Array.isArray(rows) ? rows : []).slice(0, limit);
+  } finally { clearTimeout(timer); }
+}
+
+function normalizeDoubanBook(x) {
+  if (!x || !x.title) return null;
+  const id = String(x.id || '').match(/\d+/)?.[0] || '';
+  const url = x.url || `https://book.douban.com/subject/${id}/`;
+  const title = x.title || '';
+  return {
+    id: `douban:${id || Math.random().toString(36).slice(2)}`,
+    source: '豆瓣读书',
+    sourceUrl: url,
+    title,
+    titles: { native: title, romaji: '', english: '', chinese: title },
+    nativeTitle: title, englishTitle: '', chineseTitle: title,
+    synonyms: [],
+    cover: (x.pic || '').replace(/img\d+\.doubanio/, 'img9.doubanio').replace(/\/s\//, '/l/'),
+    banner: '', color: '',
+    description: '', descriptionOriginal: undefined, translated: false,
+    kind: 'novel',
+    category: 'novel',
+    subCategory: 'book',
+    format: 'BOOK', formatZh: '实体 / 网络小说',
+    status: '', statusZh: '',
+    year: x.year ? parseInt(x.year, 10) || null : null,
+    score: null, meanScore: null, popularity: 0, favourites: 0,
+    episodes: null, chapters: null, volumes: null, duration: null,
+    country: 'cn', countryZh: '中国', origin: 'BOOK', originZh: '中文图书',
+    licensed: true,
+    author: x.author_name || '',
+    studios: x.author_name ? [{ name: Array.isArray(x.author_name) ? x.author_name.join('、') : x.author_name, siteUrl: url }] : [],
+    rankings: [],
+    tags: ['中文小说'], tagsOriginal: ['中文小说'],
+    price: '', currency: 'CNY',
+    links: [{ site: '豆瓣读书（详情/出版信息）', rawSite: '豆瓣读书', url, type: 'official', language: 'zh', color: '#2e963f' }],
+    streamingEpisodes: [], relations: [],
+  };
+}
+
+/** 中文查询时按标题汉字命中率给电子书排序、剔除完全不相关的外文噪声 */
+function rankEbooksByQuery(ebooks, q) {
+  const zh = String(q || '').match(/[\u4e00-\u9fff]/g) || [];
+  if (!zh.length) return ebooks;
+  const score = (it) => {
+    const t = (it.titles?.chinese || it.title || '') + (it.author || '');
+    const unique = [...new Set(zh)];
+    const hitCount = unique.filter((c) => t.includes(c)).length;
+    // 完整查询串命中（如"哈利波特"在"哈利·波特"里去掉标点后命中）权重最高
+    const compact = (s) => String(s || '').replace(/[\s·・\-—_:：]/g, '');
+    const fullHit = compact(q).length >= 2 && compact(t).includes(compact(q)) ? 100 : 0;
+    return hitCount + fullHit;
+  };
+  const withScore = ebooks.map((it) => ({ it, s: score(it) }));
+  // 中文查询要求至少命中 2/3 的查询汉字（剔除只蹭到 1 个字的"金瓶梅/朝花夕拾"类噪声）
+  const need = Math.max(2, Math.ceil(zh.length * 0.66));
+  const strict = withScore.filter((x) => x.s >= need || x.s >= 100).sort((a, b) => b.s - a.s);
+  if (strict.length) return strict.map((x) => x.it);
+  // 无强命中时退一步：只保留命中至少 1 个汉字的结果，绝不返回全部（会引入大量误召回噪声）
+  const loose = withScore.filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
+  return loose.map((x) => x.it);
+}
+
+/** 跨源按标准化标题去重（书名相同视为同一本，保留信息更丰富的一条） */
+function dedupeByTitle(items) {
+  const seen = new Map();
+  const norm = (s) => String(s || '').toLowerCase().replace(/[\s:：·・\-—_()（）\[\]【】!！?？.,'"“”]/g, '').trim();
+  for (const it of items) {
+    if (!it) continue;
+    const key = norm(it.title) || String(it.id);
+    const prev = seen.get(key);
+    if (!prev || ((it.description || '').length > (prev.description || '').length)) seen.set(key, it);
+  }
+  return [...seen.values()];
+}
+
+/** 豆瓣图书详情：抓取简介/作者/出版信息，补全搜索结果缺失字段 */
+async function doubanBookDetail(id) {
+  const url = `https://book.douban.com/subject/${id}/`;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 15000);
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': UA_DEFAULT, 'Referer': 'https://book.douban.com/' }, signal: ac.signal });
+    if (!r.ok) throw new Error(`豆瓣 HTTP ${r.status}`);
+    let html = await r.text();
+    // 去掉内联样式/脚本，避免简介里混入 CSS 文本
+    html = html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<script[\s\S]*?<\/script>/gi, '');
+    const intro = html.match(/<div class="intro"[^>]*>([\s\S]*?)<\/div>/)?.[1] || '';
+    // 优先取所有 <p> 文字，兼顾 span.all hidden 的折叠简介
+    const paragraphs = [...intro.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((x) => stripHtml(x[1])).filter(Boolean);
+    const spanAll = intro.match(/<span class="all hidden">([\s\S]*?)<\/span>/)?.[1] || '';
+    const desc = (paragraphs.length ? paragraphs.join('\n') : stripHtml(spanAll || intro)).slice(0, 3000);
+    const authorMatch = html.match(/<span class="pl">\s*作者<\/span>:\s*([\s\S]*?)<br\/>/);
+    const pubMatch = html.match(/<span class="pl">\s*出版社<\/span>:\s*([\s\S]*?)<br\/>/);
+    const yearMatch = html.match(/<span class="pl">\s*出版年<\/span>:\s*(\d{4})/);
+    const scoreMatch = html.match(/property="v:average">\s*([\d.]+)\s*<\/strong>/);
+    const coverMatch = html.match(/<a class="nbg"[\s\S]*?<img src="([^"]+)"/)
+      || html.match(/property="og:image"\s+content="([^"]+)"/);
+    const titleMatch = html.match(/<span property="v:itemreviewed">([\s\S]*?)<\/span>/);
+    return {
+      description: desc,
+      author: authorMatch ? stripHtml(authorMatch[1]) : '',
+      publisher: pubMatch ? stripHtml(pubMatch[1]) : '',
+      year: yearMatch ? Number(yearMatch[1]) : null,
+      score: scoreMatch ? Number(scoreMatch[1]) : null,
+      cover: coverMatch ? coverMatch[1] : '',
+      title: titleMatch ? stripHtml(titleMatch[1]) : '',
+    };
+  } finally { clearTimeout(timer); }
+}
+
 /* 从多语言标题与同义词中挑出中文名（含简/繁），供中文界面优先显示 */
 function pickChineseTitle(title, synonyms) {
   const all = [title?.english, title?.romaji, title?.native, ...(synonyms || [])].filter(Boolean);
@@ -656,6 +836,38 @@ export function registerUniversalSearch(app) {
         return res.json({ results, page: 1, hasNextPage: false, total: results.length, query: q, category: cat, source: 'Apple iTunes' });
       }
 
+      /* 小说品类：聚合三源（日系轻小说 AniList + 正版电子书 Apple Books + 中文图书豆瓣）
+         不再只返回轻小说；各源并行，单源失败不影响其余。 */
+      if (cat === 'novel') {
+        const searchQ = expandQuery(q);
+        const [lnRes, ebRes, dbRes] = await Promise.allSettled([
+          anilistRequest(SEARCH_QUERY, { q: searchQ, page, perPage: 14, type: 'MANGA', format: 'NOVEL' }),
+          itunesSearch(q, 'ebook', 'us', 14).catch(() => []),
+          doubanBookSearch(q, 10).catch(() => []),
+        ]);
+        const lightNovels = lnRes.status === 'fulfilled'
+          ? ((lnRes.value?.data?.Page?.media) || []).map((m) => {
+              const it = normalizeMedia(m);
+              if (it) it.subCategory = 'lightnovel';   // 日系轻小说
+              return it;
+            }).filter(Boolean) : [];
+        const ebooks = ebRes.status === 'fulfilled'
+          ? rankEbooksByQuery((ebRes.value || []).map((x) => normalizeItunesEbook(x, 'us')).filter(Boolean), q) : [];
+        const books = dbRes.status === 'fulfilled'
+          ? (dbRes.value || []).map(normalizeDoubanBook).filter(Boolean) : [];
+        // 中文查询时豆瓣精确匹配优先，其次轻小说，最后电子书
+        const zhQuery = /[\u4e00-\u9fff]/.test(q);
+        const merged = dedupeByTitle(zhQuery
+          ? [...books, ...lightNovels, ...ebooks]
+          : [...lightNovels, ...ebooks, ...books]);
+        return res.json({
+          results: merged, page: 1, hasNextPage: false, total: merged.length,
+          query: q, category: cat,
+          source: 'AniList 轻小说 + Apple Books + 豆瓣读书',
+          sources: { lightnovel: lightNovels.length, ebook: ebooks.length, book: books.length },
+        });
+      }
+
       /* 多语言搜索：中文查询先按别名展开成罗马音 */
       const searchQ = expandQuery(q);
       const vars = { q: searchQ, page, perPage: 20, ...constraint };
@@ -670,14 +882,27 @@ export function registerUniversalSearch(app) {
           if ((pg2.media || []).length) { j = j2; pg = pg2; media = pg2.media; }
         } catch { /* 保留首次结果 */ }
       }
-      // 全部品类：再补一次小说检索合并（AniList 的 ALL 搜索对 NOVEL 命中偏低）
+      // 全部品类：补充小说三源（AniList 的 ALL 搜索对小说命中偏低）
       if (cat === 'all') {
         try {
           const j3 = await anilistRequest(SEARCH_QUERY, { q: searchQ, page, perPage: 10, type: 'MANGA', format: 'NOVEL' });
-          const extra = ((j3?.data?.Page?.media) || []).map(normalizeMedia).filter(Boolean);
-          const seen = new Set(media.map((m) => m?.id));
-          for (const e of extra) if (!seen.has(Number(String(e.id).split(':')[1]))) media.push({ __normalized: e });
+          const extra = ((j3?.data?.Page?.media) || []).map((m) => {
+            const it = normalizeMedia(m); if (it) it.subCategory = 'lightnovel'; return it;
+          }).filter(Boolean);
+          const seen = new Set(media.map((m) => Number(String(m?.id || '').split(':')[1])).filter(Boolean));
+          for (const e of extra) {
+            const anilistId = Number(String(e.id).split(':')[1]);
+            if (!seen.has(anilistId)) media.push({ __normalized: e });
+          }
         } catch { /* ignore */ }
+      }
+      if (cat === 'all') {
+        const [ebAll, dbAll] = await Promise.allSettled([
+          itunesSearch(q, 'ebook', 'us', 8).catch(() => []),
+          doubanBookSearch(q, 6).catch(() => []),
+        ]);
+        if (ebAll.status === 'fulfilled') for (const it of rankEbooksByQuery((ebAll.value || []).map((x) => normalizeItunesEbook(x, 'us')).filter(Boolean), q)) media.push({ __normalized: it });
+        if (dbAll.status === 'fulfilled') for (const x of (dbAll.value || [])) { const it = normalizeDoubanBook(x); if (it) media.push({ __normalized: it }); }
       }
       const results = media.map((m) => (m && m.__normalized ? m.__normalized : normalizeMedia(m))).filter(Boolean);
       res.json({
@@ -698,12 +923,45 @@ export function registerUniversalSearch(app) {
   router.get('/detail', async (req, res) => {
     try {
       const id = String(req.query.id || '');
+
+      /* Apple Books 电子书详情 */
+      if (id.startsWith('itunes-ebook:')) {
+        const tid = id.slice('itunes-ebook:'.length);
+        try {
+          const r = await fetch(`https://itunes.apple.com/lookup?id=${encodeURIComponent(tid)}&country=us`, { headers: { 'User-Agent': UA_DEFAULT }, signal: AbortSignal.timeout(15000) });
+          const j = await r.json();
+          const x = (j.results || [])[0];
+          if (!x) return res.status(404).json({ error: '未找到该电子书' });
+          const item = normalizeItunesEbook(x, 'us');
+          return res.json(item);
+        } catch (err) { return res.status(502).json({ error: err?.message || '获取电子书详情失败' }); }
+      }
+
+      /* 豆瓣图书详情：抓页面补简介/作者/出版社/评分 */
+      if (id.startsWith('douban:')) {
+        const did = id.slice('douban:'.length);
+        try {
+          const [detail] = await Promise.all([doubanBookDetail(did).catch(() => ({}))]);
+          const base = normalizeDoubanBook({ id: did, title: detail.title || '豆瓣图书', url: `https://book.douban.com/subject/${did}/` });
+          if (!base) return res.status(404).json({ error: '未找到该图书' });
+          if (detail.title) { base.title = detail.title; base.titles.native = detail.title; base.chineseTitle = detail.title; }
+          if (detail.author) { base.author = detail.author; base.studios = [{ name: detail.author, siteUrl: base.sourceUrl }]; }
+          if (detail.description) base.description = detail.description;
+          if (detail.year) base.year = detail.year;
+          if (detail.score) { base.score = detail.score; base.meanScore = detail.score; }
+          if (detail.cover) base.cover = detail.cover.replace(/\/s\//, '/l/');
+          if (detail.publisher) base.publisher = detail.publisher;
+          return res.json(base);
+        } catch (err) { return res.status(502).json({ error: err?.message || '获取图书详情失败' }); }
+      }
+
       const m = /^anilist:(\d+)$/.exec(id);
       if (!m) return res.status(400).json({ error: '无效的条目 ID' });
       const j = await anilistRequest(DETAIL_QUERY, { id: Number(m[1]) });
       const media = j?.data?.Media;
       if (!media) return res.status(404).json({ error: '未找到' });
       const item = normalizeMedia(media);
+      if (item.category === 'novel') item.subCategory = 'lightnovel';
       item.relations = ((media.relations?.edges || []).map((e) => ({
         relation: e.relationType,
         id: `anilist:${e.node?.id}`,

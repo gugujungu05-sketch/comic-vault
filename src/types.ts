@@ -280,7 +280,13 @@ export interface UniversalMedia {
   translated?: boolean;          // 是否已经过 GLM 中文翻译
   kind: string;          // manga / anime / game / music
   category?: string;     // manga / novel / anime / movie / game / music
-  format: string;        // TV / MOVIE / MANGA / NOVEL / ONA ...
+  /** 小说子类：lightnovel=日系轻小说 / chinese=中文小说 / ebook=正版电子书 / book=实体或网络小说 */
+  subCategory?: 'lightnovel' | 'chinese' | 'ebook' | 'book';
+  author?: string;       // 小说作者（Apple Books / 豆瓣）
+  publisher?: string;    // 出版社（豆瓣）
+  price?: string;        // 正版价格（Apple Books）
+  currency?: string;
+  format: string;        // TV / MOVIE / MANGA / NOVEL / EBOOK / BOOK / ONA ...
   formatZh?: string;     // 中文化后的类型名
   status: string;
   statusZh?: string;     // 中文化后的状态名
