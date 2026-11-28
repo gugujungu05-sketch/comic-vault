@@ -52,7 +52,17 @@ function saveHealth() { try { fs.writeFileSync(HEALTH_FILE, JSON.stringify(sourc
  *  前端轮询 /api/sources/import/progress?taskId=xxx 显示，避免「卡住不动」的体感。 */
 const importProgress = new Map();
 const progressKey = (userId, taskId) => String(userId) + ':' + String(taskId || '_default');
-export function getImportProgress(userId, taskId) { return importProgress.get(progressKey(userId, taskId)) || null; }
+export function getImportProgress(userId, taskId) {
+  const v = importProgress.get(progressKey(userId, taskId));
+  if (!v) return null;
+  // 陈旧进度兜底：超过 180s 未更新（任务异常终止/进程重启残留）视为空闲，
+  // 前端据此停止显示陈旧的「7/24 张」帧。
+  if (now() - (v.ts || 0) > 180000) {
+    importProgress.delete(progressKey(userId, taskId));
+    return null;
+  }
+  return v;
+}
 function setImportProgress(userId, taskId, v) { importProgress.set(progressKey(userId, taskId), { ...v, ts: now() }); }
 function clearImportProgress(userId, taskId) { importProgress.delete(progressKey(userId, taskId)); }
 
@@ -384,9 +394,19 @@ async function attachSourceCover(p, comic, coverUrl, imgHeaders, decodeScheme = 
 }
 
 /** 下载一张源站图片到临时文件（带防盗链头；失败自动补 Referer 重试一次） */
+/**
+ * 硬超时兜底：Node fetch 在读 body 阶段 abort 有时不会立即 reject（慢速/挂起的 CDN），
+ * 用 Promise.race 强制在 ms 后抛错，保证单张图片绝不会无限拖住整批 Promise.all。
+ */
+function withHardTimeout(promise, ms, label) {
+  let t;
+  const guard = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(`${label || '请求'}超时（${Math.round(ms / 1000)}s）`)), ms); });
+  return Promise.race([promise, guard]).finally(() => clearTimeout(t));
+}
+
 async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '', decodeScheme = null) {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 30000);
+  const timer = setTimeout(() => ac.abort(), 15000);
   // 下载→还原混淆→（必要时）转 JPEG→落盘。返回临时文件路径与真实扩展名。
   const save = async (rawBuf) => {
     const norm = await normalizeSourceImage(rawBuf, decodeScheme);
@@ -395,35 +415,30 @@ async function downloadSourceImage(imgUrl, headers = {}, fallbackReferer = '', d
     await fsp.writeFile(tmp, norm.buf);
     return tmp;
   };
-  try {
-    const r = await fetch(imgUrl, {
-      headers: { 'User-Agent': UA_DEFAULT, ...headers },
-      signal: ac.signal,
-      redirect: 'follow',
-    });
+  // 单次抓取（含读 body）：abort + 硬超时双保险，杜绝慢速 CDN 挂住整批
+  const grab = async (h, signal, ms) => withHardTimeout((async () => {
+    const r = await fetch(imgUrl, { headers: h, signal, redirect: 'follow' });
     if (!r.ok) throw new Error(`图片返回 ${r.status}`);
     const ct = r.headers.get('content-type') || '';
     if (!ct.startsWith('image/') && !ct.includes('octet-stream')) throw new Error(`非图片响应: ${ct}`);
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length < 32) throw new Error('图片内容为空');
+    return buf;
+  })(), ms, '图片下载');
+  try {
+    const buf = await grab({ 'User-Agent': UA_DEFAULT, ...headers }, ac.signal, 15000);
     return await save(buf);
   } catch (err) {
-    // 兜底重试：① 源脚本没给 Referer 时补站点域名；② 任何失败（并发限流/抖动）延迟后
-    // 再试一次。部分 CDN（如 mangafire）并发下载时限流返回非 200，串行重试即可成功。
+    // 兜底重试：① 源脚本没给 Referer 时补站点域名；② 任何失败（并发限流/抖动）延迟后再试一次。
+    // 重试同样带硬超时（20s），保证单张图片最坏 ~36s 一定结束，不会永久挂起。
     const needRef = fallbackReferer && !headers.Referer && !headers.referer;
     const retryCtrl = new AbortController();
-    const retryTimer = setTimeout(() => retryCtrl.abort(), 40000);
+    const retryTimer = setTimeout(() => retryCtrl.abort(), 20000);
     try {
       await new Promise((r) => setTimeout(r, 600 + Math.random() * 600));
       const headers2 = needRef ? { 'User-Agent': UA_DEFAULT, ...headers, Referer: fallbackReferer } : { 'User-Agent': UA_DEFAULT, ...headers };
-      const r2 = await fetch(imgUrl, { headers: headers2, signal: retryCtrl.signal, redirect: 'follow' });
-      if (r2.ok) {
-        const ct2 = r2.headers.get('content-type') || '';
-        if (ct2.startsWith('image/') || ct2.includes('octet-stream')) {
-          const buf2 = Buffer.from(await r2.arrayBuffer());
-          if (buf2.length >= 32) return await save(buf2);
-        }
-      }
+      const buf2 = await grab(headers2, retryCtrl.signal, 20000);
+      return await save(buf2);
     } catch { /* 兜底也失败则按原错误抛出 */ }
     finally { clearTimeout(retryTimer); }
     throw err;
@@ -457,20 +472,34 @@ export async function importJsChapter(p, onProgress) {
   let stored = 0;
   const pages = new Array(images.length).fill(null);
   const BATCH = 10;
+  let failedImages = 0;
   for (let i = 0; i < images.length; i += BATCH) {
     const batch = images.slice(i, i + BATCH);
+    // 每张图片再套 45s 硬超时：即便 downloadSourceImage 内部意外挂起，本张也一定返回，
+    // 绝不出现「一批卡在第 7 张、后面全部不动」的死等。
     const results = await Promise.all(batch.map(async (imgUrl, j) => {
       let tmp = null;
+      const work = (async () => {
+        try {
+          const ih = jsImageHeaders(p.source, imgUrl) || headers || {};
+          tmp = await downloadSourceImage(imgUrl, ih, fallbackRef, decodeScheme);
+          const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id, decodeScheme);
+          return page;
+        } catch (err) {
+          if (tmp) await fsp.rm(tmp, { force: true }).catch(() => {});
+          console.error('[js-sources] 图片下载失败:', err.message);
+          failedImages++;
+          return null;
+        } finally {
+          if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length, failed: failedImages });
+        }
+      })();
       try {
-        const ih = jsImageHeaders(p.source, imgUrl) || headers || {};
-        tmp = await downloadSourceImage(imgUrl, ih, fallbackRef, decodeScheme);
-        if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length });
-        const page = await storePage(tmp, imgUrl, 'image/auto', comic.id, chapter.id, decodeScheme);
-        return page;
+        return await withHardTimeout(work, 45000, '图片处理');
       } catch (err) {
-        if (tmp) await fsp.rm(tmp, { force: true });
-        console.error('[js-sources] 图片下载失败:', err.message);
-        if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length });
+        failedImages++;
+        console.error('[js-sources] 图片硬超时跳过:', err.message);
+        if (typeof onProgress === 'function') onProgress({ imageDone: i + j + 1, imageTotal: images.length, failed: failedImages });
         return null;
       }
     }));
@@ -1109,6 +1138,7 @@ export function registerSources(app) {
           return (wantTitle && t === wantTitle) || (wantUrl && u === wantUrl);
         });
         if (dup) {
+          clearImportProgress(req.user.id, taskId);
           return res.json({
             comicId: comic.id, chapterId: dup.id, chapterTitle: dup.title,
             stored: (dup.pages || []).length, failed: 0,
@@ -1122,8 +1152,9 @@ export function registerSources(app) {
           bookId, chapterPath, chapterTitle: b.chapterTitle,
         }, (pg) => setImportProgress(req.user.id, taskId, {
           chapterTitle: b.chapterTitle || '正在导入',
-          imageDone: pg.imageDone, imageTotal: pg.imageTotal, phase: 'download',
+          imageDone: pg.imageDone, imageTotal: pg.imageTotal, failed: pg.failed || 0, phase: 'download',
         }));
+        clearImportProgress(req.user.id, taskId);
         return res.json({
           comicId: r.comic.id,
           chapterId: r.chapter.id,
@@ -1135,6 +1166,7 @@ export function registerSources(app) {
           chaptersDone: r.comic.chapters.length,
         });
       } catch (err) {
+        clearImportProgress(req.user.id, taskId);
         if (err?.status) return res.status(err.status).json({ error: err.message });
         return sourceError(res, err);
       }

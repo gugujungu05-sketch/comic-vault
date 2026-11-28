@@ -47,12 +47,21 @@
   /* ------------------------------ 全局导入任务栏 ------------------------------ */
   const IT_KEY = 'cv_import_task';
   function saveImportTask() {
+    state.importTask.updatedAt = Date.now();
     try { localStorage.setItem(IT_KEY, JSON.stringify(state.importTask)); } catch { /* 忽略 */ }
   }
   function loadImportTask() {
     try {
       const raw = localStorage.getItem(IT_KEY);
-      if (raw) state.importTask = Object.assign(state.importTask, JSON.parse(raw));
+      if (raw) {
+        const t = JSON.parse(raw);
+        // 刷新后导入循环已消失：active 任务若超过 20 分钟未更新，判定为僵尸任务并结束，
+        // 不再永久显示「导入中 7/24」。
+        if (t.active && !t.finished && Date.now() - (t.updatedAt || 0) > 20 * 60 * 1000) {
+          t.active = false; t.finished = true; t.label = '导入已中断（可重新导入）';
+        }
+        state.importTask = Object.assign(state.importTask, t);
+      }
     } catch { /* 忽略 */ }
   }
   function renderImportTask() {
@@ -759,25 +768,29 @@
     const btn = $('#modal [data-action="src-import"]');
     if (btn) btn.disabled = true;
     // 轮询后端图片级进度：显示「第 N 话 · 第 x/y 张」，不再卡住不动
+    let doneDone = 0;
+    let failed = 0;
     let progAlive = true;
     (async () => {
+      let lastKey = '', lastChangeAt = Date.now();
       while (progAlive) {
         try {
-          const pg = await api('GET', '/api/sources/import/progress');
+          const pg = await api('GET', '/api/sources/import/progress', { noCache: true });
           if (pg && !pg.idle && pg.imageTotal) {
+            const key = `${pg.chapterTitle}|${pg.imageDone}|${pg.imageTotal}`;
+            if (key !== lastKey) { lastKey = key; lastChangeAt = Date.now(); }
+            const stalled = Date.now() - lastChangeAt > 45000;
             const el = $('#busyLabel');
-            if (el) el.textContent = `第 ${failed + doneDone + 1}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`;
+            if (el) el.textContent = `第 ${failed + doneDone + 1}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张${stalled ? ' · 网络较慢，正在重试…' : ''}`;
           }
         } catch { /* 忽略 */ }
         await new Promise((r) => setTimeout(r, 400));
       }
     })();
-    let doneDone = 0;
     // 续导：同一本书（来源+书名）上次导入建的书 id 存在本地，中断后重新导入直接续，不再另建一本
     const resumeKey = 'cv_resume_' + state.sourceId + '_' + encodeURIComponent(sc.title).slice(0, 60);
     let comicId = '';
     try { comicId = localStorage.getItem(resumeKey) || ''; } catch { /* 忽略 */ }
-    let failed = 0;
     state.importTask = { active: true, done: 0, total: picked.length, failed: 0, label: `正在导入 ${sc.title}`, comicId: '', finished: false };
     saveImportTask(); renderImportTask();
     for (let k = 0; k < picked.length; k++) {

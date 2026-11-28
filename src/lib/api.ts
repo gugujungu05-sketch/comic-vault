@@ -268,7 +268,7 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?:
   }
 }
 
-async function request<T>(url: string, init?: RequestInit, retried = false): Promise<T> {
+async function request<T>(url: string, init?: RequestInit, retried = false, timeoutMs?: number): Promise<T> {
   let res: Response;
   try {
     const base = getApiBase();
@@ -276,7 +276,7 @@ async function request<T>(url: string, init?: RequestInit, retried = false): Pro
       ...init,
       // 跨域（GitHub Pages → 固定托管后端）也要带会话 cookie，否则登录态无法保持
       credentials: 'include',
-    });
+    }, timeoutMs);
   } catch (err) {
     notifyBackendLost();
     // 网络层故障（网关抖动 / DNS / 临时断网 / VPN 代理拦截）：立刻探活默认后端并重放一次，
@@ -286,7 +286,7 @@ async function request<T>(url: string, init?: RequestInit, retried = false): Pro
       if (revived) {
         apiBase = revived;
         try { localStorage.setItem(LS_API_BASE, apiBase); } catch { /* 忽略 */ }
-        return request<T>(url, init, true);
+        return request<T>(url, init, true, timeoutMs);
       }
     }
     const raw = String((err as Error)?.message || err);
@@ -312,7 +312,7 @@ async function request<T>(url: string, init?: RequestInit, retried = false): Pro
       if (revived) {
         apiBase = revived;
         try { localStorage.setItem(LS_API_BASE, apiBase); } catch { /* 忽略 */ }
-        return request<T>(url, init, true);
+        return request<T>(url, init, true, timeoutMs);
       }
     }
   }
@@ -1097,11 +1097,12 @@ export const sources = {
     chapterTitle: string;
     chapterUrl: string;
   }) =>
+    // 导入一话要下载几十张图片，给足 5 分钟；单张挂起由后端硬超时兜底，前端不再 45 秒误杀。
     request<SourceImportResult>('/api/sources/import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    }),
+    }, false, 5 * 60 * 1000),
   importProgress: (taskId?: string) => request<{
-    idle?: boolean; chapterTitle?: string; imageDone?: number; imageTotal?: number;
+    idle?: boolean; chapterTitle?: string; imageDone?: number; imageTotal?: number; failed?: number;
     done?: number; total?: number; phase?: string;
   }>(`/api/sources/import/progress${taskId ? '?taskId=' + encodeURIComponent(taskId) : ''}`),
 };

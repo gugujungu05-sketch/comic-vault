@@ -522,11 +522,22 @@ export default function SourcesPage() {
     let progAlive = true;
     let curChapter = 1;
     (async () => {
+      let lastKey = '';
+      let lastChangeAt = Date.now();
+      let warned = false;
       while (progAlive) {
         try {
           const pg = await sourcesApi.importProgress(taskId);
           if (!pg.idle && pg.imageTotal) {
-            const label = `第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张`;
+            // 进度变化则刷新"最后变化时间"；同一帧停留 >45s 视为可能卡住，给出可感知提示。
+            const key = `${pg.chapterTitle}|${pg.imageDone}|${pg.imageTotal}`;
+            if (key !== lastKey) { lastKey = key; lastChangeAt = Date.now(); warned = false; }
+            const stalled = Date.now() - lastChangeAt > 45000;
+            const tail = stalled
+              ? (warned ? ' · 网络较慢，正在重试…' : ' · 正在重试…')
+              : (pg.failed ? ` · 失败 ${pg.failed} 张已跳过` : '');
+            if (stalled) warned = true;
+            const label = `第 ${curChapter}/${picked.length} 话 · ${pg.chapterTitle || ''} ${pg.imageDone}/${pg.imageTotal} 张${tail}`;
             setImportProgressLabel(label);
             importTaskStore.progress(taskId, { label, done: curChapter - 1, total: picked.length });
           }

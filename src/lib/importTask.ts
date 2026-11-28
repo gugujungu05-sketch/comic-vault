@@ -21,6 +21,8 @@ export interface ImportTask {
   finished: boolean;
   /** 暂停标志：导入循环在每个章节前读取，true 时等待 */
   paused: boolean;
+  /** 最近更新时间戳：用于清理刷新后残留的僵尸任务 */
+  updatedAt?: number;
   /** 导入上下文（用于刷新后恢复 / 续导） */
   ctx?: {
     sourceId: string; sourceName: string; title: string; cover: string;
@@ -47,16 +49,32 @@ function normalize(t: Partial<ImportTask>): ImportTask {
     comicId: String(t.comicId || ''),
     finished: !!t.finished,
     paused: !!t.paused,
+    updatedAt: Number(t.updatedAt) || Date.now(),
     ctx: t.ctx,
   };
 }
+
+/** 僵尸任务上限：active 但超过 20 分钟没有任何进度更新，视为中断残留并结束 */
+const STALE_MS = 20 * 60 * 1000;
 
 function load(): ImportTask[] {
   try {
     const s = localStorage.getItem(LS_KEY);
     if (s) {
       const arr = JSON.parse(s);
-      if (Array.isArray(arr)) return arr.map(normalize).filter((t) => t.active || t.finished);
+      if (Array.isArray(arr)) {
+        const now = Date.now();
+        return arr.map(normalize).filter((t) => {
+          if (!t.active || t.finished) return true;
+          // 页面刷新后导入循环已消失，残留的 active 任务若长时间未更新就结束掉，
+          // 避免「导入卡这好久」——其实是上次会话遗留的僵尸任务。
+          if (now - (t.updatedAt || 0) > STALE_MS) {
+            t.active = false; t.finished = true;
+            t.label = '导入已中断（可重新导入）';
+          }
+          return true;
+        });
+      }
     }
   } catch { /* 忽略 */ }
   // 迁移旧版单任务
@@ -89,7 +107,7 @@ export const importTaskStore = {
     const id = newId();
     const task: ImportTask = {
       id, active: true, done: 0, total: 0, failed: 0,
-      label, comicId: '', finished: false, paused: false, ctx,
+      label, comicId: '', finished: false, paused: false, updatedAt: Date.now(), ctx,
     };
     state = [...state, task];
     emit();
@@ -101,19 +119,19 @@ export const importTaskStore = {
     state = state.map((t) => {
       if (t.id !== id) return t;
       changed = true;
-      return { ...t, ...patch, active: true, finished: false };
+      return { ...t, ...patch, active: true, finished: false, updatedAt: Date.now() };
     });
     if (changed) emit();
   },
   /** 暂停 / 继续某个任务 */
   setPaused(id: string, paused: boolean) {
-    state = state.map((t) => (t.id === id ? { ...t, paused } : t));
+    state = state.map((t) => (t.id === id ? { ...t, paused, updatedAt: Date.now() } : t));
     emit();
   },
   /** 某个任务完成（comicId 可用于「查看」跳转） */
   finish(id: string, done: number, total: number, failed: number, comicId = '') {
     state = state.map((t) => (t.id === id
-      ? { ...t, active: false, done, total, failed, comicId, finished: true, label: '', paused: false }
+      ? { ...t, active: false, done, total, failed, comicId, finished: true, label: '', paused: false, updatedAt: Date.now() }
       : t));
     emit();
   },
