@@ -534,13 +534,40 @@ export async function jsNovelDownload(source, bookId) {
   return d && (d.url || d.textNovel) ? d : null;
 }
 
-/** 发现页：返回书源的 explore 分类列表；load(tabIndex, page) 取某一分类的漫画列表 */
+/** 发现页：返回书源的 explore 分类列表；load(tabIndex, page) 取某一分类的漫画列表。
+ *  同时把源声明的 category（原站题材分类，本供抽奖机使用）并入 tabs，让发现页也支持原站筛选。 */
 export function jsDiscoverTabs(source) {
   const ex = source.explore || source.discover || [];
-  return Array.isArray(ex) ? ex.map((e, i) => ({ index: i, title: e.title || `分类 ${i + 1}`, type: e.type || '' })) : [];
+  const tabs = Array.isArray(ex) ? ex.map((e, i) => ({ index: i, title: e.title || `分类 ${i + 1}`, type: e.type || '' })) : [];
+  const cat = source.category;
+  // 部分源的 category 分类接口已失效（如再漫画 update_list errno=1），接入只会得到空 tab，
+  // 用 categoryDiscoverDisabled 标记跳过，保持发现页只有能正常加载的分类。
+  if (!source.categoryDiscoverDisabled && cat && Array.isArray(cat.parts) && source.categoryComics) {
+    for (const part of cat.parts) {
+      if (!part) continue;
+      if (Array.isArray(part.categories)) {
+        part.categories.forEach((name, i) => {
+          if (!name) return;
+          const params = Array.isArray(part.categoryParams) ? part.categoryParams : [];
+          tabs.push({ index: tabs.length, title: String(name), type: 'category', part: part.name, param: String(params[i] ?? name) });
+        });
+      }
+    }
+  }
+  return tabs;
 }
 export async function jsDiscoverLoad(source, tabIndex, page = 1) {
   const ex = source.explore || source.discover || [];
+  // category tab（index >= explore 长度）：走原站题材分类加载
+  if (tabIndex >= ex.length && source.categoryComics && typeof source.categoryComics.load === 'function') {
+    const tabs = jsDiscoverTabs(source);
+    const tab = tabs[tabIndex];
+    if (tab && tab.type === 'category') {
+      const out = await source.categoryComics.load(tab.part, tab.param, [], Math.max(1, Number(page) || 1));
+      const comics = Array.isArray(out) ? out : (out && Array.isArray(out.comics) ? out.comics : []);
+      return { items: toComicItems(comics), maxPage: Math.max(1, Number(out?.maxPage) || page) };
+    }
+  }
   const tab = ex[tabIndex];
   if (!tab || typeof tab.load !== 'function') throw new Error('这个来源没有可浏览的分类');
   const out = await tab.load(Math.max(1, Number(page) || 1));

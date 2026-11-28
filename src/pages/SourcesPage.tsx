@@ -113,6 +113,16 @@ export default function SourcesPage() {
   const detailSourceId = detail?.sourceId || activeId;
   const detailSourceName = detail?.sourceName || active?.name || '';
 
+  // 书架封面失败时从源站重拉：只对该条目刷新一次，避免坏图反复请求导致死循环。
+  const coverRefreshTried = useRef<Set<string>>(new Set());
+  const refreshShelfCover = (it: OnlineShelfItem) => {
+    if (!it.id || coverRefreshTried.current.has(it.id)) return;
+    coverRefreshTried.current.add(it.id);
+    onlineApi.refreshCover(it.id).then((r) => {
+      setShelf((prev) => prev.map((x) => x.id === it.id ? { ...x, cover: r.cover, coverProxy: r.coverProxy } : x));
+    }).catch(() => { /* 刷新失败保持占位 */ });
+  };
+
   // 收藏 / 阅读历史分开：收藏=主动加入(favorite!==false)；历史=有阅读进度(progress)
   const favShelf = useMemo(() => shelf.filter((x) => x.favorite !== false), [shelf]);
   const historyShelf = useMemo(
@@ -592,6 +602,12 @@ export default function SourcesPage() {
 
   async function startOnlineRead(bookId: string, chapters: SourceChapterItem[], index: number, shelfItem?: OnlineShelfItem | null) {
     if (!detailSourceId) return;
+    // 小说是文本整本源，没有图片章节（loadEp 不存在），在线阅读必然崩溃。
+    // 拦截并引导用户整本导入后在书库阅读。
+    if (detail?.kind === 'novel' || (list.find((s) => s.id === detailSourceId)?.mediaType || 'comic') === 'novel') {
+      toast('小说请点「整本加入书库」，导入后在书库中阅读');
+      return;
+    }
     // 在线阅读的每一本都自动进书架，确保翻页进度能落库、回来能「继续阅读」。
     // 以前只有先手动收藏的书才有 shelfId，直接点章节播放的书进度完全不保存。
     let sid = shelfItem?.id || '';
@@ -699,7 +715,7 @@ export default function SourcesPage() {
               {shownShelf.map((it) => (
                 <div key={it.id} className="comic-card" style={{ cursor: 'pointer' }} onClick={() => openShelfItem(it)}>
                   <div className="cover">
-                    <CoverImage src={it.coverProxy} title={it.title} />
+                    <CoverImage src={it.coverProxy} title={it.title} onError={() => refreshShelfCover(it)} />
                     <span className="wide-tag" style={{ position: 'absolute', top: 6, left: 6 }}>
                       {it.kind === 'novel' ? '小说' : '漫画'}
                     </span>
@@ -918,7 +934,7 @@ export default function SourcesPage() {
                     <button className={`btn sm ${bookmarked ? 'primary' : ''}`} onClick={() => bookmark(detail)}>
                       <Icon name="star" size={14} /> {bookmarked ? '已在书架' : '收藏到书架'}
                     </button>
-                    {detail.chapters && (
+                    {detail.chapters && detail.kind !== 'novel' && (list.find((s) => s.id === detailSourceId)?.mediaType || 'comic') !== 'novel' && (
                       <>
                         <button className="btn sm" onClick={() => setDetail((d) => (d ? { ...d, checked: new Set(d.chapters!.map((_, i) => i)) } : d))}>全选</button>
                         <button className="btn sm" onClick={() => setDetail((d) => (d ? { ...d, checked: new Set() } : d))}>清空</button>
@@ -927,7 +943,9 @@ export default function SourcesPage() {
                     )}
                   </div>
                   <div className="row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
-                    {detail.chapters ? (
+                    {/* 小说是文本整本源：即使源给出了章节目录，也不能逐话走图片导入（loadEp 不存在会崩），
+                        必须整本抓取正文生成 EPUB 再自动分章。 */}
+                    {detail.chapters && detail.kind !== 'novel' && (list.find((s) => s.id === detailSourceId)?.mediaType || 'comic') !== 'novel' ? (
                       <button className="btn primary" onClick={importChapters} disabled={!!importing || !detail.checked.size}>
                         <Icon name="download" size={16} />
                         {importing ? `导入中 ${importing.done}/${importing.total}…` : '导入选中章节到书库'}
@@ -935,7 +953,7 @@ export default function SourcesPage() {
                     ) : (
                       <button className="btn primary" onClick={importNovelBook} disabled={novelImporting}>
                         <Icon name="download" size={16} />
-                        {novelImporting ? '正在整本导入…' : '整本加入书库（自动分章，可编辑）'}
+                        {novelImporting ? '正在预备导入，请稍候…（整本抓正文，可能需十几秒）' : '整本加入书库（自动分章，可编辑）'}
                       </button>
                     )}
                     {importedComicId && (
@@ -953,13 +971,20 @@ export default function SourcesPage() {
                 </div>
               </div>
 
-              {/* 章节列表（漫画）：勾选导入 + 单话在线阅读 */}
+              {/* 章节列表：漫画=勾选导入+单话在线阅读；小说=只读目录（整本导入后在书库读） */}
               {detail.chapters && (
                 <div
                   className="chapter-list"
                   style={{ marginTop: 16, maxHeight: 380, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 6 }}
                 >
-                  {detail.chapters.map((ch, i) => (
+                  {detail.chapters.map((ch, i) => {
+                    const isNovel = detail.kind === 'novel' || (list.find((s) => s.id === detailSourceId)?.mediaType || 'comic') === 'novel';
+                    if (isNovel) {
+                      return <div key={i} className="chapter-item" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', opacity: .85 }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ch.title}</span>
+                      </div>;
+                    }
+                    return (
                     <label
                       key={i}
                       className="chapter-item"
@@ -979,16 +1004,22 @@ export default function SourcesPage() {
                         }
                       />
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ch.title}</span>
-                      <button
-                        className="btn sm ghost"
-                        title="在线阅读（不下载）"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          startOnlineRead(detail.bookId || '', detail.chapters || [], i, shelf.find((x) => x.key === `${detailSourceId.replace(/^js:/, '')}:${detail.bookId}`));
-                        }}
-                      >▶</button>
+                      {/* 小说是文本整本源，没有 loadEp（图片章节），在线阅读会报 source.comic.loadEp is not a function。
+                          小说只能整本导入后在书库里读，故不显示 ▶ 在线阅读按钮。 */}
+                      {detail.kind !== 'novel' && (list.find((s) => s.id === detailSourceId)?.mediaType || 'comic') !== 'novel' && (
+                        <button
+                          className="btn sm ghost"
+                          title="在线阅读（不下载）"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            startOnlineRead(detail.bookId || '', detail.chapters || [], i, shelf.find((x) => x.key === `${detailSourceId.replace(/^js:/, '')}:${detail.bookId}`));
+                          }}
+                        >▶</button>
+                      )}
                     </label>
-                  ))}
+                    );
+                    }
+                  )}
                 </div>
               )}
               {!detail.chapters && (

@@ -79,6 +79,8 @@ class Zaimanhua extends ComicSource {
         }},
     ];
 
+    // 分类接口 update_list 已失效（errno=1），不要让发现页接入这些会返回空书的题材 tab
+    categoryDiscoverDisabled = true;
     category = {
         title: "再漫画分类",
         parts: [{

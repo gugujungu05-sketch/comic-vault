@@ -964,6 +964,9 @@ export const online = {
     }),
   removeFromShelf: (id: string) =>
     request<{ ok: boolean }>(`/api/online/shelf/${id}`, { method: 'DELETE' }),
+  /** 封面加载失败时从源站重拉并落库（应对临时签名 URL 过期） */
+  refreshCover: (id: string) =>
+    request<{ cover: string; coverProxy: string }>(`/api/online/shelf/${id}/refresh-cover`, { method: 'POST' }),
   progress: (id: string, body: { chapterUrl: string; chapterTitle: string; pageIndex: number }) =>
     request<{ ok: boolean }>(`/api/online/shelf/${id}/progress`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /**
  * 封面图：加载失败（网络封锁 / 防盗链 403 / 代理 502）时不再显示破图小图标，
@@ -9,14 +9,18 @@ export default function CoverImage({
   title,
   className,
   style,
+  onError,
 }: {
   src?: string;
   title: string;
   className?: string;
   style?: React.CSSProperties;
+  /** 图片加载失败时回调（可用于重新拉取源站封面后重试），仅调用一次由调用方控制 */
+  onError?: () => void;
 }) {
   const [failed, setFailed] = useState(false);
-  useEffect(() => { setFailed(false); }, [src]);
+  const errRef = useRef(false);
+  useEffect(() => { setFailed(false); errRef.current = false; }, [src]);
 
   const label = String(title || '书').trim().slice(0, 1) || '书';
   // 依据书名生成稳定色相，让不同书占位封面颜色各异
@@ -46,7 +50,11 @@ export default function CoverImage({
       loading="lazy"
       className={className}
       style={style}
-      onError={() => setFailed(true)}
+      onError={() => {
+        setFailed(true);
+        // 通知调用方尝试刷新封面（如书架临时签名 URL 过期）；只回调一次避免死循环
+        if (onError && !errRef.current) { errRef.current = true; onError(); }
+      }}
     />
   );
 }

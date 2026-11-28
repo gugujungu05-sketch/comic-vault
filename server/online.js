@@ -195,6 +195,29 @@ export function registerOnline(app, helpers) {
     res.json({ items });
   });
 
+  // 刷新书架封面：加入书架时存下的封面 URL 可能是临时的/带时效签名的（如 vomic 的 ?sign=&t=），
+  // 过期后代理 403/404 导致书架变纯色块。前端封面加载失败时调此接口，从源站重拉详情封面并落库。
+  router.post('/shelf/:id/refresh-cover', requireUser, async (req, res) => {
+    const db = loadDb();
+    const item = shelfOf(db, req.user.id).find((x) => x.id === req.params.id);
+    if (!item) return res.status(404).json({ error: '书架里没有这条' });
+    const source = getJsSource(item.sourceKey);
+    if (!source || !item.bookId) return res.status(400).json({ error: '无法刷新该来源封面' });
+    try {
+      const detail = await jsComicDetail(source, String(item.bookId));
+      const cover = String(detail?.cover || '').trim();
+      if (!cover || !/^https?:\/\//i.test(cover)) return res.status(404).json({ error: '源站没有可用封面' });
+      item.cover = cover;
+      saveDbSoon();
+      return res.json({
+        cover,
+        coverProxy: `/api/online/img?sid=${encodeURIComponent(item.sourceKey)}&u=${encodeURIComponent(cover)}`,
+      });
+    } catch (err) {
+      return res.status(502).json({ error: err?.message || '刷新封面失败' });
+    }
+  });
+
   // 收藏到书架
   router.post('/shelf', requireUser, (req, res) => {
     const b = req.body || {};
