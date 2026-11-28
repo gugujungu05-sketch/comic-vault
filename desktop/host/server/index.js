@@ -32,9 +32,10 @@ const EPUB_OK = /\.epub$/i;
 const PDF_OK = /\.pdf$/i;
 import { parseComicInfo, comicFieldsFromInfo } from './comicinfo.js';
 import { attachUser, requireUser, comicGuard, assetGuard, registerSocial } from './social.js';
-import { registerSources } from './sources.js';
+import { registerSources, warmupDiscover } from './sources.js';
 import { registerOnline } from './online.js';
 import { registerTranslation } from './translate.js';
+import { registerUniversalSearch } from './universal-search.js';
 import { registerUpdates } from './updates.js';
 import { storePage } from './page-store.js';
 import { snapshotChapter, undoChapter, undoStatus, clearUndo, snapshotChapterMerge, undoChapterMerge, mergeUndoStatus } from './page-undo.js';
@@ -2451,7 +2452,14 @@ app.get('/api/files/:comicId/:chapterId/:file', assetGuard, async (req, res) => 
   if (!isSafeSegment(comicId) || !isSafeSegment(chapterId) || !isSafeSegment(file)) {
     return res.status(400).json({ error: '非法路径' });
   }
-  const full = path.join(STORE_DIR, comicId, chapterId, file);
+  let full = path.join(STORE_DIR, comicId, chapterId, file);
+  // 存量兼容：早期小说导入把插图落在 novelDir/_images（即 <id>/_text/_images），
+  // 但正文里的 URL 已改成 /api/files/<id>/_images/...（指向 <id>/_images）。
+  // 老书插图因此 404「插画不显示」；这里在主路径缺失时回退到 _text 目录下同源路径。
+  if (!fs.existsSync(full) && chapterId === '_images') {
+    const legacy = path.join(STORE_DIR, comicId, '_text', '_images', file);
+    if (fs.existsSync(legacy)) full = legacy;
+  }
   if (!fs.existsSync(full)) return res.status(404).json({ error: '文件不存在' });
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   // 存量兼容：在线书源早期把混淆字节原样存成 .avif，浏览器打开是破图。
@@ -2531,6 +2539,7 @@ registerOnline(app, {
   ensureDir,
 });
 registerTranslation(app);
+registerUniversalSearch(app);
 registerUpdates(app);
 
 /* ------------------------ 可安装应用清单 & 客户端运行时 ------------------------ */
@@ -2674,6 +2683,8 @@ app.listen(PORT, '0.0.0.0', () => {
   setImmediate(() => {
     ensureSamples().catch((err) => console.error('[discovery] 示例生成失败:', err.message));
   });
+  // 后台预热在线源发现页：让用户首次打开在线来源聚合视图即秒开
+  setImmediate(() => warmupDiscover());
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

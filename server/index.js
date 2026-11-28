@@ -35,6 +35,7 @@ import { attachUser, requireUser, comicGuard, assetGuard, registerSocial } from 
 import { registerSources, warmupDiscover } from './sources.js';
 import { registerOnline } from './online.js';
 import { registerTranslation } from './translate.js';
+import { registerUniversalSearch } from './universal-search.js';
 import { registerUpdates } from './updates.js';
 import { storePage } from './page-store.js';
 import { snapshotChapter, undoChapter, undoStatus, clearUndo, snapshotChapterMerge, undoChapterMerge, mergeUndoStatus } from './page-undo.js';
@@ -2538,6 +2539,7 @@ registerOnline(app, {
   ensureDir,
 });
 registerTranslation(app);
+registerUniversalSearch(app);
 registerUpdates(app);
 
 /* ------------------------ 可安装应用清单 & 客户端运行时 ------------------------ */

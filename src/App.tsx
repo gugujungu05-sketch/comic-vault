@@ -13,6 +13,7 @@ import { PlazaPage } from './pages/PlazaPage';
 import { UserPage } from './pages/UserPage';
 import { DownloadsPage } from './pages/DownloadsPage';
 import SourcesPage from './pages/SourcesPage';
+import { SearchPage } from './pages/SearchPage';
 import { SessionProvider, useSession } from './lib/session';
 import { social, detectApiBase, getApiBase, setApiCredential } from './lib/api';
 import { rememberShareCode, withShareCode } from './lib/util';
@@ -66,6 +67,9 @@ function Header({ theme, onToggleTheme }: { theme: string; onToggleTheme: () => 
         <NavLink to="/sources" className={({ isActive }) => (isActive ? 'active' : '')}>
           在线来源
         </NavLink>
+        <NavLink to="/search" className={({ isActive }) => (isActive ? 'active' : '')}>
+          全站检索
+        </NavLink>
         {user && (
           <NavLink to={`/u/${user.id}`} className={({ isActive }) => (isActive ? 'active' : '')}>
             我的主页
@@ -117,6 +121,7 @@ function MobileTabs() {
     { to: '/', label: '书架', icon: 'book' },
     { to: '/community', label: '书库', icon: 'globe' },
     { to: '/sources', label: '来源', icon: 'link' },
+    { to: '/search', label: '检索', icon: 'search' },
     { to: '/plaza', label: '广场', icon: 'message' },
     { to: '/settings', label: '设置', icon: 'settings' },
   ] as const;
@@ -290,6 +295,7 @@ function Shell() {
     location.pathname.startsWith('/community') ||
     location.pathname.startsWith('/plaza') ||
     location.pathname.startsWith('/sources') ||
+    location.pathname.startsWith('/search') ||
     location.pathname.startsWith('/u/') ||
     location.pathname.startsWith('/comic/') ||
     location.pathname.startsWith('/read/') ||
@@ -321,6 +327,7 @@ function Shell() {
         <Route path="/u/:id" element={<UserPage />} />
         <Route path="/comic/:id" element={<ComicPage />} />
         <Route path="/sources" element={<SourcesPage />} />
+        <Route path="/search" element={<SearchPage />} />
         <Route path="/read/:id" element={<ReaderPage />} />
         <Route path="/s/:token" element={<SharePage />} />
         <Route path="/downloads" element={<DownloadsPage />} />

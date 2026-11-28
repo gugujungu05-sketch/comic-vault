@@ -1,7 +1,7 @@
 import type {
   ActivityItem, Announcement, AnnouncementComment, Category, Chapter, Comic, ComicSummary, CommunityComic,
   ImportComicItem, ImportResult, MetaEntry, PlazaAttachment, PlazaBoard, PlazaPost,
-  RankingItem, Settings, ShareLog, SoftwareInfo, Stats, Sticker, TranslateConfig, TranslateResult, UpdateInfo,
+  RankingItem, Settings, ShareLog, SoftwareInfo, Stats, Sticker, TranslateConfig, TranslateResult, UniversalMedia, UpdateInfo,
   UploadRecord, User,
 } from '../types';
 import { getShareCode } from './util';
@@ -1120,6 +1120,19 @@ export const translation = {
     request<TranslateResult>('/api/translate/page', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
     }),
+};
+
+/* ------------------------------ 全站书籍检索（比番组计划更全） ------------------------------ */
+export const unisearch = {
+  search: (q: string, type: string = 'all', page: number = 1) =>
+    request<{
+      results: UniversalMedia[]; page: number; hasNextPage: boolean; total: number; query: string; source: string;
+      error?: string;
+    }>(`/api/unisearch/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&page=${page}`),
+  detail: (id: string) =>
+    request<UniversalMedia>(`/api/unisearch/detail?id=${encodeURIComponent(id)}`),
+  trending: (type: string = 'anime') =>
+    request<{ results: UniversalMedia[]; source: string; error?: string }>(`/api/unisearch/trending?type=${encodeURIComponent(type)}`),
 };
 
 /* ------------------------------ 发现 / 排行 / 动态 / 公告 / 软件 ------------------------------ */

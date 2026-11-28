@@ -47,8 +47,10 @@ export function SettingsPage() {
   const [trTest, setTrTest] = useState<{ ok: boolean; msg: string } | null>(null);
   // 翻译服务快速预设：选服务后自动填 provider/baseUrl/model，用户只需粘 Key
   const TR_PRESETS: Record<string, { provider: TranslateConfig['provider']; baseUrl: string; model: string; label: string; hint: string }> = {
+    glm54: { provider: 'custom', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6v', label: '智谱 GLM-5.4 系列 · GLM-4.6V 视觉（国内直连 · 已配好）', hint: '已用你的新 Key 配好。GLM-5.4 是纯文本旗舰、无视觉且当前 Key 无权限，看图翻译已自动选用同账号可用的 GLM-4.6V（定位准、翻译质量高、思考链与正文分离，不会「翻译没文字」）。直接用即可，无需再改。' },
+    google: { provider: 'google', baseUrl: 'https://translate.googleapis.com/translate_a/single', model: 'gtx', label: '谷歌翻译免费接口（无需 Key · 参考 Venera）', hint: '翻译走谷歌免费通道、不扣大模型 token；识图仍用视觉模型（下方「识别模型」，需填智谱 Key）。适合想省额度、能访问谷歌的网络。术语一致性略逊于纯大模型。' },
     gemini: { provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', label: 'Google Gemini（免费额度最香，识图最准 · 需能访问谷歌）', hint: '谷歌账号登录 aistudio.google.com → Get API Key → 复制粘贴到下面。免费版每天 1500 次。国内网络需给软件挂代理。' },
-    glm4v: { provider: 'custom', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.1v-thinking-flash', label: '智谱 GLM-4.1V-Thinking（国内直连 · 免费 · 识图准）', hint: '注册 open.bigmodel.cn → 控制台复制 API Key。免费视觉模型，定位文字框准、翻译质量高，国内直连无需代理。' },
+    glm4v: { provider: 'custom', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.1v-thinking-flash', label: '智谱 GLM-4.1V-Thinking（旧版 · 已不建议）', hint: '旧 thinking 模型，思考链易混入译文导致「翻译没文字」，建议改用上面的 GLM-4.6V。' },
     siliconflow: { provider: 'custom', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-VL-32B-Instruct', label: '硅基流动 Qwen-VL（国内直连 · 有免费额度）', hint: '注册 siliconflow.cn → 复制 API Key。国内直连，新用户有免费额度。' },
     openai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', label: 'OpenAI GPT-4o（付费 · 需能访问）', hint: 'platform.openai.com 创建 API Key。识图翻译准确，按量付费。' },
   };
@@ -333,7 +335,7 @@ export function SettingsPage() {
                 <div className="field" style={{ flex: '0 0 auto' }}>
                   <span>当前服务商</span>
                   <div className="input" style={{ display: 'flex', alignItems: 'center', minWidth: 120, cursor: 'default' }}>
-                    {trCfg.provider === 'gemini' ? 'Google Gemini' : trCfg.provider === 'openai' ? 'OpenAI' : '自定义接口'}
+                    {trCfg.provider === 'gemini' ? 'Google Gemini' : trCfg.provider === 'openai' ? 'OpenAI' : trCfg.provider === 'google' ? '谷歌翻译（免费）' : '自定义接口'}
                   </div>
                 </div>
                 <div className="muted sm-text" style={{ paddingBottom: 8 }}>
@@ -362,7 +364,7 @@ export function SettingsPage() {
                   />
                 </label>
                 <label className="field" style={{ flex: '1 1 200px' }}>
-                  <span>模型</span>
+                  <span>模型{trCfg.provider === 'google' ? '（翻译服务，谷歌免费不用改）' : ''}</span>
                   <input
                     className="input"
                     value={trCfg.model}
@@ -370,6 +372,17 @@ export function SettingsPage() {
                     onChange={(e) => setTrCfg({ ...trCfg, model: e.target.value })}
                   />
                 </label>
+                {trCfg.provider === 'google' && (
+                  <label className="field" style={{ flex: '1 1 200px' }}>
+                    <span>识别模型（视觉，用于找文字框）</span>
+                    <input
+                      className="input"
+                      value={trCfg.detectorModel || 'glm-4.6v'}
+                      placeholder="glm-4.6v"
+                      onChange={(e) => setTrCfg({ ...trCfg, detectorModel: e.target.value })}
+                    />
+                  </label>
+                )}
               </div>
               <label className="field" style={{ width: '100%' }}>
                 <span>② 译文样式</span>
@@ -421,6 +434,7 @@ export function SettingsPage() {
               <div className="row wrap" style={{ gap: 8 }}>
                 <button className="btn primary" disabled={trBusy} onClick={() => saveTranslate({
                   provider: trCfg.provider, apiKey: trCfg.apiKey, baseUrl: trCfg.baseUrl, model: trCfg.model,
+                  detectorModel: trCfg.detectorModel,
                   targetLang: trCfg.targetLang, fontSizeOffset: trCfg.fontSizeOffset, inkColor: trCfg.inkColor,
                   autoStyle: trCfg.autoStyle,
                 })}>

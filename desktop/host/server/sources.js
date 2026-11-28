@@ -38,12 +38,23 @@ const now = () => Date.now();
 const discoverCache = new Map();
 const DISCOVER_TTL = 5 * 60 * 1000;
 
-/** 导入实时进度：key = userId，值 = { chapterIndex, chapterTotal, imageDone, imageTotal, title, ts }。
- *  前端轮询 /api/sources/import/progress 显示，避免「卡住不动」的体感。 */
+/** 源健康自愈：后台定期探测每个源的发现页，记录 ok/fail/耗时/lastCheck。
+ *  探测与请求自愈（瞬时错误重试 + 过期缓存降级）配合：抖动源自动回血，持续失效源在前端标红提示。 */
+const HEALTH_FILE = path.join(DATA_DIR, 'source-health.json');
+const HEALTH_INTERVAL = 20 * 60 * 1000; // 20 分钟复检一次
+let sourceHealth = {};
+try { sourceHealth = JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf8')); } catch { /* 首次无文件 */ }
+let healthTimer = null;
+function saveHealth() { try { fs.writeFileSync(HEALTH_FILE, JSON.stringify(sourceHealth, null, 2)); } catch { /* 忽略 */ } }
+
+/** 导入实时进度：key = userId:taskId，值 = { chapterIndex, chapterTotal, imageDone, imageTotal, title, ts }。
+ *  按 taskId 隔离：多个导入任务同时进行时各自进度互不覆盖。
+ *  前端轮询 /api/sources/import/progress?taskId=xxx 显示，避免「卡住不动」的体感。 */
 const importProgress = new Map();
-export function getImportProgress(userId) { return importProgress.get(String(userId)) || null; }
-function setImportProgress(userId, v) { importProgress.set(String(userId), { ...v, ts: now() }); }
-function clearImportProgress(userId) { importProgress.delete(String(userId)); }
+const progressKey = (userId, taskId) => String(userId) + ':' + String(taskId || '_default');
+export function getImportProgress(userId, taskId) { return importProgress.get(progressKey(userId, taskId)) || null; }
+function setImportProgress(userId, taskId, v) { importProgress.set(progressKey(userId, taskId), { ...v, ts: now() }); }
+function clearImportProgress(userId, taskId) { importProgress.delete(progressKey(userId, taskId)); }
 
 /* ------------------------------------------------------------------ *
  *  抽奖机：跨所有来源按「类型 / 题材标签」抽取书籍推荐。
@@ -612,6 +623,51 @@ export async function importChapterFromSource(p) {
   return { comic, chapter, total: images.length, stored, coverUrl };
 }
 
+/**
+ * 后台预热发现页缓存：服务启动后异步并发预取每个 JS 源的 tab0/page1，
+ * 写入 discoverCache。用户首次打开「在线来源」聚合视图即可秒开，不再被
+ * 慢源冷启动（首次网络握手/模块加载，个别源可达 8s+）拖累。
+ * 仅预热发现页（最常用入口），不预热搜索/详情，避免启动即打爆站点。
+ */
+export function warmupDiscover() {
+  const metas = allJsSources();
+  let started = 0;
+  for (const meta of metas) {
+    try {
+      // allJsSources() 只给精简元数据；发现页需要完整实例（含 explore）。
+      const js = getJsSource(meta.id);
+      if (!js) continue;
+      const tabs = jsDiscoverTabs(js);
+      if (!tabs.length) continue;
+      const ck = `${js.key}:0:1`;
+      started++;
+      const t0 = Date.now();
+      // 单源 18s 超时，避免某个卡死的源长期占用连接
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('探测超时')), 18000));
+      Promise.race([jsDiscoverLoad(js, 0, 1), timeout])
+        .then((r) => {
+          const ms = Date.now() - t0;
+          const good = !!(r?.items?.length);
+          sourceHealth[js.key] = { ok: good, ms, items: r?.items?.length || 0, at: Date.now() };
+          if (good && !discoverCache.has(ck)) discoverCache.set(ck, { at: now(), data: { items: r.items, maxPage: r.maxPage } });
+          saveHealth();
+        })
+        .catch((err) => {
+          // 探测失败不立刻判死：若此前成功过且有缓存，标记为 stale（仍可用旧缓存）
+          const wasOk = sourceHealth[js.key]?.ok;
+          sourceHealth[js.key] = { ok: false, stale: !!wasOk, ms: Date.now() - t0, err: String(err?.message || err).slice(0, 80), at: Date.now() };
+          saveHealth();
+        });
+    } catch { /* 单个源异常不影响其他 */ }
+  }
+  console.log(`[warmup] 在线源发现页预热 + 健康探测已启动（${metas.length} 个源，${started} 个有发现页）`);
+  // 定时复检：让失效源在恢复后自动回血、健康状态保持最新
+  if (!healthTimer) {
+    healthTimer = setInterval(() => { warmupDiscover(); }, HEALTH_INTERVAL);
+    healthTimer.unref?.();
+  }
+}
+
 export function registerSources(app) {
   const router = express.Router();
 
@@ -626,6 +682,7 @@ export function registerSources(app) {
       mediaType: s.mediaType,
       version: s.version,
       hasRules: true,
+      health: sourceHealth[String(s.id).replace(/^js:/, '')] || null,
     }));
     const rules = allSources().map((s) => ({
       id: s.id,
@@ -637,6 +694,14 @@ export function registerSources(app) {
       hasRules: !!(s.rules && s.rules.search && s.rules.chapter),
     }));
     res.json({ sources: [...js, ...rules] });
+  });
+
+  // 源健康状态（后台每 20 分钟自动复检；前端据此显示正常/异常徽标）
+  router.get('/health/all', (_req, res) => res.json({ health: sourceHealth }));
+  // 手动触发重新探测所有源（前端「重新检测」按钮；即时回血）
+  router.post('/health/recheck', (_req, res) => {
+    warmupDiscover();
+    res.json({ ok: true, started: true });
   });
 
   // 抽奖机：题材 / 类型清单（前端渲染选择题材用）
@@ -955,6 +1020,8 @@ export function registerSources(app) {
       if (!bookId || !chapterPath) return res.status(400).json({ error: '缺少书籍或章节标识' });
       try {
         const { images } = await jsChapterImages(js, bookId, chapterPath);
+        // 所有图片统一走 /img 代理：服务端对 pstatic.net 会自动做域名替换 + wsrv.nl 中转，
+        // 绕开 DNS 污染与防盗链；之前让浏览器直连 pstatic 原图在国内必失败。
         return res.json({
           images: images.map((u) => `/api/online/img?sid=${encodeURIComponent(js.key)}&u=${encodeURIComponent(u)}`),
           count: images.length,
@@ -990,7 +1057,8 @@ export function registerSources(app) {
 
   // 导入实时进度（前端轮询）
   router.get('/import/progress', requireUser, (req, res) => {
-    res.json(getImportProgress(req.user.id) || { idle: true });
+    const taskId = String(req.query.taskId || '');
+    res.json(getImportProgress(req.user.id, taskId) || { idle: true });
   });
 
   // 导入一话到书库：body { comicId?, sourceId, sourceName, title, cover, author?, chapterTitle, chapterUrl }
@@ -1026,7 +1094,8 @@ export function registerSources(app) {
           return false;
         }) || null;
       }
-      setImportProgress(req.user.id, {
+      const taskId = String(b.taskId || '');
+      setImportProgress(req.user.id, taskId, {
         chapterTitle: b.chapterTitle || '正在导入', imageDone: 0, imageTotal: 0, phase: 'fetch',
       });
       try {
@@ -1051,7 +1120,7 @@ export function registerSources(app) {
           title: b.title, cover: b.cover, comicUrl: b.comicUrl,
           author: b.author, description: b.description,
           bookId, chapterPath, chapterTitle: b.chapterTitle,
-        }, (pg) => setImportProgress(req.user.id, {
+        }, (pg) => setImportProgress(req.user.id, taskId, {
           chapterTitle: b.chapterTitle || '正在导入',
           imageDone: pg.imageDone, imageTotal: pg.imageTotal, phase: 'download',
         }));

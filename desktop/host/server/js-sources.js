@@ -39,6 +39,9 @@ function mangaFireVrf() {
 const SRC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'js-sources');
 const COOKIE_FILE = path.join(DATA_DIR, 'js-source-cookies.json');
 const DATA_FILE = path.join(DATA_DIR, 'js-source-data.json');
+/* 书名→标签索引：标签整合时顺带记录，发现/搜索结果缺 tags 时据此回填，
+   让「带该标签的书不出现」对不返回 tags 的列表也生效。按源隔离，持久化。 */
+const TAG_INDEX_FILE = path.join(DATA_DIR, 'js-source-tag-index.json');
 const UA_DEFAULT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 const FETCH_TIMEOUT = 30000;
@@ -57,7 +60,47 @@ function writeJsonMap(file, map) {
 }
 let cookieMap = readJsonMap(COOKIE_FILE);
 let dataMap = readJsonMap(DATA_FILE);
+let tagIndexMap = readJsonMap(TAG_INDEX_FILE); // { [sourceKey]: { [normalizedTitle]: tags[] } }
 const saveSoon = (file, map) => writeJsonMap(file, map); // 写入量小，直接同步落盘
+
+/** 简单书名归一化：去空白/标点、小写（与前端/后端屏蔽归一化一致） */
+function normBookKey(t) {
+  return String(t || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+}
+
+/** 给某个源记录「书名→标签」，供发现/搜索结果缺 tags 时回填 */
+function recordTagIndex(sourceKey, items) {
+  const bucket = tagIndexMap[sourceKey] || (tagIndexMap[sourceKey] = {});
+  let changed = false;
+  for (const it of items) {
+    const k = normBookKey(it.title);
+    if (!k) continue;
+    const tags = flattenTagsSafe(it.tags);
+    if (tags.length && JSON.stringify(bucket[k]) !== JSON.stringify(tags)) {
+      bucket[k] = tags;
+      changed = true;
+    }
+  }
+  if (changed) saveSoon(TAG_INDEX_FILE, tagIndexMap);
+}
+
+/** flattenTags 的安全别名（此函数定义在前文 normalizeTag 区，但 hoist 用函数声明） */
+function flattenTagsSafe(tags) {
+  if (Array.isArray(tags)) return tags.map(String);
+  if (tags && typeof tags === 'object') return Object.values(tags).flat().map(String);
+  return [];
+}
+
+/** 用已记录的索引给列表项回填 tags（仅当该项自身没有 tags 时） */
+export function jsTagsIndexApply(sourceKey, items) {
+  const bucket = tagIndexMap[sourceKey];
+  if (!bucket) return items;
+  return items.map((it) => {
+    if (it.tags && it.tags.length) return it;
+    const indexed = bucket[normBookKey(it.title)];
+    return indexed && indexed.length ? { ...it, tags: indexed } : it;
+  });
+}
 
 function domainOf(url) {
   try { return new URL(url).hostname; } catch { return ''; }
@@ -131,68 +174,78 @@ async function httpRequest(method, url, headers = {}, body = undefined, sourceKe
     const hit = HTTP_CACHE.get(ckey);
     if (hit && Date.now() - hit.t < HTTP_CACHE_TTL) return { ...hit.v };
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new Error('请求超时')), FETCH_TIMEOUT);
-  try {
-    const cookie = cookiesFor(sourceKey, url)
-      .map((c) => `${c.name}=${c.value}`)
-      .join('; ');
-    const head = { 'User-Agent': UA_DEFAULT, ...headers };
-    if (cookie && !Object.keys(head).some((k) => k.toLowerCase() === 'cookie')) head.Cookie = cookie;
-    let payload;
-    if (body !== undefined && body !== null) {
-      if (typeof body === 'string') payload = body;
-      else if (Buffer.isBuffer(body)) payload = body;
-      else {
-        const ct = Object.keys(head).find((k) => k.toLowerCase() === 'content-type') || '';
-        payload = /json/i.test(ct) ? JSON.stringify(body) : new URLSearchParams(body).toString();
-        if (!ct) head['Content-Type'] = 'application/x-www-form-urlencoded';
-      }
+  // 请求头/正文提前准备一次，重试时复用。
+  const cookie = cookiesFor(sourceKey, url)
+    .map((c) => `${c.name}=${c.value}`)
+    .join('; ');
+  const head = { 'User-Agent': UA_DEFAULT, ...headers };
+  if (cookie && !Object.keys(head).some((k) => k.toLowerCase() === 'cookie')) head.Cookie = cookie;
+  let payload;
+  if (body !== undefined && body !== null) {
+    if (typeof body === 'string') payload = body;
+    else if (Buffer.isBuffer(body)) payload = body;
+    else {
+      const ct = Object.keys(head).find((k) => k.toLowerCase() === 'content-type') || '';
+      payload = /json/i.test(ct) ? JSON.stringify(body) : new URLSearchParams(body).toString();
+      if (!ct) head['Content-Type'] = 'application/x-www-form-urlencoded';
     }
-    const res = await fetch(url, {
-      method,
-      headers: head,
-      body: payload,
-      redirect: 'follow',
-      signal: ctrl.signal,
-    });
-    const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
-    for (const raw of setCookies) {
-      const [pair] = raw.split(';');
-      const eq = pair.indexOf('=');
-      if (eq <= 0) continue;
-      const name = pair.slice(0, eq).trim();
-      const value = pair.slice(eq + 1).trim();
-      const dmatch = raw.match(/domain=([^;]+)/i);
-      const list = cookieMap[sourceKey] || (cookieMap[sourceKey] = []);
-      const item = { name, value, domain: dmatch ? dmatch[1].trim() : domainOf(url) };
-      const i = list.findIndex((c) => c.name === name && (c.domain || domainOf(url)).replace(/^\./, '') === item.domain.replace(/^\./, ''));
-      if (i >= 0) list[i] = item; else list.push(item);
-    }
-    if (setCookies.length) saveSoon(COOKIE_FILE, cookieMap);
-    const buf = await res.arrayBuffer();
-    const bytes = Buffer.from(buf);
-    // bytes 供需要按指定编码解码的源使用（如拷贝轻小说 GBK 正文 txt）；
-    // body 仍是 utf8 字符串，保持对所有现有源的行为不变。
-    const out = { status: res.status, body: bytes.toString('utf8'), bytes: new Uint8Array(bytes), url: res.url || url };
-    if (cacheable && res.status >= 200 && res.status < 400) {
-      HTTP_CACHE.set(ckey, { t: Date.now(), v: { ...out } });
-      if (HTTP_CACHE.size > 300) {
-        const now = Date.now();
-        for (const [k, x] of HTTP_CACHE) if (now - x.t > HTTP_CACHE_TTL) HTTP_CACHE.delete(k);
-      }
-    }
-    return out;
-  } catch (err) {
-    /* 网络失败时若有过期缓存，降级返回旧内容，避免因单点抖动导致整页卡死 */
-    if (cacheable) {
-      const stale = HTTP_CACHE.get(ckey);
-      if (stale) return { ...stale.v };
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
   }
+  /* 自愈：瞬时网络错误（连接重置/DNS抖动/连接中断）自动重试一次；
+     请求超时不重试，避免等待翻倍。站点偶发抖动占失效场景的大头。 */
+  const attempts = 2;
+  let lastErr;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error('请求超时')), FETCH_TIMEOUT);
+    try {
+      const res = await fetch(url, { method, headers: head, body: payload, redirect: 'follow', signal: ctrl.signal });
+      const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+      for (const raw of setCookies) {
+        const [pair] = raw.split(';');
+        const eq = pair.indexOf('=');
+        if (eq <= 0) continue;
+        const name = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).trim();
+        const dmatch = raw.match(/domain=([^;]+)/i);
+        const list = cookieMap[sourceKey] || (cookieMap[sourceKey] = []);
+        const item = { name, value, domain: dmatch ? dmatch[1].trim() : domainOf(url) };
+        const i = list.findIndex((c) => c.name === name && (c.domain || domainOf(url)).replace(/^\./, '') === item.domain.replace(/^\./, ''));
+        if (i >= 0) list[i] = item; else list.push(item);
+      }
+      if (setCookies.length) saveSoon(COOKIE_FILE, cookieMap);
+      const buf = await res.arrayBuffer();
+      const bytes = Buffer.from(buf);
+      // bytes 供需要按指定编码解码的源使用（如拷贝轻小说 GBK 正文 txt）；
+      // body 仍是 utf8 字符串，保持对所有现有源的行为不变。
+      const out = { status: res.status, body: bytes.toString('utf8'), bytes: new Uint8Array(bytes), url: res.url || url };
+      if (cacheable && res.status >= 200 && res.status < 400) {
+        HTTP_CACHE.set(ckey, { t: Date.now(), v: { ...out } });
+        if (HTTP_CACHE.size > 300) {
+          const t = Date.now();
+          for (const [k, x] of HTTP_CACHE) if (t - x.t > HTTP_CACHE_TTL) HTTP_CACHE.delete(k);
+        }
+      }
+      return out;
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err);
+      // 只对真正的网络层错误重试；超时（我们主动 abort）不重试。
+      const transient = /fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket hang|terminated|network/i.test(msg);
+      if (attempt + 1 < attempts && transient) {
+        await new Promise((r) => setTimeout(r, 400 + Math.random() * 400));
+        continue;
+      }
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  /* 网络失败时若有过期缓存，降级返回旧内容，避免因单点抖动导致整页卡死 */
+  if (cacheable) {
+    const stale = HTTP_CACHE.get(ckey);
+    if (stale) return { ...stale.v };
+  }
+  throw lastErr;
 }
 
 /* ------------------------------ Convert：Ciallo 宿主提供的同步编解码工具 ------------------------------ */
@@ -481,13 +534,40 @@ export async function jsNovelDownload(source, bookId) {
   return d && (d.url || d.textNovel) ? d : null;
 }
 
-/** 发现页：返回书源的 explore 分类列表；load(tabIndex, page) 取某一分类的漫画列表 */
+/** 发现页：返回书源的 explore 分类列表；load(tabIndex, page) 取某一分类的漫画列表。
+ *  同时把源声明的 category（原站题材分类，本供抽奖机使用）并入 tabs，让发现页也支持原站筛选。 */
 export function jsDiscoverTabs(source) {
   const ex = source.explore || source.discover || [];
-  return Array.isArray(ex) ? ex.map((e, i) => ({ index: i, title: e.title || `分类 ${i + 1}`, type: e.type || '' })) : [];
+  const tabs = Array.isArray(ex) ? ex.map((e, i) => ({ index: i, title: e.title || `分类 ${i + 1}`, type: e.type || '' })) : [];
+  const cat = source.category;
+  // 部分源的 category 分类接口已失效（如再漫画 update_list errno=1），接入只会得到空 tab，
+  // 用 categoryDiscoverDisabled 标记跳过，保持发现页只有能正常加载的分类。
+  if (!source.categoryDiscoverDisabled && cat && Array.isArray(cat.parts) && source.categoryComics) {
+    for (const part of cat.parts) {
+      if (!part) continue;
+      if (Array.isArray(part.categories)) {
+        part.categories.forEach((name, i) => {
+          if (!name) return;
+          const params = Array.isArray(part.categoryParams) ? part.categoryParams : [];
+          tabs.push({ index: tabs.length, title: String(name), type: 'category', part: part.name, param: String(params[i] ?? name) });
+        });
+      }
+    }
+  }
+  return tabs;
 }
 export async function jsDiscoverLoad(source, tabIndex, page = 1) {
   const ex = source.explore || source.discover || [];
+  // category tab（index >= explore 长度）：走原站题材分类加载
+  if (tabIndex >= ex.length && source.categoryComics && typeof source.categoryComics.load === 'function') {
+    const tabs = jsDiscoverTabs(source);
+    const tab = tabs[tabIndex];
+    if (tab && tab.type === 'category') {
+      const out = await source.categoryComics.load(tab.part, tab.param, [], Math.max(1, Number(page) || 1));
+      const comics = Array.isArray(out) ? out : (out && Array.isArray(out.comics) ? out.comics : []);
+      return { items: toComicItems(comics), maxPage: Math.max(1, Number(out?.maxPage) || page) };
+    }
+  }
   const tab = ex[tabIndex];
   if (!tab || typeof tab.load !== 'function') throw new Error('这个来源没有可浏览的分类');
   const out = await tab.load(Math.max(1, Number(page) || 1));
@@ -586,7 +666,32 @@ export function isTagBlocked(tags, blocked) {
   });
 }
 
+/** 只取一本书详情的 tags（不解析章节，避免慢/失败影响题材聚合）。
+ *  兼容数组与 { 分组: [标签] } 两种结构。 */
+async function jsDetailTagsOnly(source, bookId) {
+  // 轻量钩子：某些源（如 MangaFire）loadInfo 会连带抓全部章节（慢/依赖 VRF），
+  // 提供 tagHints 只取详情题材，避免为了题材去抓章节。
+  if (typeof source.tagHints === 'function') {
+    try {
+      const fast = await source.tagHints(bookId);
+      if (Array.isArray(fast)) return fast.map(String).filter(Boolean);
+    } catch { /* 落到 loadInfo 兜底 */ }
+  }
+  if (!source.comic || typeof source.comic.loadInfo !== 'function') return [];
+  try {
+    const info = await source.comic.loadInfo(bookId);
+    const raw = info && info.tags;
+    if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+    if (raw && typeof raw === 'object') {
+      return Object.values(raw).flat().map(String).filter(Boolean);
+    }
+  } catch { /* 单本详情失败不影响题材聚合 */ }
+  return [];
+}
+
 /** 聚合某个源「所有书」的标签题材：分类题材名 + 各分类入口/发现页第一页的书籍 tags。
+ *  题材主要来自分类入口与列表；但不少源（拷贝系/轻小说/MangaFire/漫蛙等）列表卡片
+ *  不带题材、题材只在详情页，此时抽样若干本书的详情补全，并写入书名→标签索引供列表回填。
  *  返回 [{ tag, count }]（tag 保留原文用于展示），按词频降序。慢，由调用方做缓存与超时。 */
 export async function jsCollectTags(source) {
   const counter = new Map();
@@ -596,26 +701,70 @@ export async function jsCollectTags(source) {
     if (!normalizeTag(s)) return;
     counter.set(s, (counter.get(s) || 0) + 1);
   };
+  const sourceKey = source.key;
 
   // 1) 分类题材入口名（最稳定的题材标签来源，成本低）
   let entries = [];
   try { entries = await jsLotteryGenreEntries(source); } catch { /* 单个源失败不影响其它 */ }
   for (const e of entries) if (e.name && e.name !== '全部') add(e.name);
 
-  // 2) 各分类入口第一页书籍 tags（限量并发，避免站点压力过大）
+  // 2) 各分类入口第一页书籍 tags（限量并发，避免站点压力过大）；同时记录书名→标签
   const picked = entries.filter((e) => e.name !== '全部' && e.param).slice(0, 12);
   await Promise.all(picked.map(async (e) => {
-    try { for (const it of await jsLotteryLoad(source, e, 1)) for (const t of it.tags || []) add(t); }
-    catch { /* 忽略单个分类失败 */ }
+    try {
+      const items = await jsLotteryLoad(source, e, 1);
+      recordTagIndex(sourceKey, items);
+      for (const it of items) for (const t of (it.tags || [])) add(t);
+    } catch { /* 忽略单个分类失败 */ }
   }));
 
-  // 3) 发现页各 tab 第一页书籍 tags
+  // 3) 发现页各 tab 第一页书籍 tags；同时记录书名→标签与候选书籍（供详情补标签）
   let tabs = [];
   try { tabs = jsDiscoverTabs(source); } catch { /* 忽略 */ }
+  const candidates = []; // { title, link, hasTags }，去重后用于详情抽样
+  const seenBook = new Set();
   await Promise.all(tabs.slice(0, 8).map(async (tab) => {
-    try { const r = await jsDiscoverLoad(source, tab.index, 1); for (const it of (r.items || [])) for (const t of (it.tags || [])) add(t); }
-    catch { /* 忽略单个 tab 失败 */ }
+    try {
+      const r = await jsDiscoverLoad(source, tab.index, 1);
+      recordTagIndex(sourceKey, r.items || []);
+      for (const it of (r.items || [])) {
+        for (const t of (it.tags || [])) add(t);
+        const link = String(it.link || '');
+        if (link && !seenBook.has(link)) {
+          seenBook.add(link);
+          candidates.push({ title: it.title, link, hasTags: (it.tags || []).length > 0 });
+        }
+      }
+    } catch { /* 忽略单个 tab 失败 */ }
   }));
+
+  // 4) 详情抽样补标签：很多源（拷贝系/轻小说/漫蛙等）列表卡片不带题材、题材只在详情页。
+  //    用「候选书自带标签覆盖率」判断：若大部分书列表里没有标签，说明题材藏在详情，
+  //    需下钻抓全（覆盖尽量多的书，让全站标签词表完整、列表回填生效）。
+  //    - 提供 tagHints 轻量钩子的源抓得多且快（如 MangaFire）；
+  //    - 覆盖率已高的源只少量补漏，避免对站点压力过大。
+  //    单源整体仍受调用方 TAG_FETCH_TIMEOUT 保护，慢源不会拖垮全局。
+  if (candidates.length) {
+    const withTags = candidates.filter((b) => b.hasTags).length;
+    const coverage = withTags / candidates.length;
+    const fastHints = typeof source.tagHints === 'function';
+    const needDeep = coverage < 0.5; // 多数书列表无标签 → 题材在详情
+    const sampleLimit = fastHints ? 80 : (needDeep ? 48 : 12);
+    const concurrency = fastHints ? 8 : 6;
+    const sample = candidates.slice(0, sampleLimit);
+    let idx = 0;
+    const workers = Array.from({ length: Math.min(concurrency, sample.length) }, async () => {
+      while (idx < sample.length) {
+        const b = sample[idx++];
+        const tags = await jsDetailTagsOnly(source, b.link);
+        if (!tags.length) continue;
+        // 记录书名→标签，供发现/搜索/抽奖列表回填
+        recordTagIndex(sourceKey, [{ title: b.title, tags }]);
+        for (const t of tags) add(t);
+      }
+    });
+    await Promise.all(workers);
+  }
 
   return [...counter.entries()]
     .map(([tag, count]) => ({ tag, count }))

@@ -10,10 +10,13 @@
  *   3. 在原位置把译文渲染回去（自动字号、自动换行、横排/竖排、描边）
  *   4. 结果按「图片 hash + 模型 + 目标语言 + prompt 版本」缓存，避免重复扣费
  *
- * 支持三种后端（都走 OpenAI 兼容或 Gemini 原生，方便接自建/中转/本地模型）：
+ * 支持四种后端（都走 OpenAI 兼容或 Gemini 原生，方便接自建/中转/本地模型）：
  *   - gemini   : Google Gemini 原生 API（有免费额度）
  *   - openai   : OpenAI 官方
  *   - custom   : 任意 OpenAI 兼容地址（可接 Sakura / 第三方中转 / 本地服务）
+ *   - google   : 谷歌翻译免费接口（client=gtx，无需 API Key）——需要配合 OCR；
+ *                多模态模型负责检测文字框+识别原文，谷歌免费接口负责文本翻译。
+ *                参考 Venera 的做法：识别与翻译解耦，翻译走免费通道不扣费。
  */
 import express from 'express';
 import crypto from 'node:crypto';
@@ -60,18 +63,56 @@ const PROVIDER_DEFAULTS = {
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash' },
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
   custom: { baseUrl: '', model: '' },
+  // 谷歌翻译免费接口：无需 Key。识图/框检测仍用「视觉模型」（下方 detectorModel），
+  // 但文字翻译走谷歌免费通道，不消耗大模型 token。参考 Venera 的识别/翻译解耦思路。
+  google: { baseUrl: 'https://translate.googleapis.com/translate_a/single', model: 'gtx' },
 };
+
+/* 谷歌免费翻译：client=gtx 非官方接口，无需 Key。参考 Venera 的「谷歌翻译」服务商。
+   把多模态模型识别出的原文批量翻译，失败时返回原文本，绝不阻断渲染。 */
+async function googleFreeTranslate(texts, from, to) {
+  const out = [];
+  for (const text of texts) {
+    if (!text || !text.trim()) { out.push(text); continue; }
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from || 'auto')}&tl=${encodeURIComponent(to || 'zh-CN')}&dt=t&q=${encodeURIComponent(text)}`;
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 15000);
+      let r, txt;
+      try {
+        r = await fetch(url, { headers: { 'User-Agent': UA_DEFAULT }, signal: ac.signal });
+        txt = await r.text();
+      } finally { clearTimeout(timer); }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = JSON.parse(txt);
+      const translated = (j?.[0] || []).map((seg) => seg?.[0] || '').join('');
+      out.push(translated || text);
+    } catch { out.push(text); } // 翻译失败保留原文，保证页面仍能出译文图
+  }
+  return out;
+}
 
 function cfg() {
   const db = loadDb();
   const t = (db.settings && db.settings.translate) || {};
-  const provider = PROVIDER_DEFAULTS[t.provider] ? t.provider : 'gemini';
+  let provider = PROVIDER_DEFAULTS[t.provider] ? t.provider : 'gemini';
   const def = PROVIDER_DEFAULTS[provider];
+  let model = String(t.model || def.model || '');
+  // 自动修复历史坏配置：
+  //  1) glm-4v-flash 定位文字框极差（全挤角落），几乎"翻译没用"；
+  //  2) glm-4.1v-thinking-flash 是 thinking 模型，思考链常混入 content 导致 JSON 解析失败 =
+  //     "翻译没文字"。实测 glm-4.6v 定位准、thought 与 content 分离、翻译质量高，作为默认视觉模型。
+  if (/bigmodel\.cn/i.test(String(t.baseUrl || '')) && /^(glm-4v-flash|glm-4\.1v-thinking-flash)$/i.test(model)) {
+    model = 'glm-4.6v';
+  }
+  // 谷歌免费后端需要一个视觉模型来识别文字框（参考 Venera：本机 OCR，这里用视觉模型代替本机 OCR）。
+  let detectorModel = String(t.detectorModel || 'glm-4.6v');
   return {
     provider,
+    detectorModel,
+    model,
     apiKey: String(t.apiKey || ''),
     baseUrl: String(t.baseUrl || def.baseUrl || '').replace(/\/+$/, ''),
-    model: String(t.model || def.model || ''),
     targetLang: String(t.targetLang || '简体中文'),
     prompt: String(t.prompt || DEFAULT_PROMPT),
     fontFamily: String(t.fontFamily || '"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif'),
@@ -224,10 +265,17 @@ async function callOpenAICompatible(conf, buf) {
   };
   const headers = { 'Content-Type': 'application/json' };
   if (conf.apiKey) headers.Authorization = `Bearer ${conf.apiKey}`;
-  // 各家对 max_tokens 上限不同：智谱 glm-4v-flash 等只接受 1-1024，
-  // 写死 4096 会直接 400「max_tokens参数非法」。按服务商选安全值，并在 400 时自动降档重试。
+  // 各家对 max_tokens 上限不同：
+  //   - 智谱 glm-4v-flash 老模型只接受 1-1024，写 4096 会 400「max_tokens参数非法」；
+  //   - glm-4.1v-thinking-flash / glm-4v-plus 支持更大值，但 thinking 模型要输出思考链，
+  //     给太小（1024）会导致译文 JSON 被截断、文字框不全 → 翻译"看起来没用"。
+  // 这里按模型名给安全上限，并在 400 报 max_tokens 非法时自动降到 1024 重试。
   const base = String(conf.baseUrl || '');
-  if (/bigmodel\.cn/i.test(base)) body.max_tokens = 1024;
+  const model = String(conf.model || '');
+  if (/bigmodel\.cn/i.test(base)) {
+    // 老 flash 严格 1024；thinking/plus/air 等新型号给足空间
+    body.max_tokens = /glm-4v-flash$/i.test(model) ? 1024 : 4096;
+  }
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 120000);
   try {
@@ -249,8 +297,24 @@ async function callOpenAICompatible(conf, buf) {
 
 function slice(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
 
+/** 目标语言名 → 谷歌翻译语言代码 */
+function zhCode(lang) {
+  const s = String(lang || '');
+  if (/繁体|Traditional|zh-TW|zh_Hant/i.test(s)) return 'zh-TW';
+  if (/日语|Japanese/i.test(s)) return 'ja';
+  if (/韩语|Korean/i.test(s)) return 'ko';
+  if (/英语|English/i.test(s)) return 'en';
+  return 'zh-CN';
+}
+
 function extractJson(raw) {
   let s = String(raw || '').trim();
+  // 关键修复：thinking 模型（glm-4.1v-thinking-flash / glm-4.6v 等）会把思考链写进 content：
+  //   <think>先看左上角……再判断竖排……</think>{"regions":[...]}
+  // 之前直接找第一个 { 会命中思考链里的文本，导致 JSON 解析失败 = "翻译没文字"。
+  // 这里先剥掉 <think>...</think>（含未闭合的 <think> 前缀），再取正文。
+  s = s.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  s = s.replace(/<think>[\s\S]*$/i, ''); // 思考链未闭合时，丢弃 <think> 之后全部
   s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
   const start = s.indexOf('{');
   const end = s.lastIndexOf('}');
@@ -461,9 +525,20 @@ function drawChar(ctx, text, x, y, ink, outline, conf) {
 function cacheKey(buf, conf) {
   const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 20);
   const meta = crypto.createHash('sha256')
-    .update(JSON.stringify([conf.provider, conf.model, conf.targetLang, PROMPT_VERSION, conf.fontSizeOffset, conf.inkColor, conf.useOutline, conf.autoStyle]))
+    .update(JSON.stringify([conf.provider, conf.model, conf.detectorModel, conf.targetLang, PROMPT_VERSION, conf.fontSizeOffset, conf.inkColor, conf.useOutline, conf.autoStyle]))
     .digest('hex').slice(0, 10);
   return `${hash}-${meta}`;
+}
+
+/** 判断模型给出的文字框是否"铺开"在整个画面（而非全挤一角 = 定位失败）。 */
+function regionSpreadOk(regions, width, height) {
+  if (regions.length < 2) return false;
+  const cxs = regions.map((r) => (r.x1 + r.x2) / 2 / width);
+  const cys = regions.map((r) => (r.y1 + r.y2) / 2 / height);
+  const spanX = Math.max(...cxs) - Math.min(...cxs);
+  const spanY = Math.max(...cys) - Math.min(...cys);
+  // 至少在一个方向上覆盖画面 35% 以上，才算正常铺开
+  return spanX >= 0.35 || spanY >= 0.35;
 }
 
 async function translateBuffer(buf, conf) {
@@ -472,11 +547,41 @@ async function translateBuffer(buf, conf) {
   const { loadImage, createCanvas } = cv;
   const img = await loadImage(buf);
   const width = img.width, height = img.height;
-  const raw = conf.provider === 'gemini'
-    ? await callGemini(conf, buf)
-    : await callOpenAICompatible(conf, buf);
-  const regions = parseRegions(raw, width, height);
-  if (!regions.length) throw new Error('没有识别到可翻译的文字');
+
+  // 调用视觉模型：gemini 原生走 callGemini，其余（custom/google）走 OpenAI 兼容。
+  // google 后端用 detectorModel（视觉模型）只做识别，模型名不同，单独构造 conf。
+  const isGoogle = conf.provider === 'google';
+  const visionConf = isGoogle ? { ...conf, model: conf.detectorModel } : conf;
+  const callVision = (c) => c.provider === 'gemini'
+    ? callGemini(c, buf)
+    : callOpenAICompatible(c, buf);
+  let raw = await callVision(visionConf);
+  let regions = parseRegions(raw, width, height);
+
+  // 定位质量校验：弱模型常把所有文字框挤在画面一角，译文全叠一处 = "翻译没用"。
+  // 框数过少（<2）或中心挤在窄区域时，用强调 prompt 重试一次。
+  if (regions.length && !regionSpreadOk(regions, width, height)) {
+    const retryPrompt = conf.prompt
+      + '\n\nIMPORTANT RETRY: Your previous boxes were all clustered in one corner. '
+      + 'Re-examine the WHOLE image from top-left to bottom-right. '
+      + 'Speech bubbles and text are spread across the entire page. '
+      + 'Return boxes with coordinates spanning their ACTUAL positions across the full 0-1000 range.';
+    try {
+      const raw2 = await callVision({ ...visionConf, prompt: retryPrompt });
+      const regions2 = parseRegions(raw2, width, height);
+      if (regions2.length >= regions.length && regionSpreadOk(regions2, width, height)) regions = regions2;
+    } catch { /* 重试失败则用首次结果，不阻断翻译 */ }
+  }
+  if (!regions.length) throw new Error('没有识别到可翻译的文字（这一页可能是纯画面/无对白，或文字太淡）');
+
+  // 谷歌免费后端：视觉模型只负责识别原文，翻译改走谷歌免费接口（无需 Key、不扣大模型 token）。
+  // 参考 Venera：识别与翻译解耦，长文本/多页时术语一致性略差但零成本。
+  if (isGoogle) {
+    const originals = regions.map((r) => r.translation || '');
+    const translated = await googleFreeTranslate(originals, 'auto', zhCode(conf.targetLang));
+    regions = regions.map((r, i) => ({ ...r, translation: translated[i] || r.translation }));
+  }
+
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0);
@@ -497,6 +602,7 @@ export function registerTranslation(app) {
       hasKey: !!c.apiKey,
       baseUrl: c.baseUrl,
       model: c.model,
+      detectorModel: c.detectorModel,
       targetLang: c.targetLang,
       fontFamily: c.fontFamily,
       fontSizeOffset: c.fontSizeOffset,
@@ -513,7 +619,7 @@ export function registerTranslation(app) {
     const b = req.body || {};
     const prev = (db.settings && db.settings.translate) || {};
     const next = { ...prev };
-    const fields = ['provider', 'apiKey', 'baseUrl', 'model', 'targetLang', 'prompt', 'fontFamily', 'fontSizeOffset', 'inkColor', 'useOutline', 'autoStyle'];
+    const fields = ['provider', 'apiKey', 'baseUrl', 'model', 'detectorModel', 'targetLang', 'prompt', 'fontFamily', 'fontSizeOffset', 'inkColor', 'useOutline', 'autoStyle'];
     for (const f of fields) if (f in b) next[f] = b[f];
     // 前端回传打码串时保留原 key
     if (b.apiKey && /••••/.test(String(b.apiKey))) next.apiKey = prev.apiKey;
@@ -527,8 +633,8 @@ export function registerTranslation(app) {
   router.post('/test', async (_req, res) => {
     try {
       const c = cfg();
-      if (c.provider !== 'gemini' && !c.apiKey) return res.status(400).json({ error: '请先填写 API Key' });
-      if (c.provider === 'gemini' && !c.apiKey) return res.status(400).json({ error: '请先填写 API Key' });
+      // google 免费后端不需要 Key（翻译走谷歌免费接口）；其余都需要。
+      if (c.provider !== 'google' && !c.apiKey) return res.status(400).json({ error: '请先填写 API Key' });
       const cv = await getCanvas();
       if (!cv) return res.status(400).json({ error: '当前环境未安装图像处理模块，无法测试翻译' });
       const { createCanvas } = cv;
@@ -539,9 +645,10 @@ export function registerTranslation(app) {
       tc.fillStyle = '#000000'; tc.font = 'bold 48px sans-serif'; tc.textBaseline = 'middle';
       tc.fillText('HELLO', 20, 60);
       const buf = await test.toBuffer('image/png');
-      const raw = c.provider === 'gemini' ? await callGemini(c, buf) : await callOpenAICompatible(c, buf);
+      const testConf = c.provider === 'google' ? { ...c, model: c.detectorModel } : c;
+      const raw = c.provider === 'gemini' ? await callGemini(testConf, buf) : await callOpenAICompatible(testConf, buf);
       const regions = parseRegions(raw, 240, 120);
-      res.json({ ok: true, regions: regions.length, model: c.model, provider: c.provider });
+      res.json({ ok: true, regions: regions.length, model: c.provider === 'google' ? c.detectorModel : c.model, provider: c.provider });
     } catch (err) {
       res.status(502).json({ error: err?.message || '测试失败' });
     }
@@ -551,7 +658,8 @@ export function registerTranslation(app) {
   router.post('/page', async (req, res) => {
     try {
       const c = cfg();
-      if (!c.apiKey && c.provider !== 'custom') return res.status(400).json({ error: '请先在设置里填写翻译 API Key' });
+      // google 免费后端不需要翻译 Key；custom/openai/gemini 需要。
+      if (!c.apiKey && !['custom', 'google'].includes(c.provider)) return res.status(400).json({ error: '请先在设置里填写翻译 API Key' });
       const src = String(req.body?.url || '');
       const buf = await resolveImageBuffer(src);
       const key = cacheKey(buf, c);

@@ -237,11 +237,13 @@ export interface ReaderPrefs {
 }
 
 export interface TranslateConfig {
-  provider: 'gemini' | 'openai' | 'custom';
+  provider: 'gemini' | 'openai' | 'custom' | 'google';
   apiKey: string;
   hasKey: boolean;
   baseUrl: string;
   model: string;
+  /** 谷歌免费后端用的视觉识别模型（只识别文字框，翻译走谷歌免费接口） */
+  detectorModel?: string;
   targetLang: string;
   fontFamily: string;
   fontSizeOffset: number;
@@ -249,13 +251,42 @@ export interface TranslateConfig {
   useOutline: boolean;
   /** 译文样式跟随原文（颜色/粗细），默认开启；关闭则用上面的固定字号与颜色 */
   autoStyle: boolean;
-  defaults: Record<'gemini' | 'openai' | 'custom', { baseUrl: string; model: string }>;
+  defaults: Record<'gemini' | 'openai' | 'custom' | 'google', { baseUrl: string; model: string }>;
 }
 
 export interface TranslateResult {
   url: string;
   count: number;
   cached: boolean;
+}
+
+/** 全站书籍检索结果（AniList 归一化） */
+export interface UniversalMedia {
+  id: string;
+  source: string;
+  sourceUrl: string;
+  title: string;
+  nativeTitle: string;
+  englishTitle: string;
+  synonyms: string[];
+  cover: string;
+  banner: string;
+  color: string;
+  description: string;
+  kind: string;          // manga / anime
+  format: string;        // TV / MOVIE / MANGA / NOVEL / ONA ...
+  status: string;
+  year: number | null;
+  score: number | null;  // 0-10
+  popularity: number;
+  episodes: number | null;
+  chapters: number | null;
+  volumes: number | null;
+  tags: string[];
+  links: { site: string; url: string; type: 'watch' | 'info' }[];
+  relations?: { relation: string; id: string; title: string; cover: string; kind: string; sourceUrl: string }[];
+  characters?: { name: string; image: string; sourceUrl: string }[];
+  staff?: { name: string; image: string; sourceUrl: string }[];
 }
 
 export interface Settings {

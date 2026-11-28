@@ -130,9 +130,15 @@ class ManWa extends ComicSource {
                 }
                 const img = doc.querySelector("img[data-original]");
                 if (img) cover = this.abs(img.attributes["data-original"] || "", base);
+                // 题材：详情页 <span class="info-tag-span">标签</span>
+                const tags = {};
+                for (const n of doc.querySelectorAll('.info-tag-span')) {
+                    const t = String(n.text || "").trim();
+                    if (t && t.length <= 24) (tags["题材"] || (tags["题材"] = [])).push(t);
+                }
                 return new ComicDetails({
                     id: id, title: title.replace(/\s*\(完整版\)\s*/g, "").trim(), cover, description,
-                    tags: {}, chapters, url: base + "/book/" + id,
+                    tags, chapters, url: base + "/book/" + id,
                 });
             } finally { doc.dispose(); }
         },

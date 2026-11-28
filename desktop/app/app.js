@@ -35,6 +35,9 @@
     subs: [],
     selecting: false, selComics: new Set(),
     trCfg: null,   // AI 翻译配置（生肉漫画→中文）
+    // 全站书籍检索
+    uniQ: '', uniType: 'all', uniResults: [], uniPage: 1, uniMore: false, uniTotal: 0,
+    uniDetail: null, uniSearched: false,
     // 全局导入任务：{active, done, total, failed, label, comicId, finished}
     importTask: { active: false, done: 0, total: 0, failed: 0, label: '', comicId: '', finished: false },
   };
@@ -286,6 +289,7 @@
   /* ------------------------------ 视图框架 ------------------------------ */
   const VIEW_META = {
     library: ['我的书架', '本地客户端 · 与网站共用同一份数据'],
+    search: ['全站检索', '搜漫画/轻小说/动画/影视 · 信息与观看网址，比番组计划更全'],
     sources: ['在线来源', '配置书源，从漫画站把漫画搬进书库'],
     updates: ['追更', '订阅在更新的漫画，自动检查并下载新章节'],
     community: ['公共书库', '所有人共享的漫画，服务端实时同步'],
@@ -309,6 +313,9 @@
         <button class="btn" data-action="pick-import">＋ 导入漫画</button>
         <button class="btn" data-action="pick-folder">＋ 导入文件夹</button>
         <button class="btn primary" data-action="new-comic">新建漫画</button>`;
+    } else if (state.view === 'search') {
+      acts.innerHTML = `<input class="input search" id="uniSearchInput" placeholder="书名 / 动画名 / 日文名 / 别名" value="${esc(state.uniQ)}" />
+        <button class="btn primary" data-action="uni-search">搜索</button>`;
     } else if (state.view === 'sources') {
       acts.innerHTML = `<button class="btn" data-action="src-manage">书源管理</button>`;
     } else if (state.view === 'updates') {
@@ -324,6 +331,7 @@
     const fn = {
       library: renderLibrary, community: renderCommunity, plaza: renderPlaza,
       settings: renderSettings, comic: renderComic, sources: renderSources, updates: renderUpdates,
+      search: renderUniSearch,
     }[state.view];
     fn();
     renderImportTask();
@@ -452,6 +460,85 @@
         <div class="card-body"><div class="card-title">${esc(c.title)}</div>
           <div class="card-meta">${c.kind === 'novel' ? `${c.chapterCount || 0} 章 · 小说` : `${c.chapterCount || 0} 话 · ${c.pageCount || 0} 页`}${c.scope === 'community' ? ' · <span class="badge">公共</span>' : ''}</div></div>
       </div>`).join('')}</div>`;
+  }
+
+  /* ------------------------------ 全站书籍检索 ------------------------------ */
+  async function uniDoSearch(q, page, append) {
+    q = (q || '').trim(); if (!q) return;
+    busy(true);
+    try {
+      const r = await api('GET', '/api/unisearch/search', {
+        query: { q, type: state.uniType, page }, noCache: true,
+      });
+      state.uniQ = q; state.uniSearched = true;
+      state.uniResults = append ? (state.uniResults || []).concat(r.results || []) : (r.results || []);
+      state.uniPage = page; state.uniMore = !!r.hasNextPage; state.uniTotal = r.total || 0;
+      render();
+    } catch (err) { toast(err.message, true); }
+    finally { busy(false); }
+  }
+  async function uniOpenDetail(id) {
+    busy(true);
+    try {
+      const d = await api('GET', '/api/unisearch/detail', { query: { id }, noCache: true });
+      state.uniDetail = d; renderUniDetail();
+    } catch (err) { toast(err.message, true); }
+    finally { busy(false); }
+  }
+  function uniKindLabel(m) {
+    const map = { TV: 'TV 动画', MOVIE: '剧场版', ONA: '网络动画', OVA: 'OVA', MANGA: '漫画', NOVEL: '轻小说', ONE_SHOT: '短篇', SPECIAL: '特别篇' };
+    return map[m.format] || (m.kind === 'manga' ? '漫画' : '动画');
+  }
+  function renderUniSearch() {
+    const c = $('#content');
+    const tabs = [['all', '全部'], ['manga', '漫画 / 轻小说'], ['anime', '动画 / 影视']];
+    let html = `<div class="uni-wrap">
+      <div class="uni-tabs">${tabs.map(([k, l]) => `<button class="tab ${state.uniType === k ? 'active' : ''}" data-action="uni-tab" data-type="${k}">${l}</button>`).join('')}</div>`;
+    if (!state.uniSearched) {
+      html += `<p class="muted">输入书名 / 动画名 / 日文名 / 别名，一次搜遍漫画、轻小说、动画与影视，查看详细信息与「哪里能看」。</p>`;
+    } else {
+      html += `<div class="uni-head"><b>搜索结果</b><span class="muted">${state.uniTotal ? `共 ${state.uniTotal} 条 · 显示 ${state.uniResults.length} 条` : ''}</span></div>`;
+      if (state.uniResults.length) {
+        html += `<div class="uni-grid">${state.uniResults.map((m) => {
+          const watch = (m.links || []).filter((l) => l.type === 'watch');
+          return `<div class="uni-card" data-action="uni-detail" data-id="${esc(m.id)}">
+            <div class="uni-cover">${m.cover ? `<img src="${esc(m.cover)}" loading="lazy" />` : '<div class="uni-ph">📖</div>'}
+              <span class="uni-kind">${esc(uniKindLabel(m))}</span>
+              ${m.score != null ? `<span class="uni-score">★ ${Number(m.score).toFixed(1)}</span>` : ''}</div>
+            <div class="uni-title" title="${esc(m.title)}">${esc(m.title)}</div>
+            <div class="uni-sub">${m.year || '—'}${m.chapters ? ` · ${m.chapters} 话` : m.episodes ? ` · ${m.episodes} 集` : ''}${watch.length ? ` · <span style="color:var(--ok,#3fb950)">${watch.length} 个观看源</span>` : ''}</div>
+          </div>`;
+        }).join('')}</div>`;
+        if (state.uniMore) html += `<div style="text-align:center;margin:16px"><button class="btn" data-action="uni-more">加载更多</button></div>`;
+      } else html += `<p class="muted">没有找到匹配结果，换个关键词（支持中文名 / 日文名 / 英文名）。</p>`;
+    }
+    html += `</div>`;
+    c.innerHTML = html;
+  }
+  function renderUniDetail() {
+    const d = state.uniDetail; if (!d) return;
+    const watch = (d.links || []).filter((l) => l.type === 'watch');
+    const rel = d.relations || [];
+    const chars = d.characters || [];
+    const statusMap = { FINISHED: '已完结', ONGOING: '连载中', RELEASING: '连载中', NOT_YET_RELEASED: '未播出', CANCELLED: '已取消', HIATUS: '休刊中' };
+    openModal(`<div class="uni-detail-modal">
+      <button class="modal-close" data-action="close-modal" aria-label="关闭">×</button>
+      ${d.banner ? `<div class="uni-banner" style="background-image:url('${esc(d.banner)}')"></div>` : ''}
+      <div class="uni-detail-body">
+        <div class="uni-detail-cover">${d.cover ? `<img src="${esc(d.cover)}" />` : '<div class="uni-ph">📖</div>'}</div>
+        <div class="uni-detail-info">
+          <h2>${esc(d.title)}</h2>
+          ${d.nativeTitle || d.englishTitle ? `<p class="muted">${esc(d.nativeTitle || '')}${d.englishTitle ? ' · ' + esc(d.englishTitle) : ''}</p>` : ''}
+          <div class="uni-meta"><span class="badge">${esc(uniKindLabel(d))}</span>${d.year ? `<span class="badge">${d.year}</span>` : ''}${d.status ? `<span class="badge">${esc(statusMap[d.status] || d.status)}</span>` : ''}${d.score != null ? `<span class="badge">★ ${Number(d.score).toFixed(1)}</span>` : ''}${d.chapters ? `<span class="badge">${d.chapters} 话</span>` : ''}${d.episodes ? `<span class="badge">${d.episodes} 集</span>` : ''}</div>
+          ${d.tags && d.tags.length ? `<div class="uni-tags">${d.tags.slice(0, 14).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+          ${d.description ? `<p class="uni-desc">${esc(d.description)}</p>` : ''}
+          ${watch.length ? `<div class="uni-links"><h3>▶ 哪里能看</h3><div>${watch.map((l) => `<a class="uni-link" href="${esc(l.url)}" target="_blank" rel="noreferrer">🔗 ${esc(l.site)}</a>`).join('')}</div></div>` : ''}
+          <a class="btn sm ghost" href="${esc(d.sourceUrl)}" target="_blank" rel="noreferrer">🌐 在 ${esc(d.source)} 查看完整资料</a>
+          ${rel.length ? `<div class="uni-rel"><h3>相关作品</h3><div>${rel.slice(0, 8).map((r) => `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noreferrer" title="${esc(r.title)}">${r.cover ? `<img src="${esc(r.cover)}" />` : '📖'}<span>${esc(r.title)}</span></a>`).join('')}</div></div>` : ''}
+          ${chars.length ? `<div class="uni-rel"><h3>主要角色</h3><div>${chars.map((ch) => `<a href="${esc(ch.sourceUrl)}" target="_blank" rel="noreferrer" title="${esc(ch.name)}">${ch.image ? `<img src="${esc(ch.image)}" />` : '👤'}<span>${esc(ch.name)}</span></a>`).join('')}</div></div>` : ''}
+        </div>
+      </div>
+    </div>`, true);
   }
 
   /* ------------------------------ 在线来源 ------------------------------ */
@@ -2264,6 +2351,18 @@
     const a = el.dataset.action, id = el.dataset.id;
     try {
       if (a === 'nav' || el.classList.contains('nav-item')) { state.view = el.dataset.view; render(); }
+      else if (a === 'uni-tab') {
+        state.uniType = el.dataset.type; renderUniSearch();
+        if (state.uniSearched && state.uniQ) uniDoSearch(state.uniQ, 1, false);
+      }
+      else if (a === 'uni-search') {
+        const inp = $('#uniSearchInput'); const q = inp ? inp.value.trim() : state.uniQ;
+        if (!q) { toast('请输入关键词'); return; }
+        state.uniType = state.uniType || 'all'; state.uniDetail = null;
+        await uniDoSearch(q, 1, false);
+      }
+      else if (a === 'uni-more') await uniDoSearch(state.uniQ, state.uniPage + 1, true);
+      else if (a === 'uni-detail') await uniOpenDetail(el.dataset.id);
       else if (a === 'itb-open') {
         if (state.importTask.comicId) { state.comic = state.importTask.comicId; state.view = 'comic'; render(); }
         state.importTask = { active: false, done: 0, total: 0, failed: 0, label: '', comicId: '', finished: false };
@@ -2511,6 +2610,9 @@
   $('#modalMask').addEventListener('click', (e) => { if (e.target.id === 'modalMask') closeModal(); });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && $('#searchInput') === document.activeElement) { state.q = $('#searchInput').value.trim(); render(); }
+    if (e.key === 'Enter' && $('#uniSearchInput') === document.activeElement) {
+      const q = $('#uniSearchInput').value.trim(); if (q) { state.uniDetail = null; uniDoSearch(q, 1, false); }
+    }
     if (e.key === 'Escape') closeModal();
   });
 
