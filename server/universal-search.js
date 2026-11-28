@@ -170,12 +170,17 @@ async function glmTranslateBatch(items) {
     const r = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 4096 }),
+      // glm-5.3-flash 思考链无法关闭，预算不足会输出截断/错位（曾把「無職転生」翻成「魔法少女小圆」）
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 16384 }),
       signal: ac.signal,
     });
     if (!r.ok) return {};
     const j = await r.json();
-    const content = j?.choices?.[0]?.message?.content;
+    let content = j?.choices?.[0]?.message?.content;
+    // 思考模型偶尔把结果放在 reasoning 之后，剥离 <think> 标签
+    if (content && typeof content === 'string' && content.includes('<think>')) {
+      content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    }
     if (!content) return {};
     const match = String(content).match(/\[[\s\S]*\]/);
     if (!match) return {};
@@ -183,9 +188,22 @@ async function glmTranslateBatch(items) {
     const out = {};
     for (const row of (Array.isArray(arr) ? arr : [])) {
       if (!row || !row.id) continue;
+      const src = items.find((x) => x.id === row.id);
+      const title = typeof row.title === 'string' ? row.title.trim() : '';
+      const desc = typeof row.desc === 'string' ? row.desc.trim() : '';
+      /* 幻觉校验：GLM 偶发把两条结果错位（A 的 id 配 B 的标题/简介）。
+         用输入标题与输出简介的汉字重合度粗判；连续 2 字以上重合视为可信。 */
+      if (src && src.desc && desc) {
+        const clean = (s) => String(s).replace(/[\s\W]/g, '');
+        const a = clean(src.desc).slice(0, 40);
+        const b = clean(desc);
+        let overlap = 0;
+        for (let i = 0; i < a.length - 1; i += 1) if (b.includes(a.slice(i, i + 2))) { overlap += 1; if (overlap >= 2) break; }
+        if (!overlap && !b.includes(clean(src.title).slice(0, 2))) continue;  // 疑似错位，丢弃整条
+      }
       out[row.id] = {
-        title: typeof row.title === 'string' ? row.title : '',
-        desc: typeof row.desc === 'string' ? row.desc : '',
+        title,
+        desc,
         tags: Array.isArray(row.tags) ? row.tags.filter((x) => typeof x === 'string') : [],
       };
     }
@@ -242,10 +260,45 @@ const MEDIA_FIELDS = `
 `;
 
 const SEARCH_QUERY = `
-  query($q: String, $type: MediaType, $format: MediaFormat, $page: Int, $perPage: Int) {
+  query($q: String, $type: MediaType, $format: MediaFormat, $genre: [String], $page: Int, $perPage: Int) {
     Page(page: $page, perPage: $perPage) {
       pageInfo { hasNextPage total }
-      media(search: $q, type: $type, format: $format, sort: SEARCH_MATCH, isAdult: false) {
+      media(search: $q, type: $type, format: $format, genre_in: $genre, sort: SEARCH_MATCH, isAdult: false) {
+        ${MEDIA_FIELDS}
+      }
+    }
+  }
+`;
+
+/* 题材筛选清单：中文名 → AniList genre 英文值。用于前端标签 chips 与按题材浏览。 */
+export const UNI_GENRES = [
+  { key: 'Action', label: '热血 / 动作' },
+  { key: 'Adventure', label: '冒险' },
+  { key: 'Fantasy', label: '奇幻' },
+  { key: 'Romance', label: '恋爱' },
+  { key: 'Comedy', label: '搞笑' },
+  { key: 'Drama', label: '剧情' },
+  { key: 'Sci-Fi', label: '科幻' },
+  { key: 'Mystery', label: '悬疑' },
+  { key: 'Horror', label: '恐怖' },
+  { key: 'Thriller', label: '惊悚' },
+  { key: 'Slice of Life', label: '日常' },
+  { key: 'Psychological', label: '心理' },
+  { key: 'Supernatural', label: '超自然' },
+  { key: 'Historical', label: '历史' },
+  { key: 'Sports', label: '运动' },
+  { key: 'School', label: '校园' },
+  { key: 'Mecha', label: '机甲' },
+  { key: 'Music', label: '音乐' },
+];
+const GENRE_ZH = Object.fromEntries(UNI_GENRES.map((g) => [g.key, g.label]));
+
+/* 按题材浏览：无关键词，按人气排序（点击题材标签使用） */
+const BROWSE_QUERY = `
+  query($type: MediaType, $format: MediaFormat, $genre: [String], $page: Int, $perPage: Int) {
+    Page(page: $page, perPage: $perPage) {
+      pageInfo { hasNextPage total }
+      media(type: $type, format: $format, genre_in: $genre, sort: POPULARITY_DESC, isAdult: false) {
         ${MEDIA_FIELDS}
       }
     }
@@ -692,10 +745,15 @@ async function doubanBookDetail(id) {
   } finally { clearTimeout(timer); }
 }
 
-/* 从多语言标题与同义词中挑出中文名（含简/繁），供中文界面优先显示 */
+/* 从多语言标题与同义词中挑出中文名（含简/繁），供中文界面优先显示。
+   注意：日文标题里的汉字（如"進撃の巨人""無職転生"）不是中文名，必须排除假名；
+   同时用一批已知日式汉字词做黑名单，避免把纯汉字的日文原名误当中文。 */
+const JP_KANA = /[\u3040-\u30ff]/;                       // 平假名 / 片假名
+const JP_ONLY_HANZI = /^(進撃の巨人|無職転生|鬼滅の刃|呪術廻戦|葬送のフリーレン|薬屋のひとりごと|銀魂|鋼の錬金術師|名探偵コナン|ワンピース|ONE PIECE|魔法少女まどか|異世界|転生|異世界行ったら本気だす|Re:ゼロから始める異世界生活|小林さんちのメイドラゴン|ぼっち・ざ・ろっく| SPY×FAMILY)$/;
+const isChineseTitle = (s) => !!s && /[\u4e00-\u9fff]/.test(s) && !JP_KANA.test(s) && !JP_ONLY_HANZI.test(s);
 function pickChineseTitle(title, synonyms) {
-  const all = [title?.english, title?.romaji, title?.native, ...(synonyms || [])].filter(Boolean);
-  const zh = all.find((s) => /[\u4e00-\u9fff]/.test(s));
+  const all = [title?.english, ...(synonyms || []), title?.native, title?.romaji].filter(Boolean);
+  const zh = all.find(isChineseTitle);
   return zh || '';
 }
 
@@ -805,8 +863,8 @@ export function registerUniversalSearch(app) {
         if (c) out[it.id] = { title: c.title || '', desc: c.desc || '', tags: c.tags || [] };
       }
       if (!pending.length) return res.json({ localized: out, source: 'cache' });
-      // 一次 GLM 调用批量翻译全部待翻条目（最多 8 条），结果逐条落盘缓存
-      const batch = pending.slice(0, 8);
+      // 一次 GLM 调用批量翻译全部待翻条目（最多 12 条），结果逐条落盘缓存
+      const batch = pending.slice(0, 12);
       const zhMap = await glmTranslateBatch(batch.map((it) => ({
         id: it.id, title: it.title || '', desc: it.desc || '', tags: (it.tags || []).slice(0, 8),
       })));
@@ -819,13 +877,19 @@ export function registerUniversalSearch(app) {
     }
   });
 
-  // 全品类检索：?q=关键词&type=manga|novel|anime|movie|game|music|all&page=1
+  // 题材清单（供前端标签筛选 chips）
+  router.get('/genres', (_req, res) => res.json({ genres: UNI_GENRES, source: 'AniList genres' }));
+
+  // 全品类检索：?q=关键词&type=manga|novel|anime|movie|game|music|all&genre=Action&page=1
+  // 允许仅传 genre 无关键词 → 按题材浏览（点击标签直接看该题材作品）
   router.get('/search', async (req, res) => {
     try {
       const q = String(req.query.q || '').trim();
-      if (!q) return res.json({ results: [], page: 1, hasNextPage: false, query: q });
       const page = Math.max(1, parseInt(req.query.page, 10) || 1);
       const cat = String(req.query.type || 'all').toLowerCase();
+      const genreRaw = String(req.query.genre || '').trim();
+      const genreList = genreRaw ? genreRaw.split(/[,，]/).map((g) => g.trim()).filter(Boolean) : [];
+      if (!q && !genreList.length) return res.json({ results: [], page: 1, hasNextPage: false, query: q });
       const constraint = anilistConstraint(cat);
 
       /* 游戏 / 音乐品类走 iTunes（App Store / Apple Music 正版入口） */
@@ -840,10 +904,11 @@ export function registerUniversalSearch(app) {
          不再只返回轻小说；各源并行，单源失败不影响其余。 */
       if (cat === 'novel') {
         const searchQ = expandQuery(q);
+        const lnVars = { q: searchQ || undefined, genre: genreList.length ? genreList : undefined, page, perPage: 14, type: 'MANGA', format: 'NOVEL' };
         const [lnRes, ebRes, dbRes] = await Promise.allSettled([
-          anilistRequest(SEARCH_QUERY, { q: searchQ, page, perPage: 14, type: 'MANGA', format: 'NOVEL' }),
-          itunesSearch(q, 'ebook', 'us', 14).catch(() => []),
-          doubanBookSearch(q, 10).catch(() => []),
+          anilistRequest(SEARCH_QUERY, lnVars),
+          q ? itunesSearch(q, 'ebook', 'us', 14).catch(() => []) : Promise.resolve([]),
+          q ? doubanBookSearch(q, 10).catch(() => []) : Promise.resolve([]),
         ]);
         const lightNovels = lnRes.status === 'fulfilled'
           ? ((lnRes.value?.data?.Page?.media) || []).map((m) => {
@@ -868,18 +933,29 @@ export function registerUniversalSearch(app) {
         });
       }
 
-      /* 多语言搜索：中文查询先按别名展开成罗马音 */
+      /* 多语言搜索：中文查询先按别名展开成罗马音；无关键词时按题材浏览 */
       const searchQ = expandQuery(q);
-      const vars = { q: searchQ, page, perPage: 20, ...constraint };
-      let j = await anilistRequest(SEARCH_QUERY, vars);
+      const baseVars = { q: searchQ || undefined, genre: genreList.length ? genreList : undefined, page, perPage: 20, ...constraint };
+      const browsing = !q && genreList.length > 0;
+      let j = browsing
+        ? await anilistRequest(BROWSE_QUERY, { type: constraint.type || 'ANIME', format: constraint.format || undefined, genre: genreList, page, perPage: 20 })
+        : await anilistRequest(SEARCH_QUERY, baseVars);
       let pg = j?.data?.Page || {};
       let media = pg.media || [];
       // 别名展开后为空则尝试原词（部分中文别名 AniList 直接收录）
       if (!media.length && searchQ !== q) {
         try {
-          const j2 = await anilistRequest(SEARCH_QUERY, { ...vars, q });
+          const j2 = await anilistRequest(SEARCH_QUERY, { ...baseVars, q });
           const pg2 = j2?.data?.Page || {};
           if ((pg2.media || []).length) { j = j2; pg = pg2; media = pg2.media; }
+        } catch { /* 保留首次结果 */ }
+      }
+      // 漫画品类命中低兜底：放宽 format 约束，用 type=MANGA 全格式搜，再本地过滤出该品类
+      if (!media.length && q && cat === 'manga' && !genreList.length) {
+        try {
+          const jm = await anilistRequest(SEARCH_QUERY, { q: searchQ, page, perPage: 30, type: 'MANGA' });
+          const fallback = ((jm?.data?.Page?.media) || []).filter((m) => ['MANGA', 'ONE_SHOT'].includes(String(m.format)));
+          if (fallback.length) { media = fallback; pg = jm.data.Page; }
         } catch { /* 保留首次结果 */ }
       }
       // 全部品类：补充小说三源（AniList 的 ALL 搜索对小说命中偏低）
@@ -1006,23 +1082,43 @@ export function registerUniversalSearch(app) {
   router.get('/trending', async (req, res) => {
     try {
       const cat = String(req.query.type || 'anime').toLowerCase();
-      const constraint = anilistConstraint(cat === 'manga' ? 'manga' : cat === 'novel' ? 'novel' : 'anime');
-      const typeName = constraint.type || 'ANIME';
-      const typeClause = constraint.format ? `,format:${constraint.format}` : '';
       const lists = [
         { key: 'trending', label: '正在热播', sort: 'TRENDING_DESC' },
         { key: 'popular', label: '人气最高', sort: 'POPULARITY_DESC' },
         { key: 'top', label: '评分最高', sort: 'SCORE_DESC' },
         { key: 'new', label: '最新作品', sort: 'START_DATE_DESC' },
       ];
+      // 每个榜单的品类配比：「全部」真正混合动画/漫画/小说/影视，不再只有日漫
+      const mix = cat === 'all'
+        ? [
+            { type: 'ANIME', format: null, n: 5, label: '动画' },
+            { type: 'MANGA', format: 'MANGA', n: 4, label: '漫画' },
+            { type: 'MANGA', format: 'NOVEL', n: 3, label: '小说' },
+            { type: 'ANIME', format: 'MOVIE', n: 2, label: '影视' },
+          ]
+        : cat === 'manga' ? [{ type: 'MANGA', format: 'MANGA', n: 14, label: '漫画' }]
+        : cat === 'novel' ? [{ type: 'MANGA', format: 'NOVEL', n: 14, label: '小说' }]
+        : cat === 'movie' ? [{ type: 'ANIME', format: 'MOVIE', n: 14, label: '影视' }]
+        : [{ type: 'ANIME', format: null, n: 14, label: '动画' }];
       const sections = await Promise.all(lists.map(async (lst) => {
-        try {
-          const query = `query($type: MediaType){Page(page:1,perPage:12){media(type:$type${typeClause},sort:${lst.sort},isAdult:false){${MEDIA_FIELDS}}}}`;
-          const j = await anilistRequest(query, { type: typeName });
-          return { key: lst.key, label: lst.label, results: ((j?.data?.Page?.media) || []).map(normalizeMedia).filter(Boolean) };
-        } catch { return { key: lst.key, label: lst.label, results: [] }; }
+        const groups = await Promise.all(mix.map(async (g) => {
+          try {
+            const formatClause = g.format ? `,format:${g.format}` : '';
+            const query = `query($type: MediaType){Page(page:1,perPage:${g.n}){media(type:$type${formatClause},sort:${lst.sort},isAdult:false){${MEDIA_FIELDS}}}}`;
+            const j = await anilistRequest(query, { type: g.type });
+            return ((j?.data?.Page?.media) || []).map(normalizeMedia).filter(Boolean)
+              .map((m) => ({ ...m, subCategory: m.category === 'novel' ? 'lightnovel' : m.subCategory || m.category }));
+          } catch { return []; }
+        }));
+        // 交错混合，避免同一品类扎堆
+        const maxLen = Math.max(0, ...groups.map((g) => g.length));
+        const out = [];
+        for (let idx = 0; idx < maxLen; idx += 1) {
+          for (const g of groups) if (g[idx]) out.push(g[idx]);
+        }
+        return { key: lst.key, label: lst.label, results: out.slice(0, 14) };
       }));
-      res.json({ sections, results: sections[0]?.results || [], source: 'AniList 多榜单聚合' });
+      res.json({ sections, results: sections[0]?.results || [], source: 'AniList 多品类多榜单聚合', mixed: cat === 'all' });
     } catch (err) {
       res.status(502).json({ error: err?.message || '获取排行失败' });
     }

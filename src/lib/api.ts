@@ -1127,11 +1127,13 @@ export const translation = {
 export const unisearch = {
   categories: () =>
     request<{ categories: { key: string; label: string; hint: string }[]; source: string }>('/api/unisearch/categories'),
-  search: (q: string, type: string = 'all', page: number = 1) =>
+  genres: () =>
+    request<{ genres: { key: string; label: string }[]; source: string }>('/api/unisearch/genres'),
+  search: (q: string, type: string = 'all', page: number = 1, genre: string = '') =>
     request<{
       results: UniversalMedia[]; page: number; hasNextPage: boolean; total: number; query: string; source: string;
       category?: string; error?: string;
-    }>(`/api/unisearch/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&page=${page}`),
+    }>(`/api/unisearch/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&page=${page}${genre ? `&genre=${encodeURIComponent(genre)}` : ''}`),
   detail: (id: string) =>
     request<UniversalMedia>(`/api/unisearch/detail?id=${encodeURIComponent(id)}`),
   /** 批量中文本地化：未缓存条目用 GLM 翻译标题/简介/标签后落盘 */

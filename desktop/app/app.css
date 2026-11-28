@@ -471,6 +471,10 @@ body.mobile .field-row { grid-template-columns: 1fr; }
 .uni-wrap { max-width: 1100px; }
 .uni-tabs { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
 .uni-tabs .tab { border:1px solid var(--border); background:var(--surface-2); color:var(--text); border-radius:999px; padding:7px 18px; cursor:pointer; font-size:13px; font-weight:600; }
+.uni-genres { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:-6px 0 14px; padding:9px 11px; border-radius:10px; background:var(--surface-2); border:1px solid var(--border); }
+.uni-genre-chip { border:1px solid var(--border); background:transparent; color:var(--text); border-radius:999px; padding:3px 10px; font-size:11px; cursor:pointer; transition:.18s; }
+.uni-genre-chip:hover { border-color:var(--accent); color:var(--accent); }
+.uni-genre-chip.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 .uni-tabs .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 .uni-head { display:flex; align-items:baseline; gap:10px; margin:8px 0 14px; }
 .uni-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:16px; }

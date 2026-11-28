@@ -39,6 +39,7 @@
     uniQ: '', uniType: 'all', uniResults: [], uniPage: 1, uniMore: false, uniTotal: 0,
     uniDetail: null, uniSearched: false,
     uniLang: localStorage.getItem('cv_unisearch_lang') || 'auto',
+    uniGenre: '', uniGenres: [],
     uniSections: [],
     // 全局导入任务：{active, done, total, failed, label, comicId, finished}
     importTask: { active: false, done: 0, total: 0, failed: 0, label: '', comicId: '', finished: false },
@@ -165,6 +166,11 @@
     }
     await refreshStatus();
     render();
+    /* 异步加载题材清单（不阻塞启动），供检索页标签筛选 */
+    api('GET', '/api/unisearch/genres', { noCache: true }).then((r) => {
+      state.uniGenres = r.genres || [];
+      if (state.view === 'search') renderUniSearch();
+    }).catch(() => {});
   }
   async function refreshStatus() {
     try {
@@ -482,13 +488,22 @@
   /* ------------------------------ 全站书籍检索 ------------------------------ */
   /* 批量中文本地化：结果里的日文标题/英文简介送后端 GLM 翻译（缓存命中秒回），异步回填不阻塞 UI */
   async function uniLocalize(items) {
-    const pending = (items || []).filter((m) => m && m.id && m.id.indexOf('anilist:') === 0 && !m.translated && !m.chineseTitle);
+    const seen = new Set();
+    const pending = (items || []).filter((m) => {
+      if (!m || !m.id || m.id.indexOf('anilist:') !== 0 || seen.has(m.id)) return false;
+      seen.add(m.id);
+      return !m.translated || (!!m.chineseTitle && !/[\u4e00-\u9fff]/.test(m.description || '') && !!(m.description || ''));
+    });
     if (!pending.length) return;
     try {
-      const r = await api('POST', '/api/unisearch/localize', {
-        body: { items: pending.slice(0, 6).map((m) => ({ id: m.id, title: m.title, desc: m.description, tags: m.tagsOriginal || m.tags })) },
-      });
-      const map = r.localized || {};
+      const map = {};
+      const payload = pending.map((m) => ({ id: m.id, title: m.title, desc: m.description, tags: m.tagsOriginal || m.tags }));
+      for (let i = 0; i < payload.length; i += 12) {
+        try {
+          const r = await api('POST', '/api/unisearch/localize', { body: { items: payload.slice(i, i + 12) } });
+          Object.assign(map, r.localized || {});
+        } catch { /* 单批失败不影响其余 */ }
+      }
       if (!Object.keys(map).length) return;
       const patch = (m) => {
         const zh = map[m.id];
@@ -507,11 +522,11 @@
     } catch { /* 翻译失败保留原文 */ }
   }
   async function uniDoSearch(q, page, append) {
-    q = (q || '').trim(); if (!q) return;
+    q = (q || '').trim(); if (!q && !state.uniGenre) return;
     busy(true);
     try {
       const r = await api('GET', '/api/unisearch/search', {
-        query: { q, type: state.uniType, page }, noCache: true,
+        query: { q, type: state.uniType, page, genre: state.uniGenre || undefined }, noCache: true,
       });
       state.uniQ = q; state.uniSearched = true;
       state.uniResults = append ? (state.uniResults || []).concat(r.results || []) : (r.results || []);
@@ -531,7 +546,7 @@
   }
   async function uniLoadTrending(cat) {
     try {
-      const r = await api('GET', '/api/unisearch/trending', { query: { type: cat === 'manga' ? 'manga' : cat === 'novel' ? 'novel' : 'anime' }, noCache: true });
+      const r = await api('GET', '/api/unisearch/trending', { query: { type: ['all', 'manga', 'novel', 'movie'].includes(cat) ? cat : 'anime' }, noCache: true });
       state.uniSections = r.sections || (r.results?.length ? [{ key: 'trending', label: '热门', results: r.results }] : []);
       uniLocalize(state.uniSections.flatMap((s) => s.results || []));
     } catch { state.uniSections = []; }
@@ -610,6 +625,12 @@
     const tabs = [['all','全部'],['manga','漫画'],['novel','小说'],['anime','动画'],['movie','影视'],['game','游戏'],['music','音乐']];
     let html = `<div class="uni-wrap">
       <div class="uni-tabs">${tabs.map(([k, l]) => `<button class="tab ${state.uniType === k ? 'active' : ''}" data-action="uni-tab" data-type="${k}">${l}</button>`).join('')}</div>`;
+    if (state.uniGenres.length) {
+      html += `<div class="uni-genres"><span class="muted sm">题材筛选</span>
+        <button class="uni-genre-chip ${!state.uniGenre ? 'active' : ''}" data-action="uni-genre" data-genre="">全部题材</button>
+        ${state.uniGenres.map((g) => `<button class="uni-genre-chip ${state.uniGenre === g.key ? 'active' : ''}" data-action="uni-genre" data-genre="${esc(g.key)}">${esc(g.label)}</button>`).join('')}
+      </div>`;
+    }
     if (!state.uniSearched) {
       if (state.uniSections.length) {
         html += state.uniSections.map((s) => `<section class="uni-section"><h2>${esc(s.label)} <span class="muted sm">· 聚合公开元数据库</span></h2>
@@ -618,7 +639,8 @@
         html += `<p class="muted">输入中文名 / 日文名 / 英文名 / 别名 / 罗马音，跨漫画、小说（轻小说 / 网文 / 实体书 / 正版电子书）、动画、影视、游戏、音乐检索，查看多语言译名与正版发布信息。</p>`;
       }
     } else {
-      html += `<div class="uni-head"><b>搜索结果 · ${esc((tabs.find((t) => t[0] === state.uniType) || [,''])[1])}</b><span class="muted">${state.uniTotal ? `共 ${state.uniTotal} 条 · 显示 ${state.uniResults.length} 条` : ''}</span></div>`;
+      const genreLabel = state.uniGenre ? ` · ${esc((state.uniGenres.find((g) => g.key === state.uniGenre) || {}).label || state.uniGenre)}` : '';
+      html += `<div class="uni-head"><b>搜索结果 · ${esc((tabs.find((t) => t[0] === state.uniType) || [,''])[1])}${genreLabel}</b><span class="muted">${state.uniTotal ? `共 ${state.uniTotal} 条 · 显示 ${state.uniResults.length} 条` : ''}</span></div>`;
       if (state.uniResults.length) {
         html += `<div class="uni-grid">${state.uniResults.map(uniCardHtml).join('')}</div>`;
         if (state.uniMore) html += `<div style="text-align:center;margin:16px"><button class="btn" data-action="uni-more">加载更多</button></div>`;
@@ -2507,8 +2529,15 @@
       if (a === 'nav' || el.classList.contains('nav-item')) { state.view = el.dataset.view; render(); }
       else if (a === 'uni-tab') {
         state.uniType = el.dataset.type; renderUniSearch();
-        if (state.uniSearched && state.uniQ) uniDoSearch(state.uniQ, 1, false);
+        if (state.uniSearched && (state.uniQ || state.uniGenre)) uniDoSearch(state.uniQ, 1, false);
         else { render(); await uniLoadTrending(state.uniType); renderUniSearch(); }
+      }
+      else if (a === 'uni-genre') {
+        const g = el.dataset.genre || '';
+        state.uniGenre = state.uniGenre === g ? '' : g;
+        state.uniDetail = null;
+        renderUniSearch();
+        await uniDoSearch(state.uniQ, 1, false);
       }
       else if (a === 'uni-search') {
         const inp = $('#uniSearchInput'); const q = inp ? inp.value.trim() : state.uniQ;

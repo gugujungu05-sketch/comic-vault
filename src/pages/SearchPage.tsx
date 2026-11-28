@@ -133,6 +133,8 @@ export function SearchPage() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [genres, setGenres] = useState<{ key: string; label: string }[]>([]);
+  const [genre, setGenre] = useState('');   // 当前题材筛选（AniList genre key，空=不限）
   const [results, setResults] = useState<UniversalMedia[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -152,18 +154,34 @@ export function SearchPage() {
 
   useEffect(() => {
     unisearch.categories().then((r) => { if (r.categories?.length) setCategories(r.categories); }).catch(() => {});
+    unisearch.genres().then((r) => { if (r.genres?.length) setGenres(r.genres); }).catch(() => {});
   }, []);
 
-  /* 结果里的英文/日文条目批量补中文翻译（缓存命中秒回，未命中 GLM 翻译后落盘） */
+  /* 结果里的英文/日文条目批量补中文翻译（缓存命中秒回，未命中 GLM 翻译后落盘）。
+     名单里已带 chineseTitle 的可能是日文原名误判，也交给 GLM 校正；分批送完所有条目。 */
   const localizeList = useCallback((items: UniversalMedia[], apply: (map: Record<string, { title: string; desc: string; tags: string[] }>) => void) => {
-    const pending = items.filter((m) => m.id.startsWith('anilist:') && !m.translated && !m.chineseTitle);
+    const seen = new Set<string>();
+    const pending = items.filter((m) => {
+      if (!m.id.startsWith('anilist:') || seen.has(m.id)) return false;
+      seen.add(m.id);
+      // 已确认翻译过（translated）跳过；有中文标题但简介仍是英文的日文原名，需要校正
+      return !m.translated || (!!m.chineseTitle && !/[\u4e00-\u9fff]/.test(m.description || '') && !!(m.description || ''));
+    });
     if (!pending.length) return;
     setTranslating(true);
-    unisearch.localize(pending.slice(0, 6).map((m) => ({
-      id: m.id, title: m.title, desc: m.description, tags: m.tagsOriginal || m.tags,
-    }))).then((r) => { if (r.localized && Object.keys(r.localized).length) apply(r.localized); })
-      .catch(() => {})
-      .finally(() => setTranslating(false));
+    const payload = pending.map((m) => ({ id: m.id, title: m.title, desc: m.description, tags: m.tagsOriginal || m.tags }));
+    const batches: typeof payload[] = [];
+    for (let i = 0; i < payload.length; i += 12) batches.push(payload.slice(i, i + 12));
+    const merged: Record<string, { title: string; desc: string; tags: string[] }> = {};
+    (async () => {
+      for (const batch of batches) {
+        try {
+          const r = await unisearch.localize(batch);
+          if (r.localized) Object.assign(merged, r.localized);
+        } catch { /* 单批失败不影响其余 */ }
+      }
+      if (Object.keys(merged).length) apply(merged);
+    })().finally(() => setTranslating(false));
   }, []);
 
   const loadTrending = useCallback((cat: string) => {
@@ -190,13 +208,13 @@ export function SearchPage() {
     setShowLang(false);
   }
 
-  const doSearch = useCallback(async (q: string, cat: string, p: number, append = false) => {
+  const doSearch = useCallback(async (q: string, cat: string, p: number, append = false, g: string = genre) => {
     const clean = q.trim();
-    if (!clean) return;
+    if (!clean && !g) return;
     setLoading(true);
     setSearched(true);
     try {
-      const r = await unisearch.search(clean, cat, p);
+      const r = await unisearch.search(clean, cat, p, g);
       if (r.error) throw new Error(r.error);
       const list = r.results || [];
       setResults((prev) => append ? [...prev, ...list] : list);
@@ -219,14 +237,39 @@ export function SearchPage() {
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setDetail(null);
-    doSearch(query, category, 1);
+    doSearch(query, category, 1, false, genre);
   }
 
   function switchCategory(cat: string) {
     setCategory(cat);
     setDetail(null);
-    if (query.trim()) doSearch(query, cat, 1);
+    if (query.trim() || genre) doSearch(query, cat, 1, false, genre);
     else loadTrending(cat);
+  }
+
+  /** 点击题材标签：有关键词则叠加筛选，无关键词则按题材浏览全部 */
+  function switchGenre(g: string) {
+    const next = genre === g ? '' : g;
+    setGenre(next);
+    setDetail(null);
+    setSearched(true);
+    setLoading(true);
+    unisearch.search(query.trim(), category, 1, next)
+      .then((r) => {
+        if (r.error) throw new Error(r.error);
+        setResults(r.results || []);
+        setHasMore(!!r.hasNextPage);
+        setTotal(r.total || 0);
+        setPage(1);
+        const list = r.results || [];
+        localizeList(list, (map) => setResults((prev) => prev.map((m) => {
+          const zh = map[m.id];
+          if (!zh) return m;
+          return { ...m, chineseTitle: zh.title || m.chineseTitle, titles: m.titles ? { ...m.titles, chinese: zh.title || m.titles.chinese } : m.titles, description: zh.desc || m.description, tags: zh.tags?.length ? zh.tags : m.tags, translated: true };
+        })));
+      })
+      .catch(errorToast)
+      .finally(() => setLoading(false));
   }
 
   async function openDetail(m: UniversalMedia) {
@@ -290,6 +333,18 @@ export function SearchPage() {
         ))}
       </div>
 
+      {genres.length > 0 && (
+        <div className="genre-filter">
+          <span className="genre-filter-label">题材筛选</span>
+          <button className={`genre-chip ${!genre ? 'active' : ''}`} onClick={() => switchGenre('')}>全部题材</button>
+          {genres.map((g) => (
+            <button key={g.key} className={`genre-chip ${genre === g.key ? 'active' : ''}`} onClick={() => switchGenre(g.key)} title={g.key}>
+              {g.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {!searched && sections.length > 0 && (
         <div className="trend-sections">
           {sections.map((s) => (
@@ -312,7 +367,7 @@ export function SearchPage() {
       {searched && (
         <section className="search-section">
           <div className="search-result-head">
-            <h2>搜索结果 <span className="muted sm-text">· {categories.find((c) => c.key === category)?.label}</span></h2>
+            <h2>搜索结果 <span className="muted sm-text">· {categories.find((c) => c.key === category)?.label}{genre ? ` · ${genres.find((g) => g.key === genre)?.label || genre}` : ''}</span></h2>
             <span className="muted sm-text">{translating ? <span className="translating-hint"><Icon name="globe" size={11} /> 正在补充中文…</span> : (total > 0 ? `共 ${total} 条 · 显示 ${results.length} 条` : '')}</span>
           </div>
           {results.length ? (
