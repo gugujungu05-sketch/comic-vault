@@ -2928,6 +2928,41 @@ html, body, #root { overscroll-behavior-x: none; }
 .detail-source-btn { margin-top: 14px; }
 .rel-ph { width: 84px; height: 120px; display: grid; place-items: center; background: var(--surface-2, rgba(127,127,127,.08)); border-radius: 8px; color: var(--muted, #999); }
 
+/* ===== 全品类检索：中文展示 / 品类差异化 / 标签 ===== */
+.media-kind.cat-manga { background: #2f7d5b; }
+.media-kind.cat-novel { background: #7a5bb8; }
+.media-kind.cat-movie { background: #b8662f; }
+.media-kind.cat-game { background: #2f6fb8; }
+.media-kind.cat-music { background: #b83a7a; }
+.media-kind.cat-anime { background: color-mix(in srgb, var(--accent, #5b8def) 88%, black); }
+.media-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.media-tag {
+  font-size: 10px; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+  background: var(--surface-2, rgba(127,127,127,.1)); color: var(--muted, #888);
+  border: 1px solid var(--border, rgba(127,127,127,.16));
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+.translating-hint { display: inline-flex; align-items: center; gap: 4px; color: var(--accent, #5b8def); }
+.detail-facts {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px;
+  margin: 10px 0 14px; padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2, rgba(127,127,127,.06)); border: 1px solid var(--border, rgba(127,127,127,.14));
+}
+.detail-facts .fact { display: flex; gap: 6px; font-size: 12px; min-width: 0; }
+.detail-facts .fact-k { color: var(--muted, #888); flex: none; }
+.detail-facts .fact-v { color: var(--text, #444); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-desc-wrap { margin: 4px 0 12px; }
+.detail-translating { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--accent, #5b8def); margin: 0 0 6px; }
+.desc-original { margin-top: 6px; font-size: 11px; color: var(--muted, #888); }
+.desc-original summary { cursor: pointer; }
+.desc-original p { margin: 6px 0 0; line-height: 1.6; max-height: 90px; overflow: auto; }
+.accent-badge.cat-manga { background: #2f7d5b; }
+.accent-badge.cat-novel { background: #7a5bb8; }
+.accent-badge.cat-movie { background: #b8662f; }
+.accent-badge.cat-game { background: #2f6fb8; }
+.accent-badge.cat-music { background: #b83a7a; }
+.accent-badge.cat-anime { background: var(--accent, #5b8def); }
+
 @media (max-width: 640px) {
   .detail-body { flex-direction: column; }
   .detail-cover-wrap { flex: none; align-self: center; }
@@ -2935,4 +2970,5 @@ html, body, #root { overscroll-behavior-x: none; }
   .media-row { grid-auto-columns: 128px; }
   .search-page .page-head { flex-direction: column; }
   .lang-switch { align-self: flex-end; }
+  .detail-facts { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 }

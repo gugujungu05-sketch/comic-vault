@@ -276,10 +276,14 @@ export interface UniversalMedia {
   banner: string;
   color: string;
   description: string;
+  descriptionOriginal?: string;  // 翻译前的原文（英文/日文）
+  translated?: boolean;          // 是否已经过 GLM 中文翻译
   kind: string;          // manga / anime / game / music
   category?: string;     // manga / novel / anime / movie / game / music
   format: string;        // TV / MOVIE / MANGA / NOVEL / ONA ...
+  formatZh?: string;     // 中文化后的类型名
   status: string;
+  statusZh?: string;     // 中文化后的状态名
   year: number | null;
   score: number | null;  // 0-10
   meanScore?: number | null;
@@ -290,11 +294,14 @@ export interface UniversalMedia {
   volumes: number | null;
   duration?: number | null;
   country?: string;
+  countryZh?: string;
   origin?: string;       // 原作来源：MANGA / LIGHT_NOVEL ...
+  originZh?: string;
   licensed?: boolean;    // 是否有正版授权
   studios?: { name: string; siteUrl: string }[];
   rankings?: { rank: number; context: string; year: number | null }[];
   tags: string[];
+  tagsOriginal?: string[];
   links: { site: string; rawSite?: string; url: string; type: 'watch' | 'official' | 'social' | 'info'; language?: string; color?: string }[];
   streamingEpisodes?: { site: string; title: string; url: string; thumbnail: string }[];
   relations?: { relation: string; id: string; title: string; cover: string; format?: string; kind: string; sourceUrl: string }[];

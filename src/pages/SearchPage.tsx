@@ -64,14 +64,6 @@ function kindLabel(m: UniversalMedia) {
   return map[m.format] || (m.category === 'novel' ? '轻小说' : m.category === 'game' ? '游戏' : m.category === 'music' ? '音乐' : m.kind === 'manga' ? '漫画' : '动画');
 }
 
-function statusLabel(s: string) {
-  const map: Record<string, string> = {
-    FINISHED: '已完结', ONGOING: '连载中', RELEASING: '连载中', NOT_YET_RELEASED: '未播出',
-    CANCELLED: '已取消', HIATUS: '休刊中',
-  };
-  return map[s] || s;
-}
-
 function formatLabel(m: UniversalMedia) {
   const parts: string[] = [];
   if (m.chapters) parts.push(`${m.chapters} 话`);
@@ -79,6 +71,38 @@ function formatLabel(m: UniversalMedia) {
   if (m.episodes) parts.push(`${m.episodes} 集`);
   if (m.duration && !m.episodes) parts.push(`${m.duration} 分钟`);
   return parts.join(' · ');
+}
+
+/** 按品类给出最具辨识度的短标签（让漫画/小说/动画/游戏界面有区分） */
+function categoryBadge(m: UniversalMedia): { text: string; cls: string } {
+  switch (m.category) {
+    case 'manga': return { text: `漫画${m.chapters ? ` · ${m.chapters}话` : ''}`, cls: 'cat-manga' };
+    case 'novel': return { text: `轻小说${m.volumes ? ` · ${m.volumes}卷` : ''}`, cls: 'cat-novel' };
+    case 'movie': return { text: '剧场版', cls: 'cat-movie' };
+    case 'game': return { text: '游戏', cls: 'cat-game' };
+    case 'music': return { text: '音乐', cls: 'cat-music' };
+    default: return { text: m.formatZh || kindLabel(m), cls: 'cat-anime' };
+  }
+}
+
+/** 单条详情里按品类展示的特色信息行 */
+function categoryFacts(m: UniversalMedia): { k: string; v: string }[] {
+  const f: { k: string; v: string }[] = [];
+  if (m.studios?.length) f.push({ k: m.category === 'manga' || m.category === 'novel' ? '出版 / 作者' : '制作公司', v: m.studios.map((s) => s.name).join('、') });
+  if (m.category === 'manga' || m.category === 'novel') {
+    if (m.chapters) f.push({ k: '话数', v: `${m.chapters} 话` });
+    if (m.volumes) f.push({ k: '卷数', v: `${m.volumes} 卷` });
+  } else if (m.category === 'movie') {
+    if (m.duration) f.push({ k: '片长', v: `${m.duration} 分钟` });
+  } else if (m.category === 'anime') {
+    if (m.episodes) f.push({ k: '集数', v: `${m.episodes} 集` });
+    if (m.duration) f.push({ k: '单集', v: `${m.duration} 分钟` });
+  }
+  if (m.originZh) f.push({ k: '原作来源', v: m.originZh });
+  if (m.countryZh) f.push({ k: '地区', v: m.countryZh });
+  if (m.popularity) f.push({ k: '人气', v: m.popularity.toLocaleString() });
+  if (m.favourites) f.push({ k: '收藏', v: m.favourites.toLocaleString() });
+  return f;
 }
 
 export function SearchPage() {
@@ -100,17 +124,41 @@ export function SearchPage() {
     return v && LANG_PREFS.some((p) => p.key === v) ? v : 'auto';
   });
   const [showLang, setShowLang] = useState(false);
+  const [translating, setTranslating] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     unisearch.categories().then((r) => { if (r.categories?.length) setCategories(r.categories); }).catch(() => {});
   }, []);
 
+  /* 结果里的英文/日文条目批量补中文翻译（缓存命中秒回，未命中 GLM 翻译后落盘） */
+  const localizeList = useCallback((items: UniversalMedia[], apply: (map: Record<string, { title: string; desc: string; tags: string[] }>) => void) => {
+    const pending = items.filter((m) => m.id.startsWith('anilist:') && !m.translated && !m.chineseTitle);
+    if (!pending.length) return;
+    setTranslating(true);
+    unisearch.localize(pending.slice(0, 6).map((m) => ({
+      id: m.id, title: m.title, desc: m.description, tags: m.tagsOriginal || m.tags,
+    }))).then((r) => { if (r.localized && Object.keys(r.localized).length) apply(r.localized); })
+      .catch(() => {})
+      .finally(() => setTranslating(false));
+  }, []);
+
   const loadTrending = useCallback((cat: string) => {
     unisearch.trending(cat === 'manga' ? 'manga' : cat === 'novel' ? 'novel' : 'anime')
-      .then((r) => setSections(r.sections || (r.results?.length ? [{ key: 'trending', label: '热门', results: r.results }] : [])))
+      .then((r) => {
+        const secs = r.sections || (r.results?.length ? [{ key: 'trending', label: '热门', results: r.results }] : []);
+        setSections(secs);
+        const all = secs.flatMap((s) => s.results || []);
+        localizeList(all, (map) => setSections((prev) => prev.map((s) => ({
+          ...s, results: (s.results || []).map((m) => {
+            const zh = map[m.id];
+            if (!zh) return m;
+            return { ...m, chineseTitle: zh.title || m.chineseTitle, titles: m.titles ? { ...m.titles, chinese: zh.title || m.titles.chinese } : m.titles, description: zh.desc || m.description, tags: zh.tags?.length ? zh.tags : m.tags, translated: true };
+          }),
+        }))));
+      })
       .catch(() => {});
-  }, []);
+  }, [localizeList]);
   useEffect(() => { loadTrending('all'); }, [loadTrending]);
 
   function setLang(v: LangPref) {
@@ -127,17 +175,23 @@ export function SearchPage() {
     try {
       const r = await unisearch.search(clean, cat, p);
       if (r.error) throw new Error(r.error);
-      setResults((prev) => append ? [...prev, ...(r.results || [])] : (r.results || []));
+      const list = r.results || [];
+      setResults((prev) => append ? [...prev, ...list] : list);
       setHasMore(!!r.hasNextPage);
       setTotal(r.total || 0);
       setPage(p);
+      localizeList(list, (map) => setResults((prev) => prev.map((m) => {
+        const zh = map[m.id];
+        if (!zh) return m;
+        return { ...m, chineseTitle: zh.title || m.chineseTitle, titles: m.titles ? { ...m.titles, chinese: zh.title || m.titles.chinese } : m.titles, description: zh.desc || m.description, tags: zh.tags?.length ? zh.tags : m.tags, translated: true };
+      })));
     } catch (err) {
       errorToast(err);
       if (!append) setResults([]);
     } finally {
       setLoading(false);
     }
-  }, [errorToast]);
+  }, [errorToast, localizeList]);
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -236,7 +290,7 @@ export function SearchPage() {
         <section className="search-section">
           <div className="search-result-head">
             <h2>搜索结果 <span className="muted sm-text">· {categories.find((c) => c.key === category)?.label}</span></h2>
-            <span className="muted sm-text">{total > 0 ? `共 ${total} 条 · 显示 ${results.length} 条` : ''}</span>
+            <span className="muted sm-text">{translating ? <span className="translating-hint"><Icon name="globe" size={11} /> 正在补充中文…</span> : (total > 0 ? `共 ${total} 条 · 显示 ${results.length} 条` : '')}</span>
           </div>
           {results.length ? (
             <>
@@ -279,14 +333,20 @@ export function SearchPage() {
                   <p className="muted sm-text detail-alias">{subTitle(detail, langPref, displayTitle(detail, langPref))}</p>
                 )}
                 <div className="detail-meta">
-                  <span className="badge accent-badge">{kindLabel(detail)}</span>
+                  <span className={`badge accent-badge ${categoryBadge(detail).cls}`}>{categoryBadge(detail).text}</span>
                   {detail.year && <span className="badge">{detail.year}</span>}
-                  {detail.status && <span className="badge">{statusLabel(detail.status)}</span>}
+                  {detail.statusZh && <span className="badge">{detail.statusZh}</span>}
                   {detail.score != null && <span className="badge score"><Icon name="star" size={12} /> {score(detail.score)}</span>}
                   {formatLabel(detail) && <span className="badge">{formatLabel(detail)}</span>}
-                  {detail.country && <span className="badge">{detail.country}</span>}
+                  {detail.countryZh && <span className="badge">{detail.countryZh}</span>}
                   {detail.licensed && <span className="badge licensed"><Icon name="check" size={11} /> 正版授权</span>}
                 </div>
+
+                {!!categoryFacts(detail).length && (
+                  <div className="detail-facts">
+                    {categoryFacts(detail).map((f, i) => <div className="fact" key={i}><span className="fact-k">{f.k}</span><span className="fact-v">{f.v}</span></div>)}
+                  </div>
+                )}
 
                 {((detail.studios?.length || 0) > 0 || !!detail.origin || (detail.rankings?.length || 0) > 0) && (
                   <div className="detail-production">
@@ -302,10 +362,18 @@ export function SearchPage() {
                   </div>
                 )}
 
-                {detail.description && <p className="detail-desc">{detail.description}</p>}
+                {(detail.description || detailLoading) && (
+                  <div className="detail-desc-wrap">
+                    {detailLoading && <p className="detail-translating"><Icon name="globe" size={12} /> 正在翻译简介 / 标签…</p>}
+                    {detail.description && <p className="detail-desc">{detail.description}</p>}
+                    {detail.descriptionOriginal && detail.descriptionOriginal !== detail.description && (
+                      <details className="desc-original"><summary>查看原文</summary><p>{detail.descriptionOriginal}</p></details>
+                    )}
+                  </div>
+                )}
 
                 {!!detail.tags?.length && (
-                  <div className="detail-tags">{detail.tags.slice(0, 16).map((t) => <span key={t} className="tag">{t}</span>)}</div>
+                  <div className="detail-tags">{detail.tags.slice(0, 20).map((t, i) => <span key={i} className="tag">{t}</span>)}</div>
                 )}
 
                 {!!detail.synonyms?.length && (
@@ -418,19 +486,24 @@ function originLabel(o: string) {
 function MediaCard({ m, pref, onOpen }: { m: UniversalMedia; pref: LangPref; onOpen: () => void }) {
   const main = displayTitle(m, pref);
   const watch = (m.links || []).filter((l) => l.type === 'watch');
+  const cat = categoryBadge(m);
+  const tags = (m.tags || []).slice(0, 3);
   return (
     <div className="media-card" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <div className="media-cover">
         {m.cover ? <img src={m.cover} alt={main} loading="lazy" /> : <div className="cover-ph"><Icon name="book" size={28} /></div>}
         {m.score != null && <span className="media-score"><Icon name="star" size={11} /> {score(m.score)}</span>}
-        <span className="media-kind">{kindLabel(m)}</span>
+        <span className={`media-kind ${cat.cls}`}>{cat.text}</span>
         {m.licensed && <span className="media-licensed" title="正版授权">✓</span>}
       </div>
       <div className="media-title" title={main}>{main}</div>
       <div className="media-subtitle" title={subTitle(m, pref, main)}>{subTitle(m, pref, main)}</div>
+      {!!tags.length && (
+        <div className="media-tags">{tags.map((t, i) => <span className="media-tag" key={i}>{t}</span>)}</div>
+      )}
       <div className="media-sub">
         <span>{m.year || '—'}</span>
-        {formatLabel(m) && <span>· {formatLabel(m)}</span>}
+        {m.countryZh && m.countryZh !== m.country && <span>· {m.countryZh}</span>}
         {watch.length > 0 && <span className="media-watch"><Icon name="play" size={10} /> {watch.length} 个观看源</span>}
       </div>
     </div>

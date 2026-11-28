@@ -480,6 +480,32 @@
   }
 
   /* ------------------------------ 全站书籍检索 ------------------------------ */
+  /* 批量中文本地化：结果里的日文标题/英文简介送后端 GLM 翻译（缓存命中秒回），异步回填不阻塞 UI */
+  async function uniLocalize(items) {
+    const pending = (items || []).filter((m) => m && m.id && m.id.indexOf('anilist:') === 0 && !m.translated && !m.chineseTitle);
+    if (!pending.length) return;
+    try {
+      const r = await api('POST', '/api/unisearch/localize', {
+        body: { items: pending.slice(0, 6).map((m) => ({ id: m.id, title: m.title, desc: m.description, tags: m.tagsOriginal || m.tags })) },
+      });
+      const map = r.localized || {};
+      if (!Object.keys(map).length) return;
+      const patch = (m) => {
+        const zh = map[m.id];
+        if (!zh) return m;
+        return Object.assign({}, m, {
+          chineseTitle: zh.title || m.chineseTitle,
+          titles: m.titles ? Object.assign({}, m.titles, { chinese: zh.title || m.titles.chinese }) : m.titles,
+          description: zh.desc || m.description,
+          tags: (zh.tags && zh.tags.length) ? zh.tags : m.tags,
+          translated: true,
+        });
+      };
+      state.uniResults = (state.uniResults || []).map(patch);
+      state.uniSections = (state.uniSections || []).map((s) => Object.assign({}, s, { results: (s.results || []).map(patch) }));
+      if (state.view === 'search' && !state.uniDetail) renderUniSearch();
+    } catch { /* 翻译失败保留原文 */ }
+  }
   async function uniDoSearch(q, page, append) {
     q = (q || '').trim(); if (!q) return;
     busy(true);
@@ -491,6 +517,7 @@
       state.uniResults = append ? (state.uniResults || []).concat(r.results || []) : (r.results || []);
       state.uniPage = page; state.uniMore = !!r.hasNextPage; state.uniTotal = r.total || 0;
       render();
+      uniLocalize(state.uniResults);
     } catch (err) { toast(err.message, true); }
     finally { busy(false); }
   }
@@ -506,6 +533,7 @@
     try {
       const r = await api('GET', '/api/unisearch/trending', { query: { type: cat === 'manga' ? 'manga' : cat === 'novel' ? 'novel' : 'anime' }, noCache: true });
       state.uniSections = r.sections || (r.results?.length ? [{ key: 'trending', label: '热门', results: r.results }] : []);
+      uniLocalize(state.uniSections.flatMap((s) => s.results || []));
     } catch { state.uniSections = []; }
   }
   function uniKindLabel(m) {
@@ -532,18 +560,30 @@
     const map = { MANGA: '漫画改编', LIGHT_NOVEL: '轻小说改编', NOVEL: '小说改编', ORIGINAL: '原创', VISUAL_NOVEL: '视觉小说改编', VIDEO_GAME: '游戏改编' };
     return map[o] || o;
   }
+  function uniCatBadge(m) {
+    switch (m.category) {
+      case 'manga': return { text: `漫画${m.chapters ? ` · ${m.chapters}话` : ''}`, cls: 'cat-manga' };
+      case 'novel': return { text: `轻小说${m.volumes ? ` · ${m.volumes}卷` : ''}`, cls: 'cat-novel' };
+      case 'movie': return { text: '剧场版', cls: 'cat-movie' };
+      case 'game': return { text: '游戏', cls: 'cat-game' };
+      case 'music': return { text: '音乐', cls: 'cat-music' };
+      default: return { text: m.formatZh || uniKindLabel(m), cls: 'cat-anime' };
+    }
+  }
   function uniCardHtml(m) {
     const main = uniTitle(m);
     const watch = (m.links || []).filter((l) => l.type === 'watch');
-    const fmt = [m.chapters ? `${m.chapters} 话` : '', m.volumes ? `${m.volumes} 卷` : '', m.episodes ? `${m.episodes} 集` : ''].filter(Boolean).join('·');
+    const cat = uniCatBadge(m);
+    const tags = (m.tags || []).slice(0, 3);
     return `<div class="uni-card" data-action="uni-detail" data-id="${esc(m.id)}">
       <div class="uni-cover">${m.cover ? `<img src="${esc(m.cover)}" loading="lazy" />` : '<div class="uni-ph">📖</div>'}
         ${m.licensed ? '<span class="uni-licensed" title="正版授权">✓</span>' : ''}
-        <span class="uni-kind">${esc(uniKindLabel(m))}</span>
+        <span class="uni-kind ${cat.cls}">${esc(cat.text)}</span>
         ${m.score != null ? `<span class="uni-score">★ ${Number(m.score).toFixed(1)}</span>` : ''}</div>
       <div class="uni-title" title="${esc(main)}">${esc(main)}</div>
       <div class="uni-subtitle" title="${esc(uniSub(m, main))}">${esc(uniSub(m, main))}</div>
-      <div class="uni-sub">${m.year || '—'}${fmt ? ` · ${fmt}` : ''}${watch.length ? ` · <span style="color:var(--ok,#3fb950)">${watch.length} 个观看源</span>` : ''}</div>
+      ${tags.length ? `<div class="uni-tags-mini">${tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
+      <div class="uni-sub">${m.year || '—'}${m.countryZh && m.countryZh !== m.country ? ` · ${esc(m.countryZh)}` : ''}${watch.length ? ` · <span style="color:var(--ok,#3fb950)">${watch.length} 个观看源</span>` : ''}</div>
     </div>`;
   }
   function renderUniSearch() {
@@ -583,10 +623,24 @@
     const eps = d.streamingEpisodes || [];
     const main = uniTitle(d);
     const fmt = [d.chapters ? `${d.chapters} 话` : '', d.volumes ? `${d.volumes} 卷` : '', d.episodes ? `${d.episodes} 集` : ''].filter(Boolean).join(' · ');
-    const statusMap = { FINISHED: '已完结', ONGOING: '连载中', RELEASING: '连载中', NOT_YET_RELEASED: '未播出', CANCELLED: '已取消', HIATUS: '休刊中' };
+    /* 按品类组装特色信息（漫画/小说/动画/影视各有不同字段） */
+    const facts = [];
+    if (d.studios?.length) facts.push([d.category === 'manga' || d.category === 'novel' ? '出版 / 作者' : '制作公司', d.studios.map((s) => s.name).join('、')]);
+    if (d.category === 'manga' || d.category === 'novel') {
+      if (d.chapters) facts.push(['话数', `${d.chapters} 话`]);
+      if (d.volumes) facts.push(['卷数', `${d.volumes} 卷`]);
+    } else if (d.category === 'movie') {
+      if (d.duration) facts.push(['片长', `${d.duration} 分钟`]);
+    } else if (d.category === 'anime') {
+      if (d.episodes) facts.push(['集数', `${d.episodes} 集`]);
+      if (d.duration) facts.push(['单集', `${d.duration} 分钟`]);
+    }
+    if (d.originZh || d.origin) facts.push(['原作来源', d.originZh || uniOriginLabel(d.origin)]);
+    if (d.countryZh || d.country) facts.push(['地区', d.countryZh || d.country]);
+    if (d.popularity) facts.push(['人气', Number(d.popularity).toLocaleString()]);
+    if (d.favourites) facts.push(['收藏', Number(d.favourites).toLocaleString()]);
+    const factsHtml = facts.length ? `<div class="uni-facts">${facts.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>` : '';
     const prod = (d.studios?.length || d.origin || d.rankings?.length) ? `<div class="uni-prod">
-      ${d.studios?.length ? `<div><b>制作 / 出版</b><span>${esc(d.studios.map((s) => s.name).join('、'))}</span></div>` : ''}
-      ${d.origin ? `<div><b>原作来源</b><span>${esc(uniOriginLabel(d.origin))}</span></div>` : ''}
       ${d.rankings?.length ? `<div><b>榜单排名</b><span>${esc(d.rankings.slice(0, 3).map((r) => `第 ${r.rank} 名 · ${r.context}`).join('；'))}</span></div>` : ''}
     </div>` : '';
     openModal(`<div class="uni-detail-modal">
@@ -597,10 +651,12 @@
         <div class="uni-detail-info">
           <h2>${esc(main)}</h2>
           ${uniSub(d, main) ? `<p class="muted uni-alias">${esc(uniSub(d, main))}</p>` : ''}
-          <div class="uni-meta"><span class="badge">${esc(uniKindLabel(d))}</span>${d.year ? `<span class="badge">${d.year}</span>` : ''}${d.status ? `<span class="badge">${esc(statusMap[d.status] || d.status)}</span>` : ''}${d.score != null ? `<span class="badge">★ ${Number(d.score).toFixed(1)}</span>` : ''}${fmt ? `<span class="badge">${esc(fmt)}</span>` : ''}${d.country ? `<span class="badge">${esc(d.country)}</span>` : ''}${d.licensed ? '<span class="badge licensed">✓ 正版授权</span>' : ''}</div>
+          <div class="uni-meta"><span class="badge">${esc(uniCatBadge(d).text)}</span>${d.year ? `<span class="badge">${d.year}</span>` : ''}${d.statusZh ? `<span class="badge">${esc(d.statusZh)}</span>` : (d.status ? `<span class="badge">${esc(d.status)}</span>` : '')}${d.score != null ? `<span class="badge">★ ${Number(d.score).toFixed(1)}</span>` : ''}${fmt ? `<span class="badge">${esc(fmt)}</span>` : ''}${d.countryZh ? `<span class="badge">${esc(d.countryZh)}</span>` : ''}${d.licensed ? '<span class="badge licensed">✓ 正版授权</span>' : ''}</div>
+          ${factsHtml}
           ${prod}
           ${d.description ? `<p class="uni-desc">${esc(d.description)}</p>` : ''}
-          ${d.tags && d.tags.length ? `<div class="uni-tags">${d.tags.slice(0, 16).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+          ${d.descriptionOriginal && d.descriptionOriginal !== d.description ? `<details class="uni-desc-orig"><summary>查看原文</summary><p>${esc(d.descriptionOriginal)}</p></details>` : ''}
+          ${d.tags && d.tags.length ? `<div class="uni-tags">${d.tags.slice(0, 20).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
           ${d.synonyms?.length ? `<details class="uni-names"><summary>多语言译名（${d.synonyms.length}）</summary><div>${d.synonyms.map((n) => `<span class="uni-name-chip">${esc(n)}</span>`).join('')}</div></details>` : ''}
           ${watch.length ? `<div class="uni-links"><h3>▶ 哪里能看 · 正版观看平台（${watch.length}）</h3><div>${watch.map((l) => `<a class="uni-link" href="${esc(l.url)}" target="_blank" rel="noreferrer">🔗 ${esc(l.site)}${l.language ? ` · ${esc(l.language)}` : ''}</a>`).join('')}</div></div>` : ''}
           ${official.length ? `<div class="uni-links"><h3>🌐 正版发布 · 官方网站</h3><div>${official.map((l) => `<a class="uni-link official" href="${esc(l.url)}" target="_blank" rel="noreferrer">🌐 ${esc(l.site)}</a>`).join('')}</div></div>` : ''}

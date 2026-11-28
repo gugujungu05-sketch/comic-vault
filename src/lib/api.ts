@@ -1134,6 +1134,14 @@ export const unisearch = {
     }>(`/api/unisearch/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&page=${page}`),
   detail: (id: string) =>
     request<UniversalMedia>(`/api/unisearch/detail?id=${encodeURIComponent(id)}`),
+  /** 批量中文本地化：未缓存条目用 GLM 翻译标题/简介/标签后落盘 */
+  localize: (items: { id: string; title: string; desc: string; tags: string[] }[]) =>
+    request<{ localized: Record<string, { title: string; desc: string; tags: string[] }>; source: string }>(
+      '/api/unisearch/localize',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) },
+      false,
+      180000,
+    ),
   trending: (type: string = 'anime') =>
     request<{ sections: { key: string; label: string; results: UniversalMedia[] }[]; results: UniversalMedia[]; source: string; error?: string }>(`/api/unisearch/trending?type=${encodeURIComponent(type)}`),
 };

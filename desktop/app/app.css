@@ -526,9 +526,26 @@ body.mobile .field-row { grid-template-columns: 1fr; }
 .uni-ep { display:inline-flex; gap:6px; font-size:11px; text-decoration:none; color:var(--text); background:var(--surface-2); border:1px solid var(--border); border-radius:7px; padding:5px 8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .uni-ep:hover { border-color:var(--accent); color:var(--accent); }
 .uni-ep b { color:var(--accent); }
+/* 检索：中文展示 / 品类差异化 / 标签 */
+.uni-kind.cat-manga { background:#2f7d5b; }
+.uni-kind.cat-novel { background:#7a5bb8; }
+.uni-kind.cat-movie { background:#b8662f; }
+.uni-kind.cat-game { background:#2f6fb8; }
+.uni-kind.cat-music { background:#b83a7a; }
+.uni-kind.cat-anime { background:var(--accent); }
+.uni-tags-mini { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+.uni-tags-mini span { font-size:10px; padding:2px 7px; border-radius:999px; color:var(--muted); background:var(--surface-2); border:1px solid var(--border); max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.uni-facts { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:5px 14px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin:10px 0; }
+.uni-facts > div { display:flex; gap:6px; font-size:12px; min-width:0; }
+.uni-facts b { flex:none; color:var(--muted); font-weight:400; }
+.uni-facts span { color:var(--text); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.uni-desc-orig { margin:6px 0 10px; font-size:11px; color:var(--muted); }
+.uni-desc-orig summary { cursor:pointer; }
+.uni-desc-orig p { margin:6px 0 0; line-height:1.6; max-height:90px; overflow:auto; }
 @media (max-width: 640px) {
   .uni-detail-body { flex-direction:column; }
   .uni-detail-cover { flex:none; align-self:center; }
   .uni-grid { grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:12px; }
   .uni-row { grid-auto-columns:128px; }
+  .uni-facts { grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); }
 }
